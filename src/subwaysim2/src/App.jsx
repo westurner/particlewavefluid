@@ -63,6 +63,7 @@ const INITIALS = {
   particleCount: 4096,
   particleDiameter: 0.7,
   particleMagnitudeScale: 0.6,
+  orbitalTrackingSpeed: 0.55,
   windOcclusion: true
 };
 
@@ -1283,7 +1284,7 @@ function StationArchitecture({ landingY, surfaceY }) {
   );
 }
 
-function CameraController({ viewMode, onManualChange }) {
+function CameraController({ viewMode, orbitalTrackingSpeed, onManualChange }) {
   const { camera } = useThree();
   const controlsRef = useRef();
   const destinationRef = useRef(new THREE.Vector3(...CAMERA_VIEWS.find((view) => view.id === 'ortho1').position));
@@ -1312,7 +1313,7 @@ function CameraController({ viewMode, onManualChange }) {
       minDistance={12}
       maxDistance={90}
       autoRotate={viewMode === 'orbital'}
-      autoRotateSpeed={0.55}
+      autoRotateSpeed={orbitalTrackingSpeed}
       onStart={onManualChange}
     />
   );
@@ -1338,7 +1339,7 @@ function SimulationScene({ settings, viewMode, onManualViewChange, onTelemetry, 
       <Train ref={trainRef} active={settings.train} brakes={settings.brakes} />
       <ParticleField key={settings.particleCount} settings={settings} trainRef={trainRef} onTelemetry={onTelemetry} onGpuError={onGpuError} />
       <ContactShadows position={[9, -4, 0]} opacity={0.42} scale={56} blur={2.5} far={8} />
-      <CameraController viewMode={viewMode} onManualChange={onManualViewChange} />
+      <CameraController viewMode={viewMode} orbitalTrackingSpeed={settings.orbitalTrackingSpeed} onManualChange={onManualViewChange} />
     </>
   );
 }
@@ -1493,6 +1494,7 @@ function TelemetryPanel({ settings, onSettingsChange, temperature, gpuError, sus
         <ControlSlider label="Particle count" value={settings.particleCount} min={1024} max={9216} step={512} suffix="" description="Rebuilds the GPU field with the selected number of rendered particles." showDescription={showDescriptions} onChange={(particleCount) => onSettingsChange({ particleCount })} />
         <ControlSlider label="Particle diameter" value={settings.particleDiameter} min={0.2} max={1.4} step={0.05} suffix=" m" description="Changes the rendered diameter of each airflow particle." showDescription={showDescriptions} onChange={(particleDiameter) => onSettingsChange({ particleDiameter })} />
         <ControlSlider label="Velocity diameter response" value={settings.particleMagnitudeScale} min={0} max={2} step={0.05} suffix="" description="Scales individual particle diameter according to velocity magnitude." showDescription={showDescriptions} onChange={(particleMagnitudeScale) => onSettingsChange({ particleMagnitudeScale })} />
+        <ControlSlider label="Orbital tracking speed" value={settings.orbitalTrackingSpeed} min={0.1} max={2.5} step={0.05} suffix="x" description="Sets how quickly the camera orbits the station while the orbital tracking mode is active." showDescription={showDescriptions} onChange={(orbitalTrackingSpeed) => onSettingsChange({ orbitalTrackingSpeed })} />
       </div>
       <details className="parameter-group">
         <summary>Fluid parameters</summary>
