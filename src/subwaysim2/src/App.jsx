@@ -12,18 +12,28 @@ import {
   SHAFT_POSITIONS,
   SHAFT_ROUTE,
   STAIR_ROUTE,
+  STREET_LAYOUT,
   STREET_VOLUME,
+  TRACK_ROUTE,
+  TURNSTILE_ROUTE,
   glslFloat,
   roofCeilingAt,
   roofGapEndpoints,
   roofPanelSegments,
   stairSurfaceY,
+  stairStreetPortalX,
   thermalResilienceReport,
-  trainStateAtTime
+  trainStateAtTime,
+  verticalLayoutFromSurfaceY
 } from './routeModel.js';
 
 const INITIALS = {
   surfaceTemperature: 81.5,
+  surfaceCrosswind: 3,
+  stairUndergroundOpeningHeight: STAIR_ROUTE.tunnelHeight,
+  stairLandingHeight: STAIR_ROUTE.landingY,
+  stairSurfaceOpeningHeight: STAIR_ROUTE.baseY + STAIR_ROUTE.riseY,
+  stairUnderfill: false,
   density: 1.18,
   stiffness: 5,
   viscosity: 0.012,
@@ -53,8 +63,20 @@ const INITIALS = {
   particleCount: 4096,
   particleDiameter: 0.7,
   particleMagnitudeScale: 0.6,
+  orbitalTrackingSpeed: 0.55,
   windOcclusion: true
 };
+
+const CAMERA_TARGET = [9, 3, 0];
+const CAMERA_VIEWS = [
+  { id: 'front', label: 'Front', position: [9, 3, 72] },
+  { id: 'back', label: 'Back', position: [9, 3, -72] },
+  { id: 'left', label: 'Left', position: [-52, 3, 0] },
+  { id: 'right', label: 'Right', position: [70, 3, 0] },
+  { id: 'ortho1', label: 'Ortho 1', position: [50, 38, 48] },
+  { id: 'ortho2', label: 'Ortho 2', position: [-32, 38, -48] },
+  { id: 'orbital', label: 'Orbital tracking', position: null }
+];
 
 const positionShader = `
   uniform float uDt;
@@ -62,6 +84,12 @@ const positionShader = `
   uniform float uRoofOffset;
   uniform float uRoofGapHorizontal;
   uniform float uRoofGapVertical;
+  uniform float uStairTunnelHeight;
+  uniform float uStairLandingY;
+  uniform float uStairSurfaceY;
+  uniform bool uStairUnderfill;
+  uniform float uStreetY;
+  uniform float uSurfaceFloorY;
   uniform float uClerestoryOpen;
   uniform bool uClerestoryWindows;
   uniform bool uFloodTunnels;
@@ -71,22 +99,62 @@ const positionShader = `
     vec4 positionData = texture2D(uPositionTex, uv);
     vec4 velocityData = texture2D(uVelocityTex, uv);
     positionData.xyz += velocityData.xyz * uDt;
+    if (positionData.y >= uStreetY) positionData.w = 2.0;
 
-    if (positionData.x < ${glslFloat(FLUID_BOUNDS.minX)}) positionData.x += ${glslFloat(FLUID_BOUNDS.maxX - FLUID_BOUNDS.minX)};
-    if (positionData.x > ${glslFloat(FLUID_BOUNDS.maxX)}) positionData.x -= ${glslFloat(FLUID_BOUNDS.maxX - FLUID_BOUNDS.minX)};
+    if (positionData.w > 1.5) {
+      positionData.x = mod(
+        positionData.x - ${glslFloat(FLUID_BOUNDS.minX)},
+        ${glslFloat(FLUID_BOUNDS.maxX - FLUID_BOUNDS.minX)}
+      ) + ${glslFloat(FLUID_BOUNDS.minX)};
+    } else {
+      if (positionData.x < ${glslFloat(FLUID_BOUNDS.minX)}) positionData.x += ${glslFloat(FLUID_BOUNDS.maxX - FLUID_BOUNDS.minX)};
+      if (positionData.x > ${glslFloat(FLUID_BOUNDS.maxX)}) positionData.x -= ${glslFloat(FLUID_BOUNDS.maxX - FLUID_BOUNDS.minX)};
+    }
     positionData.y = clamp(positionData.y, ${glslFloat(FLUID_BOUNDS.minY)}, ${glslFloat(FLUID_BOUNDS.maxY)});
-    positionData.z = clamp(positionData.z, ${glslFloat(FLUID_BOUNDS.minZ)}, ${glslFloat(FLUID_BOUNDS.maxZ)});
+    if (positionData.y >= uStreetY) {
+      positionData.z = mod(
+        positionData.z - ${glslFloat(FLUID_BOUNDS.minZ)},
+        ${glslFloat(FLUID_BOUNDS.maxZ - FLUID_BOUNDS.minZ)}
+      ) + ${glslFloat(FLUID_BOUNDS.minZ)};
+    } else {
+      positionData.z = clamp(positionData.z, ${glslFloat(FLUID_BOUNDS.minZ)}, ${glslFloat(FLUID_BOUNDS.maxZ)});
+    }
     if (!uFloodTunnels) positionData.y = max(positionData.y, ${glslFloat(FLOOD_GALLERY.maxY)});
 
     float stairX = positionData.x;
-    float stairProgress = clamp((stairX - ${glslFloat(STAIR_ROUTE.startX)}) / ${glslFloat(STAIR_ROUTE.endX - STAIR_ROUTE.startX)}, 0.0, 1.0);
-    float stairSurfaceY = ${glslFloat(STAIR_ROUTE.baseY)} + stairProgress * ${glslFloat(STAIR_ROUTE.riseY)};
-    float stairZone = step(${glslFloat(STAIR_ROUTE.startX)}, stairX) * step(stairX, ${glslFloat(STAIR_ROUTE.endX)});
+    float lowerStairProgress = clamp((stairX - ${glslFloat(STAIR_ROUTE.startX)}) / ${glslFloat(STAIR_ROUTE.lowerFlightEndX - STAIR_ROUTE.startX)}, 0.0, 1.0);
+    float upperStairProgress = clamp((stairX - ${glslFloat(STAIR_ROUTE.upperFlightStartX)}) / ${glslFloat(STAIR_ROUTE.endX - STAIR_ROUTE.upperFlightStartX)}, 0.0, 1.0);
+    float stairSurfaceY = stairX < ${glslFloat(STAIR_ROUTE.lowerFlightEndX)}
+      ? mix(${glslFloat(STAIR_ROUTE.baseY)}, uStairLandingY, lowerStairProgress)
+      : (stairX <= ${glslFloat(STAIR_ROUTE.upperFlightStartX)} ? uStairLandingY : mix(uStairLandingY, uStairSurfaceY, upperStairProgress));
+    float stairZone = step(${glslFloat(STAIR_ROUTE.landingStartX)}, stairX) * step(stairX, ${glslFloat(STAIR_ROUTE.endX)});
     float stairDistance = abs(positionData.z - ${glslFloat(STAIR_ROUTE.z)});
     float stairContact = stairZone * (1.0 - smoothstep(0.0, 1.7, stairDistance));
     float thermalContact = smoothstep(0.05, 0.4, velocityData.w) * stairContact;
     if (thermalContact > 0.0 && positionData.y < stairSurfaceY + 0.12) {
       positionData.y = mix(positionData.y, stairSurfaceY + 0.12, thermalContact);
+    }
+    float stairUnderfillContact = (uStairUnderfill ? 1.0 : 0.0)
+      * step(${glslFloat(STAIR_ROUTE.startX)}, stairX)
+      * step(stairX, ${glslFloat(STAIR_ROUTE.endX)})
+      * step(stairDistance, ${glslFloat(STAIR_ROUTE.width / 2)});
+    if (stairUnderfillContact > 0.5) positionData.y = max(positionData.y, stairSurfaceY + 0.12);
+
+    float turnstileXContact = step(abs(positionData.x - ${glslFloat(TURNSTILE_ROUTE.x)}), ${glslFloat(TURNSTILE_ROUTE.halfDepth)});
+    float turnstileYContact = step(${glslFloat(STAIR_ROUTE.baseY)}, positionData.y)
+      * step(positionData.y, ${glslFloat(STAIR_ROUTE.baseY + TURNSTILE_ROUTE.pedestalHeight)});
+    float turnstilePedestalContact = max(
+      max(
+        step(abs(positionData.z - ${glslFloat(TURNSTILE_ROUTE.pedestalZ[0])}), ${glslFloat(TURNSTILE_ROUTE.pedestalHalfWidth)}),
+        step(abs(positionData.z - ${glslFloat(TURNSTILE_ROUTE.pedestalZ[1])}), ${glslFloat(TURNSTILE_ROUTE.pedestalHalfWidth)})
+      ),
+      max(
+        step(abs(positionData.z - ${glslFloat(TURNSTILE_ROUTE.pedestalZ[2])}), ${glslFloat(TURNSTILE_ROUTE.pedestalHalfWidth)}),
+        step(abs(positionData.z - ${glslFloat(TURNSTILE_ROUTE.pedestalZ[3])}), ${glslFloat(TURNSTILE_ROUTE.pedestalHalfWidth)})
+      )
+    );
+    if (turnstileXContact * turnstileYContact * turnstilePedestalContact > 0.5) {
+      positionData.x = ${glslFloat(TURNSTILE_ROUTE.x)} + (velocityData.x >= 0.0 ? -${glslFloat(TURNSTILE_ROUTE.halfDepth)} : ${glslFloat(TURNSTILE_ROUTE.halfDepth)});
     }
 
     float roofRidgeY = 4.0 + tan(uRoofPitch) * 2.3;
@@ -102,15 +170,17 @@ const positionShader = `
     float shaftOpening = max(shaftNorth, max(shaftCenter, shaftSouth))
       * (1.0 - smoothstep(0.0, 1.1, abs(positionData.z - ${glslFloat(SHAFT_ROUTE.z)})))
       * smoothstep(0.4, ${glslFloat(SHAFT_ROUTE.throatY)}, positionData.y);
-    float stairTunnelCeiling = stairSurfaceY + ${glslFloat(STAIR_ROUTE.tunnelHeight)};
+    float stairTunnelCeiling = stairSurfaceY + uStairTunnelHeight;
     float stairPassage = stairZone
       * (1.0 - smoothstep(0.0, ${glslFloat(STAIR_ROUTE.width / 2)}, stairDistance))
       * step(positionData.y, stairTunnelCeiling);
     float stairExit = step(${glslFloat(STAIR_ROUTE.endX - 1.4)}, stairX)
       * (1.0 - smoothstep(0.0, ${glslFloat(STAIR_ROUTE.width / 2)}, stairDistance))
       * step(stairSurfaceY, positionData.y);
+    float surfaceOpening = max(step(0.05, shaftOpening), stairExit);
+    if (positionData.w > 1.5 && surfaceOpening < 0.5) positionData.y = max(positionData.y, uSurfaceFloorY);
     if (stairPassage > 0.5) positionData.y = min(positionData.y, max(roofCeiling, stairTunnelCeiling));
-    if (shaftOpening < 0.05 && stairExit < 0.5 && clerestoryOpening < 0.05) positionData.y = min(positionData.y, roofCeiling);
+    if (positionData.w < 1.5 && shaftOpening < 0.05 && stairExit < 0.5 && clerestoryOpening < 0.05) positionData.y = min(positionData.y, roofCeiling);
 
     gl_FragColor = positionData;
   }
@@ -119,6 +189,7 @@ const positionShader = `
 const velocityShader = `
   uniform float uDt;
   uniform float uSurfaceTemperature;
+  uniform float uSurfaceCrosswind;
   uniform float uRadius;
   uniform float uRestDensity;
   uniform float uStiffness;
@@ -139,6 +210,13 @@ const velocityShader = `
   uniform float uRoofGapVertical;
   uniform float uClerestoryOpen;
   uniform float uStackEffect;
+  uniform float uStairTunnelHeight;
+  uniform float uStairLandingY;
+  uniform float uStairSurfaceY;
+  uniform float uStreetY;
+  uniform float uStreetMaxY;
+  uniform float uSurfaceFloorY;
+  uniform float uShaftOutletY;
   uniform bool uTrainActive;
   uniform bool uShaftFans;
   uniform bool uClerestoryWindows;
@@ -156,6 +234,15 @@ const velocityShader = `
     return 0.0;
   }
 
+  vec3 simulationOffset(vec4 positionData, vec4 neighborData) {
+    vec3 offset = positionData.xyz - neighborData.xyz;
+    if (positionData.w > 1.5 && neighborData.w > 1.5) {
+      float surfaceSpan = ${glslFloat(FLUID_BOUNDS.maxZ - FLUID_BOUNDS.minZ)};
+      offset.z -= surfaceSpan * floor(offset.z / surfaceSpan + 0.5);
+    }
+    return offset;
+  }
+
   void main() {
     vec2 uv = gl_FragCoord.xy / resolution.xy;
     vec4 positionData = texture2D(uPositionTex, uv);
@@ -163,6 +250,7 @@ const velocityShader = `
     vec3 particlePosition = positionData.xyz;
     vec3 particleVelocity = velocityData.xyz;
     float thermalIntensity = velocityData.w;
+    float surfaceParticle = step(1.5, positionData.w);
     float density = 0.0;
     vec3 pressureForce = vec3(0.0);
     vec3 viscosityForce = vec3(0.0);
@@ -170,39 +258,83 @@ const velocityShader = `
     for (float y = 0.0; y < resolution.y; y += 2.0) {
       for (float x = 0.0; x < resolution.x; x += 2.0) {
         vec2 neighborUv = vec2(x + 0.5, y + 0.5) / resolution.xy;
-        vec3 neighborPosition = texture2D(uPositionTex, neighborUv).xyz;
+        vec4 neighborData = texture2D(uPositionTex, neighborUv);
+        vec3 offset = simulationOffset(positionData, neighborData);
+        float distanceToNeighbor = length(offset);
+
+        if (distanceToNeighbor > 0.0001 && distanceToNeighbor < uRadius) {
+          float kernelPosition = distanceToNeighbor / uRadius;
+          density += cubicSplineKernel(kernelPosition);
+        }
+      }
+    }
+
+    float pressure = max(0.0, uStiffness * (density - uRestDensity));
+    for (float y = 0.0; y < resolution.y; y += 2.0) {
+      for (float x = 0.0; x < resolution.x; x += 2.0) {
+        vec2 neighborUv = vec2(x + 0.5, y + 0.5) / resolution.xy;
+        vec4 neighborData = texture2D(uPositionTex, neighborUv);
         vec3 neighborVelocity = texture2D(uVelocityTex, neighborUv).xyz;
-        vec3 offset = particlePosition - neighborPosition;
+        vec3 offset = simulationOffset(positionData, neighborData);
         float distanceToNeighbor = length(offset);
 
         if (distanceToNeighbor > 0.0001 && distanceToNeighbor < uRadius) {
           float kernelPosition = distanceToNeighbor / uRadius;
           float kernelWeight = cubicSplineKernel(kernelPosition);
-          density += kernelWeight;
-          float pressure = max(0.0, uStiffness * (density - uRestDensity));
-          pressureForce -= normalize(offset) * pressure * (1.0 - kernelPosition);
+          pressureForce += normalize(offset) * pressure * (1.0 - kernelPosition);
           viscosityForce += uViscosity * (neighborVelocity - particleVelocity) * kernelWeight;
         }
       }
     }
 
-    vec3 acceleration = pressureForce + viscosityForce + vec3(0.6, 0.0, 0.0);
+    vec3 acceleration = pressureForce + viscosityForce + vec3(0.6 * (1.0 - surfaceParticle), 0.0, 0.0);
     float surfaceHeat = clamp((uSurfaceTemperature - 60.0) / 50.0, 0.0, 1.0);
     float surfaceBand = 1.0 - smoothstep(0.0, 2.1, abs(particlePosition.y + 2.4));
     float surfaceThermalDelta = surfaceHeat - 0.42;
     acceleration.y += surfaceThermalDelta * surfaceBand * 0.55;
     thermalIntensity = clamp(thermalIntensity + uDt * surfaceThermalDelta * surfaceBand * 0.25, 0.0, 1.0);
+    float surfaceWindBand = smoothstep(uStreetY - 0.5, uStreetY + 0.5, particlePosition.y);
+    float surfaceShaftNorth = 1.0 - smoothstep(0.55, 1.4, abs(particlePosition.x + 7.0));
+    float surfaceShaftCenter = 1.0 - smoothstep(0.55, 1.4, abs(particlePosition.x));
+    float surfaceShaftSouth = 1.0 - smoothstep(0.55, 1.4, abs(particlePosition.x - 7.0));
+    float surfaceShaftOutlet = max(surfaceShaftNorth, max(surfaceShaftCenter, surfaceShaftSouth))
+      * (1.0 - smoothstep(0.45, 1.25, abs(particlePosition.z - ${glslFloat(SHAFT_ROUTE.z)})))
+      * smoothstep(uShaftOutletY, uShaftOutletY + 0.4, particlePosition.y)
+      * (1.0 - smoothstep(uStreetMaxY - 0.4, uStreetMaxY, particlePosition.y));
+    float surfaceFloorReturn = surfaceWindBand * (
+      1.0 - smoothstep(
+        uSurfaceFloorY,
+        uSurfaceFloorY + 0.9,
+        particlePosition.y
+      )
+    );
+    float surfaceCeilingReturn = smoothstep(${glslFloat(FLUID_BOUNDS.maxY - 1.5)}, ${glslFloat(FLUID_BOUNDS.maxY - 0.2)}, particlePosition.y);
+    acceleration.y += surfaceFloorReturn * (0.9 + max(0.0, -particleVelocity.y) * 6.0);
+    acceleration.y += abs(uSurfaceCrosswind) * surfaceShaftOutlet * 1.8;
+    acceleration.y -= surfaceCeilingReturn * (4.0 + max(0.0, particleVelocity.y) * 6.0);
+    acceleration.z += (uSurfaceCrosswind - particleVelocity.z) * surfaceWindBand * 1.2 * (1.0 - surfaceShaftOutlet * 0.82);
 
     float stairX = particlePosition.x;
+    float lowerStairProgress = clamp((stairX - ${glslFloat(STAIR_ROUTE.startX)}) / ${glslFloat(STAIR_ROUTE.lowerFlightEndX - STAIR_ROUTE.startX)}, 0.0, 1.0);
+    float upperStairProgress = clamp((stairX - ${glslFloat(STAIR_ROUTE.upperFlightStartX)}) / ${glslFloat(STAIR_ROUTE.endX - STAIR_ROUTE.upperFlightStartX)}, 0.0, 1.0);
+    float stairSurfaceY = stairX < ${glslFloat(STAIR_ROUTE.lowerFlightEndX)}
+      ? mix(${glslFloat(STAIR_ROUTE.baseY)}, uStairLandingY, lowerStairProgress)
+      : (stairX <= ${glslFloat(STAIR_ROUTE.upperFlightStartX)} ? uStairLandingY : mix(uStairLandingY, uStairSurfaceY, upperStairProgress));
     float stairProgress = clamp((stairX - ${glslFloat(STAIR_ROUTE.startX)}) / ${glslFloat(STAIR_ROUTE.endX - STAIR_ROUTE.startX)}, 0.0, 1.0);
-    float stairSurfaceY = ${glslFloat(STAIR_ROUTE.baseY)} + stairProgress * ${glslFloat(STAIR_ROUTE.riseY)};
-    float stairZone = step(${glslFloat(STAIR_ROUTE.startX)}, stairX) * step(stairX, ${glslFloat(STAIR_ROUTE.endX)});
+    float stairZone = step(${glslFloat(STAIR_ROUTE.landingStartX)}, stairX) * step(stairX, ${glslFloat(STAIR_ROUTE.endX)});
     float stairProximity = stairZone
       * (1.0 - smoothstep(0.0, 1.7, abs(particlePosition.z - ${glslFloat(STAIR_ROUTE.z)})))
       * (1.0 - smoothstep(0.0, 1.8, abs(particlePosition.y - stairSurfaceY)));
-    float stairApproach = smoothstep(3.5, 5.0, stairX) * (1.0 - smoothstep(8.5, 10.0, stairX));
-    vec3 stairDirection = normalize(vec3(1.0, 0.625, 0.0));
+    float stairApproach = smoothstep(${glslFloat(STAIR_ROUTE.landingStartX - 1.5)}, ${glslFloat(STAIR_ROUTE.landingStartX)}, stairX)
+      * (1.0 - smoothstep(${glslFloat(STAIR_ROUTE.endX - 1.5)}, ${glslFloat(STAIR_ROUTE.endX)}, stairX));
+    float stairSlope = stairX < ${glslFloat(STAIR_ROUTE.lowerFlightEndX)}
+      ? (uStairLandingY - ${glslFloat(STAIR_ROUTE.baseY)}) / ${glslFloat(STAIR_ROUTE.lowerFlightEndX - STAIR_ROUTE.startX)}
+      : (stairX <= ${glslFloat(STAIR_ROUTE.upperFlightStartX)}
+        ? 0.0
+        : (uStairSurfaceY - uStairLandingY) / ${glslFloat(STAIR_ROUTE.endX - STAIR_ROUTE.upperFlightStartX)});
+    vec3 stairDirection = normalize(vec3(1.0, stairSlope, 0.0));
     acceleration += stairDirection * stairProximity * (0.45 + thermalIntensity * 2.4);
+    acceleration += stairDirection * stairProximity * abs(uSurfaceCrosswind) * (0.12 + stairProgress * 0.28);
     acceleration.z += (${glslFloat(STAIR_ROUTE.z)} - particlePosition.z) * stairApproach * thermalIntensity * 0.35;
     float stairExit = smoothstep(${glslFloat(STAIR_ROUTE.endX - 2.4)}, ${glslFloat(STAIR_ROUTE.endX)}, stairX)
       * (1.0 - smoothstep(0.0, ${glslFloat(STAIR_ROUTE.width / 2)}, abs(particlePosition.z - ${glslFloat(STAIR_ROUTE.z)})))
@@ -215,13 +347,20 @@ const velocityShader = `
     float shaftCenter = 1.0 - smoothstep(0.0, 1.8, abs(particlePosition.x));
     float shaftSouth = 1.0 - smoothstep(0.0, 1.8, abs(particlePosition.x - 7.0));
     float shaftInfluence = max(shaftNorth, max(shaftCenter, shaftSouth));
+    float shaftCaptureHeight = 1.0 - smoothstep(
+      uStreetY,
+      uStreetY + 0.6,
+      particlePosition.y
+    );
     float ceilingBand = smoothstep(1.8, 4.0, particlePosition.y);
     float shaftHorizontalCapture = shaftInfluence
       * (1.0 - smoothstep(0.0, 1.3, abs(particlePosition.z - ${glslFloat(SHAFT_ROUTE.z)})))
-      * smoothstep(0.4, 2.5, particlePosition.y);
+      * smoothstep(0.4, 2.5, particlePosition.y)
+      * shaftCaptureHeight;
     float shaftVerticalColumn = shaftInfluence
       * (1.0 - smoothstep(0.0, 0.9, abs(particlePosition.z - ${glslFloat(SHAFT_ROUTE.z)})))
-      * smoothstep(0.4, ${glslFloat(SHAFT_ROUTE.throatY)}, particlePosition.y);
+      * smoothstep(0.4, ${glslFloat(SHAFT_ROUTE.throatY)}, particlePosition.y)
+      * shaftCaptureHeight;
     float shaftTargetX = shaftSouth > shaftCenter && shaftSouth > shaftNorth ? 7.0 : (shaftNorth > shaftCenter ? -7.0 : 0.0);
     float floodBand = 1.0 - smoothstep(0.0, 2.4, abs(particlePosition.z + 4.15));
     float fanBand = max(
@@ -252,8 +391,9 @@ const velocityShader = `
       acceleration.x += (shaftTargetX - particlePosition.x)
         * shaftHorizontalCapture * uShaftExchange * 0.9;
       float poweredShaftLift = uShaftFans ? uShaftFanVelocity : 0.0;
+      float crosswindDraw = abs(uSurfaceCrosswind) * 0.3;
       acceleration.x += (shaftTargetX - particlePosition.x) * shaftVerticalColumn * 3.6;
-      acceleration.y += shaftVerticalColumn * (uShaftExchange * 2.4 + uStackEffect * 3.4 + poweredShaftLift) * (0.35 + thermalIntensity * 1.8);
+      acceleration.y += shaftVerticalColumn * (uShaftExchange * 2.4 + uStackEffect * 3.4 + poweredShaftLift + crosswindDraw) * (0.35 + thermalIntensity * 1.8);
       acceleration.z += (${glslFloat(SHAFT_ROUTE.z)} - particlePosition.z) * shaftVerticalColumn * 4.4;
       acceleration.y -= fanBand * uDownFans * 1.8;
       acceleration.x += ceilingBand * uCeilingFans * 1.4 * (1.0 - shaftVerticalColumn);
@@ -296,15 +436,15 @@ const velocityShader = `
       thermalIntensity = max(0.0, thermalIntensity - uDt * uFloodFlow * (floodBand * floodCaptureBand * 0.22 + floodGalleryBand * 0.35 + waterfallBand * 0.8));
     }
 
-    if (uAcActive && abs(particlePosition.x - uTrainPosX) < 5.0 && particlePosition.y > 1.0 && particlePosition.z > 0.5) {
+    if (surfaceParticle < 0.5 && uAcActive && abs(particlePosition.x - uTrainPosX) < 5.0 && particlePosition.y > 1.0 && particlePosition.z > 0.5) {
       thermalIntensity = min(1.0, thermalIntensity + uDt * 0.45);
       acceleration += vec3(0.0, 4.5, 0.0);
     }
-    if (uBrakesActive && abs(particlePosition.x - uTrainPosX) < 8.0 && particlePosition.y < -2.0 && abs(particlePosition.z - 2.5) < 1.0) {
+    if (surfaceParticle < 0.5 && uBrakesActive && abs(particlePosition.x - uTrainPosX) < 8.0 && particlePosition.y < -2.0 && abs(particlePosition.z - 2.5) < 1.0) {
       thermalIntensity = min(1.0, thermalIntensity + uDt * 0.6);
       acceleration += vec3((fract(sin(particlePosition.x * 12.0) * 43758.5) - 0.5) * 3.0, 2.0, 0.0);
     }
-    if (uTrainActive && abs(uTrainVelX) > 0.5) {
+    if (surfaceParticle < 0.5 && uTrainActive && abs(uTrainVelX) > 0.5) {
       acceleration += vec3(uTrainVelX * 0.4, 0.0, 0.0);
       thermalIntensity *= (1.0 - uDt * 0.2);
     }
@@ -416,16 +556,21 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
   useEffect(() => {
     let gpuCompute;
     try {
+      const initialVerticalLayout = verticalLayoutFromSurfaceY(settingsRef.current.stairSurfaceOpeningHeight);
       gpuCompute = new GPUComputationRenderer(simulationResolution, simulationResolution, gl);
       if (!gl.capabilities.isWebGL2) gpuCompute.setDataType(THREE.HalfFloatType);
       const positionTexture = gpuCompute.createTexture();
       const velocityTexture = gpuCompute.createTexture();
 
       for (let offset = 0; offset < positionTexture.image.data.length; offset += 4) {
+        const particleIndex = offset / 4;
+        const isSurfaceParticle = particleIndex % 5 === 0;
         positionTexture.image.data[offset] = THREE.MathUtils.lerp(FLUID_BOUNDS.minX, FLUID_BOUNDS.maxX, Math.random());
-        positionTexture.image.data[offset + 1] = THREE.MathUtils.lerp(PARTICLE_SEED_BOUNDS.minY, PARTICLE_SEED_BOUNDS.maxY, Math.random());
+        positionTexture.image.data[offset + 1] = isSurfaceParticle
+          ? THREE.MathUtils.lerp(initialVerticalLayout.streetY, initialVerticalLayout.streetMaxY, Math.random())
+          : THREE.MathUtils.lerp(PARTICLE_SEED_BOUNDS.minY, PARTICLE_SEED_BOUNDS.maxY, Math.random());
         positionTexture.image.data[offset + 2] = THREE.MathUtils.lerp(FLUID_BOUNDS.minZ, FLUID_BOUNDS.maxZ, Math.random());
-        positionTexture.image.data[offset + 3] = 1;
+        positionTexture.image.data[offset + 3] = isSurfaceParticle ? 2 : 1;
         velocityTexture.image.data[offset] = 0;
         velocityTexture.image.data[offset + 1] = 0;
         velocityTexture.image.data[offset + 2] = 0;
@@ -441,11 +586,18 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
       positionVariable.material.uniforms.uRoofOffset = { value: INITIALS.roofOffset };
       positionVariable.material.uniforms.uRoofGapHorizontal = { value: INITIALS.roofGapHorizontal };
       positionVariable.material.uniforms.uRoofGapVertical = { value: INITIALS.roofGapVertical };
+      positionVariable.material.uniforms.uStairTunnelHeight = { value: INITIALS.stairUndergroundOpeningHeight };
+      positionVariable.material.uniforms.uStairLandingY = { value: INITIALS.stairLandingHeight };
+      positionVariable.material.uniforms.uStairSurfaceY = { value: INITIALS.stairSurfaceOpeningHeight };
+      positionVariable.material.uniforms.uStairUnderfill = { value: INITIALS.stairUnderfill };
+      positionVariable.material.uniforms.uStreetY = { value: verticalLayoutFromSurfaceY(INITIALS.stairSurfaceOpeningHeight).streetY };
+      positionVariable.material.uniforms.uSurfaceFloorY = { value: verticalLayoutFromSurfaceY(INITIALS.stairSurfaceOpeningHeight).surfaceParticleFloorY };
       positionVariable.material.uniforms.uClerestoryOpen = { value: INITIALS.clerestoryOpen };
       positionVariable.material.uniforms.uClerestoryWindows = { value: INITIALS.clerestoryWindows };
       positionVariable.material.uniforms.uFloodTunnels = { value: INITIALS.floodTunnels };
       velocityVariable.material.uniforms.uDt = { value: 0.016 };
       velocityVariable.material.uniforms.uSurfaceTemperature = { value: INITIALS.surfaceTemperature };
+      velocityVariable.material.uniforms.uSurfaceCrosswind = { value: INITIALS.surfaceCrosswind };
       velocityVariable.material.uniforms.uRadius = { value: 0.85 };
       velocityVariable.material.uniforms.uRestDensity = { value: INITIALS.density };
       velocityVariable.material.uniforms.uStiffness = { value: INITIALS.stiffness };
@@ -467,6 +619,13 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
       velocityVariable.material.uniforms.uClerestoryOpen = { value: INITIALS.clerestoryOpen };
       velocityVariable.material.uniforms.uClerestoryWindows = { value: INITIALS.clerestoryWindows };
       velocityVariable.material.uniforms.uStackEffect = { value: INITIALS.stackEffect };
+      velocityVariable.material.uniforms.uStairTunnelHeight = { value: INITIALS.stairUndergroundOpeningHeight };
+      velocityVariable.material.uniforms.uStairLandingY = { value: INITIALS.stairLandingHeight };
+      velocityVariable.material.uniforms.uStairSurfaceY = { value: INITIALS.stairSurfaceOpeningHeight };
+      velocityVariable.material.uniforms.uStreetY = { value: verticalLayoutFromSurfaceY(INITIALS.stairSurfaceOpeningHeight).streetY };
+      velocityVariable.material.uniforms.uStreetMaxY = { value: verticalLayoutFromSurfaceY(INITIALS.stairSurfaceOpeningHeight).streetMaxY };
+      velocityVariable.material.uniforms.uSurfaceFloorY = { value: verticalLayoutFromSurfaceY(INITIALS.stairSurfaceOpeningHeight).surfaceParticleFloorY };
+      velocityVariable.material.uniforms.uShaftOutletY = { value: verticalLayoutFromSurfaceY(INITIALS.stairSurfaceOpeningHeight).shaftOutletY };
       velocityVariable.material.uniforms.uTrainActive = { value: true };
       velocityVariable.material.uniforms.uShaftFans = { value: INITIALS.shaftFans };
       velocityVariable.material.uniforms.uAcActive = { value: true };
@@ -501,6 +660,7 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
 
     const frameDelta = Math.min(delta, 0.033);
     const currentSettings = settingsRef.current;
+    const currentVerticalLayout = verticalLayoutFromSurfaceY(currentSettings.stairSurfaceOpeningHeight);
     const trainState = trainStateAtTime(
       state.clock.elapsedTime,
       currentSettings.trainInterval,
@@ -518,11 +678,18 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
     positionVariable.material.uniforms.uRoofOffset.value = currentSettings.roofOffset;
     positionVariable.material.uniforms.uRoofGapHorizontal.value = currentSettings.roofGapHorizontal;
     positionVariable.material.uniforms.uRoofGapVertical.value = currentSettings.roofGapVertical;
+    positionVariable.material.uniforms.uStairTunnelHeight.value = currentSettings.stairUndergroundOpeningHeight;
+    positionVariable.material.uniforms.uStairLandingY.value = currentSettings.stairLandingHeight;
+    positionVariable.material.uniforms.uStairSurfaceY.value = currentSettings.stairSurfaceOpeningHeight;
+    positionVariable.material.uniforms.uStairUnderfill.value = currentSettings.stairUnderfill;
+    positionVariable.material.uniforms.uStreetY.value = currentVerticalLayout.streetY;
+    positionVariable.material.uniforms.uSurfaceFloorY.value = currentVerticalLayout.surfaceParticleFloorY;
     positionVariable.material.uniforms.uClerestoryOpen.value = currentSettings.clerestoryOpen;
     positionVariable.material.uniforms.uClerestoryWindows.value = currentSettings.clerestoryWindows;
     positionVariable.material.uniforms.uFloodTunnels.value = currentSettings.floodTunnels;
     velocityVariable.material.uniforms.uDt.value = frameDelta;
     velocityVariable.material.uniforms.uSurfaceTemperature.value = currentSettings.surfaceTemperature;
+    velocityVariable.material.uniforms.uSurfaceCrosswind.value = currentSettings.surfaceCrosswind;
     velocityVariable.material.uniforms.uRestDensity.value = currentSettings.density;
     velocityVariable.material.uniforms.uStiffness.value = currentSettings.stiffness;
     velocityVariable.material.uniforms.uViscosity.value = currentSettings.viscosity;
@@ -543,6 +710,13 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
     velocityVariable.material.uniforms.uClerestoryOpen.value = currentSettings.clerestoryOpen;
     velocityVariable.material.uniforms.uClerestoryWindows.value = currentSettings.clerestoryWindows;
     velocityVariable.material.uniforms.uStackEffect.value = currentSettings.stackEffect;
+    velocityVariable.material.uniforms.uStairTunnelHeight.value = currentSettings.stairUndergroundOpeningHeight;
+    velocityVariable.material.uniforms.uStairLandingY.value = currentSettings.stairLandingHeight;
+    velocityVariable.material.uniforms.uStairSurfaceY.value = currentSettings.stairSurfaceOpeningHeight;
+    velocityVariable.material.uniforms.uStreetY.value = currentVerticalLayout.streetY;
+    velocityVariable.material.uniforms.uStreetMaxY.value = currentVerticalLayout.streetMaxY;
+    velocityVariable.material.uniforms.uSurfaceFloorY.value = currentVerticalLayout.surfaceParticleFloorY;
+    velocityVariable.material.uniforms.uShaftOutletY.value = currentVerticalLayout.shaftOutletY;
     velocityVariable.material.uniforms.uTrainActive.value = trainState.active;
     velocityVariable.material.uniforms.uShaftFans.value = currentSettings.shaftFans;
     velocityVariable.material.uniforms.uAcActive.value = currentSettings.ac && trainState.active;
@@ -589,11 +763,35 @@ const Train = forwardRef(function Train({ active, brakes }, ref) {
         <boxGeometry args={[16, 3.4, 2.8]} />
         <meshStandardMaterial color="#b7c7c5" metalness={0.82} roughness={0.25} />
       </mesh>
-      {[-6, -3.6, -1.2, 1.2, 3.6, 6].map((windowX) => (
-        <mesh key={windowX} position={[windowX, -1.5, 1.06]}>
-          <boxGeometry args={[1.55, 1.1, 0.05]} />
-          <meshStandardMaterial color="#17333a" metalness={0.4} roughness={0.18} emissive="#0d6872" emissiveIntensity={0.35} />
-        </mesh>
+      {[1.06, 3.94].map((sideZ) => (
+        <group key={sideZ}>
+          {[-6.2, -1.7, 1.7, 6.2].map((windowX) => (
+            <mesh key={windowX} position={[windowX, -1.5, sideZ]}>
+              <boxGeometry args={[1.55, 1.1, 0.05]} />
+              <meshStandardMaterial color="#17333a" metalness={0.4} roughness={0.18} emissive="#0d6872" emissiveIntensity={0.35} />
+            </mesh>
+          ))}
+          {[-4, 4].map((doorX) => (
+            <group key={doorX} position={[doorX, -1.8, sideZ]}>
+              {[-0.59, 0.59].map((panelX) => (
+                <group key={panelX} position={[panelX, 0, 0]}>
+                  <mesh>
+                    <boxGeometry args={[1.14, 2.75, 0.06]} />
+                    <meshStandardMaterial color="#8fa3a2" metalness={0.75} roughness={0.3} />
+                  </mesh>
+                  <mesh position={[0, 0.55, sideZ < 2.5 ? -0.04 : 0.04]}>
+                    <boxGeometry args={[0.78, 0.88, 0.035]} />
+                    <meshStandardMaterial color="#17333a" metalness={0.4} roughness={0.18} emissive="#0d6872" emissiveIntensity={0.3} />
+                  </mesh>
+                </group>
+              ))}
+              <mesh position={[0, 0, sideZ < 2.5 ? -0.04 : 0.04]}>
+                <boxGeometry args={[0.045, 2.75, 0.035]} />
+                <meshStandardMaterial color="#263638" metalness={0.55} roughness={0.4} />
+              </mesh>
+            </group>
+          ))}
+        </group>
       ))}
       {[-4, 4].map((unitX, index) => (
         <group key={unitX}>
@@ -625,6 +823,7 @@ function VentilationInfrastructure({ settings }) {
   const roofRidgeY = 4 + Math.tan(roofPitchRadians) * 2.3;
   const roofGapHorizontal = Math.max(0, settings.roofGapHorizontal);
   const roofGapVertical = Math.max(0.05, settings.roofGapVertical);
+  const { streetY } = verticalLayoutFromSurfaceY(settings.stairSurfaceOpeningHeight);
   const { leftEndZ: leftRoofEndZ, rightStartZ: rightRoofStartZ } = roofGapEndpoints(roofRidgeZ, roofGapHorizontal);
   const roofSegments = [
     ...roofPanelSegments(-11, 11, -4.6, leftRoofEndZ),
@@ -661,16 +860,16 @@ function VentilationInfrastructure({ settings }) {
       <group>
         {SHAFT_POSITIONS.map((shaftX, index) => (
           <group key={shaftX} position={[shaftX, 0, -1.4]}>
-            <mesh position={[0, (SHAFT_ROUTE.throatY + SHAFT_ROUTE.streetY) / 2, 0]}>
-              <boxGeometry args={[1.25, SHAFT_ROUTE.streetY - SHAFT_ROUTE.throatY, 1.25]} />
+            <mesh position={[0, (SHAFT_ROUTE.throatY + streetY) / 2, 0]}>
+              <boxGeometry args={[1.25, streetY - SHAFT_ROUTE.throatY, 1.25]} />
               <meshStandardMaterial color="#708b82" metalness={0.45} roughness={0.55} transparent opacity={0.18} depthWrite={false} />
             </mesh>
-            <mesh position={[0, SHAFT_ROUTE.streetY, 0]}>
+            <mesh position={[0, streetY, 0]}>
               <boxGeometry args={[1.5, 0.12, 1.5]} />
               <meshStandardMaterial color="#d5b75e" metalness={0.7} roughness={0.3} transparent opacity={0.65} />
             </mesh>
             {[-0.48, -0.24, 0, 0.24, 0.48].map((ventZ) => (
-              <mesh key={ventZ} position={[0, SHAFT_ROUTE.streetY + 0.08, ventZ]}>
+              <mesh key={ventZ} position={[0, streetY + 0.08, ventZ]}>
                 <boxGeometry args={[1.2, 0.06, 0.1]} />
                 <meshStandardMaterial color="#203b3d" metalness={0.78} roughness={0.28} />
               </mesh>
@@ -769,12 +968,37 @@ function VentilationInfrastructure({ settings }) {
   );
 }
 
-function StairRouteEnclosure() {
-  const stairRiseY = STAIR_ROUTE.baseY + STAIR_ROUTE.riseY - STAIR_ROUTE.baseY;
-  const stairLength = Math.hypot(STAIR_ROUTE.endX - STAIR_ROUTE.startX, stairRiseY);
-  const stairAngle = Math.atan2(stairRiseY, STAIR_ROUTE.endX - STAIR_ROUTE.startX);
-  const stairCenterX = (STAIR_ROUTE.startX + STAIR_ROUTE.endX) / 2;
-  const stairCenterY = (STAIR_ROUTE.baseY + STAIR_ROUTE.baseY + STAIR_ROUTE.riseY) / 2;
+function createUnderfillGeometry(section, baseY) {
+  const shape = new THREE.Shape();
+  shape.moveTo(section.startX, baseY);
+  shape.lineTo(section.endX, baseY);
+  shape.lineTo(section.endX, section.endY - 0.2);
+  shape.lineTo(section.startX, section.startY - 0.2);
+  shape.closePath();
+  const geometry = new THREE.ExtrudeGeometry(shape, { depth: STAIR_ROUTE.width, bevelEnabled: false });
+  geometry.translate(0, 0, STAIR_ROUTE.z - STAIR_ROUTE.width / 2);
+  return geometry;
+}
+
+function StairRouteEnclosure({ tunnelHeight, landingY, surfaceY, underfill }) {
+  const landingLength = STAIR_ROUTE.startX - STAIR_ROUTE.landingStartX;
+  const landingCenterX = (STAIR_ROUTE.landingStartX + STAIR_ROUTE.startX) / 2;
+  const sections = [
+    { id: 'lower', startX: STAIR_ROUTE.startX, endX: STAIR_ROUTE.lowerFlightEndX, startY: STAIR_ROUTE.baseY, endY: landingY },
+    { id: 'landing', startX: STAIR_ROUTE.lowerFlightEndX, endX: STAIR_ROUTE.upperFlightStartX, startY: landingY, endY: landingY },
+    { id: 'upper', startX: STAIR_ROUTE.upperFlightStartX, endX: STAIR_ROUTE.endX, startY: landingY, endY: surfaceY }
+  ].map((section) => ({
+    ...section,
+    centerX: (section.startX + section.endX) / 2,
+    centerY: (section.startY + section.endY) / 2,
+    length: Math.hypot(section.endX - section.startX, section.endY - section.startY),
+    angle: Math.atan2(section.endY - section.startY, section.endX - section.startX)
+  }));
+  const underfillGeometries = useMemo(
+    () => sections.map((section) => ({ id: section.id, geometry: createUnderfillGeometry(section, STAIR_ROUTE.baseY - 0.2) })),
+    [landingY, surfaceY]
+  );
+  useEffect(() => () => underfillGeometries.forEach(({ geometry }) => geometry.dispose()), [underfillGeometries]);
   const stairMaterial = {
     color: '#9bd1c1',
     emissive: '#2f8e83',
@@ -784,36 +1008,147 @@ function StairRouteEnclosure() {
     depthWrite: false,
     side: THREE.DoubleSide
   };
-  const streetMaterial = {
-    color: '#d5eadf',
-    emissive: '#5da99b',
-    emissiveIntensity: 0.12,
-    transparent: true,
-    opacity: 0.035,
-    depthWrite: false,
-    side: THREE.DoubleSide
-  };
-
   return (
     <group>
-      <mesh position={[stairCenterX, stairCenterY + STAIR_ROUTE.tunnelHeight, STAIR_ROUTE.z]} rotation={[0, 0, stairAngle]}>
-        <boxGeometry args={[stairLength, 0.08, STAIR_ROUTE.width]} />
+      {underfill && (
+        <group>
+          {underfillGeometries.map(({ id, geometry }) => (
+            <mesh key={`fill-${id}`} geometry={geometry} receiveShadow>
+              <meshStandardMaterial color="#52646a" roughness={0.92} />
+            </mesh>
+          ))}
+        </group>
+      )}
+      <mesh position={[landingCenterX, STAIR_ROUTE.baseY + tunnelHeight, STAIR_ROUTE.z]}>
+        <boxGeometry args={[landingLength, 0.08, STAIR_ROUTE.width]} />
         <meshStandardMaterial {...stairMaterial} />
       </mesh>
       {[-1, 1].map((side) => (
-        <mesh key={side} position={[stairCenterX, stairCenterY + STAIR_ROUTE.tunnelHeight / 2, STAIR_ROUTE.z + side * STAIR_ROUTE.width / 2]} rotation={[0, 0, stairAngle]}>
-          <boxGeometry args={[stairLength, STAIR_ROUTE.tunnelHeight, 0.08]} />
+        <mesh key={`entry-${side}`} position={[landingCenterX, STAIR_ROUTE.baseY + tunnelHeight / 2, STAIR_ROUTE.z + side * STAIR_ROUTE.width / 2]}>
+          <boxGeometry args={[landingLength, tunnelHeight, 0.08]} />
           <meshStandardMaterial {...stairMaterial} />
         </mesh>
       ))}
-      <mesh position={[STAIR_ROUTE.endX, (stairSurfaceY(STAIR_ROUTE.endX) + STREET_VOLUME.maxY) / 2, STAIR_ROUTE.z]}>
-        <boxGeometry args={[STAIR_ROUTE.width, STREET_VOLUME.maxY - stairSurfaceY(STAIR_ROUTE.endX), STAIR_ROUTE.width]} />
-        <meshStandardMaterial {...stairMaterial} />
+      {sections.map((section) => (
+        <group key={section.id}>
+          <mesh position={[section.centerX, section.centerY + tunnelHeight, STAIR_ROUTE.z]} rotation={[0, 0, section.angle]}>
+            <boxGeometry args={[section.length, 0.08, STAIR_ROUTE.width]} />
+            <meshStandardMaterial {...stairMaterial} />
+          </mesh>
+          {[-1, 1].map((side) => (
+            <mesh key={side} position={[section.centerX, section.centerY + tunnelHeight / 2, STAIR_ROUTE.z + side * STAIR_ROUTE.width / 2]} rotation={[0, 0, section.angle]}>
+              <boxGeometry args={[section.length, tunnelHeight, 0.08]} />
+              <meshStandardMaterial {...stairMaterial} />
+            </mesh>
+          ))}
+        </group>
+      ))}
+    </group>
+  );
+}
+
+function TicketTurnstiles() {
+  return (
+    <group>
+      {TURNSTILE_ROUTE.pedestalZ.map((pedestalZ) => (
+        <group key={pedestalZ} position={[TURNSTILE_ROUTE.x, STAIR_ROUTE.baseY, pedestalZ]}>
+          <mesh position={[0, TURNSTILE_ROUTE.pedestalHeight / 2, 0]} castShadow receiveShadow>
+            <boxGeometry args={[TURNSTILE_ROUTE.halfDepth * 2, TURNSTILE_ROUTE.pedestalHeight, TURNSTILE_ROUTE.pedestalHalfWidth * 2]} />
+            <meshStandardMaterial color="#324b50" metalness={0.72} roughness={0.3} />
+          </mesh>
+          <mesh position={[0, TURNSTILE_ROUTE.pedestalHeight + 0.05, 0]}>
+            <boxGeometry args={[0.48, 0.12, 0.32]} />
+            <meshStandardMaterial color="#79c9bb" emissive="#1d706b" emissiveIntensity={0.45} metalness={0.45} roughness={0.28} />
+          </mesh>
+          <group position={[0.28, 0.72, 0]} rotation={[Math.PI / 2, 0, 0]}>
+            {[0, Math.PI * 2 / 3, Math.PI * 4 / 3].map((angle) => (
+              <mesh key={angle} position={[Math.cos(angle) * 0.3, Math.sin(angle) * 0.3, 0]} rotation={[0, 0, angle]}>
+                <boxGeometry args={[0.62, 0.055, 0.055]} />
+                <meshStandardMaterial color="#c8d5cf" metalness={0.9} roughness={0.18} />
+              </mesh>
+            ))}
+          </group>
+        </group>
+      ))}
+    </group>
+  );
+}
+
+function SurfaceStreet({ tunnelHeight, landingY, surfaceY }) {
+  const { streetY } = verticalLayoutFromSurfaceY(surfaceY);
+  const streetLength = STREET_VOLUME.maxX - STREET_VOLUME.minX;
+  const streetCenterX = (STREET_VOLUME.minX + STREET_VOLUME.maxX) / 2;
+  const sidewalkEndX = stairStreetPortalX(landingY, surfaceY, tunnelHeight);
+  const sidewalkSegments = roofPanelSegments(
+    STREET_VOLUME.minX,
+    sidewalkEndX,
+    STREET_VOLUME.minZ,
+    STREET_LAYOUT.sidewalkRoadEdgeZ,
+    SHAFT_POSITIONS,
+    SHAFT_ROUTE.z,
+    STREET_LAYOUT.shaftApertureSize
+  );
+  const roadStartZ = STREET_LAYOUT.sidewalkRoadEdgeZ;
+  const roadWidth = STREET_VOLUME.maxZ - roadStartZ;
+  const roadCenterZ = (roadStartZ + STREET_VOLUME.maxZ) / 2;
+  const insulationBottomY = 4.8;
+  const insulationHeight = streetY - insulationBottomY;
+  const insulationSegments = roofPanelSegments(
+    -11,
+    9,
+    STREET_VOLUME.minZ,
+    STREET_VOLUME.maxZ
+  );
+
+  return (
+    <group>
+      {insulationSegments.map((segment) => (
+        <mesh
+          key={`insulation:${segment.startX}:${segment.endX}:${segment.startZ}:${segment.endZ}`}
+          position={[
+            (segment.startX + segment.endX) / 2,
+            insulationBottomY + insulationHeight / 2,
+            (segment.startZ + segment.endZ) / 2
+          ]}
+        >
+          <boxGeometry args={[segment.endX - segment.startX, insulationHeight, segment.endZ - segment.startZ]} />
+          <meshStandardMaterial color="#596763" transparent opacity={0.07} depthWrite={false} side={THREE.DoubleSide} roughness={0.95} />
+        </mesh>
+      ))}
+      <mesh position={[streetCenterX, streetY - 0.09, roadCenterZ]} receiveShadow>
+        <boxGeometry args={[streetLength, 0.18, roadWidth]} />
+        <meshStandardMaterial color="#273238" roughness={0.96} metalness={0.02} />
       </mesh>
-      <mesh position={[(STREET_VOLUME.minX + STREET_VOLUME.maxX) / 2, (STREET_VOLUME.minY + STREET_VOLUME.maxY) / 2, (STREET_VOLUME.minZ + STREET_VOLUME.maxZ) / 2]}>
-        <boxGeometry args={[STREET_VOLUME.maxX - STREET_VOLUME.minX, STREET_VOLUME.maxY - STREET_VOLUME.minY, STREET_VOLUME.maxZ - STREET_VOLUME.minZ]} />
-        <meshStandardMaterial {...streetMaterial} />
+      {sidewalkSegments.map((segment) => (
+        <mesh
+          key={`${segment.startX}:${segment.endX}:${segment.startZ}:${segment.endZ}`}
+          position={[
+            (segment.startX + segment.endX) / 2,
+            streetY,
+            (segment.startZ + segment.endZ) / 2
+          ]}
+          receiveShadow
+        >
+          <boxGeometry args={[segment.endX - segment.startX, 0.2, segment.endZ - segment.startZ]} />
+          <meshStandardMaterial color="#7d8582" roughness={0.88} metalness={0.04} />
+        </mesh>
+      ))}
+      <mesh position={[streetCenterX, streetY + 0.08, roadStartZ + 0.07]}>
+        <boxGeometry args={[streetLength, 0.24, 0.14]} />
+        <meshStandardMaterial color="#c4c8bd" roughness={0.78} />
       </mesh>
+      {[0, 4.2].map((lineZ) => (
+        <mesh key={lineZ} position={[streetCenterX, streetY + 0.015, lineZ]}>
+          <boxGeometry args={[streetLength - 1, 0.025, 0.1]} />
+          <meshBasicMaterial color="#eef0df" />
+        </mesh>
+      ))}
+      {Array.from({ length: 14 }, (_, markingIndex) => (
+        <mesh key={markingIndex} position={[STREET_VOLUME.minX + 2 + markingIndex * 3.4, streetY + 0.02, 1.8]}>
+          <boxGeometry args={[1.8, 0.03, 0.12]} />
+          <meshBasicMaterial color="#e8b941" />
+        </mesh>
+      ))}
     </group>
   );
 }
@@ -821,13 +1156,15 @@ function StairRouteEnclosure() {
 function FloodControlTunnels({ enabled, flow, pumpDirection }) {
   const tracerRefs = useRef([]);
   const waterfallRefs = useRef([]);
+  const galleryLength = FLOOD_GALLERY.maxX - FLOOD_GALLERY.minX;
+  const galleryCenterX = (FLOOD_GALLERY.minX + FLOOD_GALLERY.maxX) / 2;
   useFrame((_, delta) => {
     if (!enabled || flow <= 0) return;
     tracerRefs.current.forEach((tracer) => {
       if (!tracer) return;
       tracer.position.x += delta * pumpDirection * (1.5 + flow * 5);
-      if (tracer.position.x > 10) tracer.position.x = -10;
-      if (tracer.position.x < -10) tracer.position.x = 10;
+      if (tracer.position.x > FLOOD_GALLERY.maxX) tracer.position.x = FLOOD_GALLERY.minX;
+      if (tracer.position.x < FLOOD_GALLERY.minX) tracer.position.x = FLOOD_GALLERY.maxX;
     });
     waterfallRefs.current.forEach((drop) => {
       if (!drop) return;
@@ -838,27 +1175,27 @@ function FloodControlTunnels({ enabled, flow, pumpDirection }) {
 
   return (
     <group visible={enabled}>
-      <mesh position={[0, -5.0, -4.15]} rotation={[0, 0, Math.PI / 2]}>
-        <cylinderGeometry args={[1.25, 1.25, 22, 24, 1, true]} />
+      <mesh position={[galleryCenterX, FLOOD_GALLERY.y, FLOOD_GALLERY.z]} rotation={[0, 0, Math.PI / 2]}>
+        <cylinderGeometry args={[FLOOD_GALLERY.radius, FLOOD_GALLERY.radius, galleryLength, 24, 1, true]} />
         <meshStandardMaterial color="#15383e" side={THREE.BackSide} roughness={0.9} metalness={0.1} transparent opacity={0.82} />
       </mesh>
-      <mesh position={[0, -6.08, -4.15]}>
-        <boxGeometry args={[21.5, 0.05, 1.6]} />
+      <mesh position={[galleryCenterX, -6.08, FLOOD_GALLERY.z]}>
+        <boxGeometry args={[galleryLength - 0.5, 0.05, 1.6]} />
         <meshStandardMaterial color="#21727a" emissive="#0c4249" emissiveIntensity={0.35 + flow * 0.45} roughness={0.25} metalness={0.12} />
       </mesh>
-      {[-9.8, 9.8].map((tunnelX) => (
+      {[FLOOD_GALLERY.minX, FLOOD_GALLERY.maxX].map((tunnelX) => (
         <mesh key={tunnelX} position={[tunnelX, -5.0, -4.15]} rotation={[0, Math.PI / 2, 0]}>
           <torusGeometry args={[1.25, 0.1, 12, 28]} />
           <meshStandardMaterial color="#d5b75e" metalness={0.7} roughness={0.34} />
         </mesh>
       ))}
-      <mesh position={[0, -5.72, -4.15]} rotation={[0, pumpDirection < 0 ? Math.PI : 0, 0]}>
+      <mesh position={[galleryCenterX, -5.72, FLOOD_GALLERY.z]} rotation={[0, pumpDirection < 0 ? Math.PI : 0, 0]}>
         <boxGeometry args={[4.5, 0.08, 0.1]} />
         <meshBasicMaterial color="#9bd1aa" />
       </mesh>
       <group visible={flow > 0}>
-        {Array.from({ length: 9 }, (_, tracerIndex) => (
-          <mesh key={tracerIndex} ref={(element) => { tracerRefs.current[tracerIndex] = element; }} position={[-9 + tracerIndex * 2.25, -5.35, -4.15]}>
+        {Array.from({ length: 18 }, (_, tracerIndex) => (
+          <mesh key={tracerIndex} ref={(element) => { tracerRefs.current[tracerIndex] = element; }} position={[FLOOD_GALLERY.minX + (tracerIndex + 0.5) * galleryLength / 18, -5.35, FLOOD_GALLERY.z]}>
             <sphereGeometry args={[0.09 + flow * 0.06, 8, 6]} />
             <meshBasicMaterial color="#77e6e8" transparent opacity={0.45 + flow * 0.5} />
           </mesh>
@@ -882,8 +1219,14 @@ function FloodControlTunnels({ enabled, flow, pumpDirection }) {
   );
 }
 
-function StationArchitecture() {
+function StationArchitecture({ landingY, surfaceY }) {
   const concreteMaterial = <meshStandardMaterial color="#52646a" roughness={0.88} />;
+  const trackLength = TRACK_ROUTE.maxX - TRACK_ROUTE.minX;
+  const trackCenterX = (TRACK_ROUTE.minX + TRACK_ROUTE.maxX) / 2;
+  const tunnelCenterY = TRACK_ROUTE.bedY + TRACK_ROUTE.tunnelHeight / 2;
+  const stairStepCount = STAIR_ROUTE.stepCount;
+  const stairStepRun = (STAIR_ROUTE.endX - STAIR_ROUTE.startX) / stairStepCount;
+  const landingLength = STAIR_ROUTE.startX - STAIR_ROUTE.landingStartX;
   return (
     <group>
       <mesh position={[0, -3.25, -2.5]} receiveShadow>
@@ -894,22 +1237,33 @@ function StationArchitecture() {
         <boxGeometry args={[22, 0.05, 0.3]} />
         <meshBasicMaterial color="#e5bd42" />
       </mesh>
-      <mesh position={[0, -3.8, 2.5]} receiveShadow>
-        <boxGeometry args={[22, 0.4, 5]} />
+      <mesh position={[trackCenterX, TRACK_ROUTE.bedY, TRACK_ROUTE.centerZ]} receiveShadow>
+        <boxGeometry args={[trackLength, 0.4, TRACK_ROUTE.width]} />
         <meshStandardMaterial color="#111e21" roughness={0.95} />
       </mesh>
       {[-1.5, 0, 1.5].map((railZ) => (
-        <mesh key={railZ} position={[0, -3.55, 2.5 + railZ]}>
-          <boxGeometry args={[22, 0.08, 0.08]} />
+        <mesh key={railZ} position={[trackCenterX, TRACK_ROUTE.bedY + 0.25, TRACK_ROUTE.centerZ + railZ]}>
+          <boxGeometry args={[trackLength, 0.08, 0.08]} />
           <meshStandardMaterial color="#b3c3bf" metalness={0.9} roughness={0.22} />
         </mesh>
       ))}
-      {Array.from({ length: 22 }, (_, stepIndex) => (
-        <mesh key={stepIndex} position={[7 + stepIndex * 0.4, -3.15 + stepIndex * 0.25, -2.5]}>
-          <boxGeometry args={[0.5, 0.2, 2.8]} />
+      <mesh position={[trackCenterX, tunnelCenterY, TRACK_ROUTE.centerZ]}>
+        <boxGeometry args={[trackLength, TRACK_ROUTE.tunnelHeight, TRACK_ROUTE.tunnelWidth]} />
+        <meshStandardMaterial color="#8fb8b5" transparent opacity={0.035} depthWrite={false} side={THREE.DoubleSide} roughness={0.2} metalness={0.08} />
+      </mesh>
+      <mesh position={[(STAIR_ROUTE.landingStartX + STAIR_ROUTE.startX) / 2, STAIR_ROUTE.baseY - 0.1, STAIR_ROUTE.z]}>
+        <boxGeometry args={[landingLength, 0.2, STAIR_ROUTE.width]} />
+        {concreteMaterial}
+      </mesh>
+      {Array.from({ length: stairStepCount }, (_, stepIndex) => {
+        const stepX = STAIR_ROUTE.startX + (stepIndex + 0.5) * stairStepRun;
+        return (
+        <mesh key={stepIndex} position={[stepX, stairSurfaceY(stepX, STAIR_ROUTE.baseY, landingY, surfaceY) - 0.1, STAIR_ROUTE.z]}>
+          <boxGeometry args={[stairStepRun + 0.04, 0.2, STAIR_ROUTE.width]} />
           {concreteMaterial}
         </mesh>
-      ))}
+        );
+      })}
       {[-8, -4, 0, 4].map((columnX) => (
         <mesh key={columnX} position={[columnX, 0.5, -0.6]}>
           <boxGeometry args={[0.3, 7, 0.3]} />
@@ -930,20 +1284,62 @@ function StationArchitecture() {
   );
 }
 
-function SimulationScene({ settings, onTelemetry, onGpuError }) {
+function CameraController({ viewMode, orbitalTrackingSpeed, onManualChange }) {
+  const { camera } = useThree();
+  const controlsRef = useRef();
+  const destinationRef = useRef(new THREE.Vector3(...CAMERA_VIEWS.find((view) => view.id === 'ortho1').position));
+  const targetRef = useRef(new THREE.Vector3(...CAMERA_TARGET));
+
+  useEffect(() => {
+    const view = CAMERA_VIEWS.find((candidate) => candidate.id === viewMode);
+    if (view?.position) destinationRef.current.set(...view.position);
+  }, [viewMode]);
+
+  useFrame((_, delta) => {
+    if (!controlsRef.current || !viewMode || viewMode === 'orbital') return;
+    const blend = 1 - Math.exp(-delta * 5.5);
+    camera.position.lerp(destinationRef.current, blend);
+    controlsRef.current.target.lerp(targetRef.current, blend);
+    controlsRef.current.update();
+  });
+
+  return (
+    <OrbitControls
+      ref={controlsRef}
+      makeDefault
+      target={CAMERA_TARGET}
+      enableDamping
+      dampingFactor={0.08}
+      minDistance={12}
+      maxDistance={90}
+      autoRotate={viewMode === 'orbital'}
+      autoRotateSpeed={orbitalTrackingSpeed}
+      onStart={onManualChange}
+    />
+  );
+}
+
+function SimulationScene({ settings, viewMode, onManualViewChange, onTelemetry, onGpuError }) {
   const trainRef = useRef();
+  const stairProfile = {
+    tunnelHeight: settings.stairUndergroundOpeningHeight,
+    landingY: settings.stairLandingHeight,
+    surfaceY: settings.stairSurfaceOpeningHeight
+  };
   return (
     <>
       <ambientLight color="#8ab0ae" intensity={1.25} />
       <directionalLight color="#fff4dd" intensity={2.3} position={[10, 20, 15]} castShadow />
-      <StationArchitecture />
+      <StationArchitecture {...stairProfile} />
+      <TicketTurnstiles />
       <VentilationInfrastructure settings={settings} />
-      <StairRouteEnclosure />
+      <StairRouteEnclosure {...stairProfile} underfill={settings.stairUnderfill} />
+      <SurfaceStreet {...stairProfile} />
       <FloodControlTunnels enabled={settings.floodTunnels} flow={settings.floodFlow} pumpDirection={settings.floodPumpDirection} />
       <Train ref={trainRef} active={settings.train} brakes={settings.brakes} />
       <ParticleField key={settings.particleCount} settings={settings} trainRef={trainRef} onTelemetry={onTelemetry} onGpuError={onGpuError} />
-      <ContactShadows position={[0, -4, 0]} opacity={0.42} scale={32} blur={2.5} far={8} />
-      <OrbitControls makeDefault target={[0, 0, 0]} enableDamping dampingFactor={0.08} minDistance={12} maxDistance={48} />
+      <ContactShadows position={[9, -4, 0]} opacity={0.42} scale={56} blur={2.5} far={8} />
+      <CameraController viewMode={viewMode} orbitalTrackingSpeed={settings.orbitalTrackingSpeed} onManualChange={onManualViewChange} />
     </>
   );
 }
@@ -968,9 +1364,9 @@ function Toggle({ label, checked, onChange, description, showDescription }) {
   );
 }
 
-function ControlSlider({ label, value, min, max, step, suffix, description, showDescription, onChange }) {
+function ControlSlider({ label, value, min, max, step, precision, suffix, description, showDescription, onChange }) {
   const displayValue = Number.isFinite(value) ? value : min;
-  const decimals = step < 0.01 ? 3 : step < 1 ? 1 : 0;
+  const decimals = precision ?? (step < 0.01 ? 3 : step < 1 ? 1 : 0);
   return (
     <label className="slider-control">
       <span className="control-label"><span>{label}</span><strong>{displayValue.toFixed(decimals)}{suffix}</strong></span>
@@ -1029,7 +1425,7 @@ function ThermalResilienceReport({ report, onClose }) {
   );
 }
 
-function TelemetryPanel({ settings, onSettingsChange, temperature, gpuError, sustainabilityScore, showDescriptions, onShowDescriptionsChange, onOpenReport }) {
+function TelemetryPanel({ settings, onSettingsChange, temperature, gpuError, sustainabilityScore, showDescriptions, onShowDescriptionsChange, onOpenReport, onHide }) {
   const [temperatureHistory, setTemperatureHistory] = useState(() => new Array(48).fill(81.5));
   useEffect(() => {
     setTemperatureHistory((history) => [...history.slice(-47), temperature]);
@@ -1037,7 +1433,10 @@ function TelemetryPanel({ settings, onSettingsChange, temperature, gpuError, sus
 
   return (
     <aside className="telemetry-panel panel">
-      <div className="panel-kicker"><span className={`status-dot ${gpuError ? 'status-error' : ''}`} />LIVE / TEST CHAMBER</div>
+      <div className="panel-topline">
+        <div className="panel-kicker"><span className={`status-dot ${gpuError ? 'status-error' : ''}`} />LIVE / TEST CHAMBER</div>
+        <button className="panel-hide" type="button" onClick={onHide}>Hide</button>
+      </div>
       <div className="telemetry-heading"><span>Ambient field</span><strong>{temperature.toFixed(1)}°F</strong></div>
       <Sparkline values={temperatureHistory} />
       {gpuError && <p className="error-copy">GPU field offline: {gpuError}</p>}
@@ -1054,8 +1453,13 @@ function TelemetryPanel({ settings, onSettingsChange, temperature, gpuError, sus
       </div>
       <div className="primary-parameter">
         <ControlSlider label="Surface temperature" value={settings.surfaceTemperature} min={60} max={110} step={0.5} suffix="°F" description="Sets the station floor's thermal influence on nearby air." showDescription={showDescriptions} onChange={(surfaceTemperature) => onSettingsChange({ surfaceTemperature })} />
+        <ControlSlider label="Surface crosswind" value={settings.surfaceCrosswind} min={-8} max={8} step={0.25} suffix=" m/s" description="Sets outdoor wind across the station along the Z axis; negative values reverse direction." showDescription={showDescriptions} onChange={(surfaceCrosswind) => onSettingsChange({ surfaceCrosswind })} />
+        <ControlSlider label="Stair underground opening" value={settings.stairUndergroundOpeningHeight} min={2.2} max={5} step={0.1} precision={2} suffix=" m" description="Sets underground tunnel and doorway clear height without moving the stairs or turnstiles." showDescription={showDescriptions} onChange={(stairUndergroundOpeningHeight) => onSettingsChange({ stairUndergroundOpeningHeight })} />
+        <ControlSlider label="Stair landing height" value={settings.stairLandingHeight} min={1} max={5} step={0.1} precision={2} suffix=" m" description="Sets the level elevation between the lower and upper stair flights." showDescription={showDescriptions} onChange={(stairLandingHeight) => onSettingsChange({ stairLandingHeight })} />
+        <ControlSlider label="Stair surface opening" value={settings.stairSurfaceOpeningHeight} min={8.2} max={10} step={0.1} precision={2} suffix=" m" description="Sets the street opening elevation and moves the street and ventilation outlets with it." showDescription={showDescriptions} onChange={(stairSurfaceOpeningHeight) => onSettingsChange({ stairSurfaceOpeningHeight })} />
       </div>
       <div className="toggles-group">
+        <Toggle label="Fill below stairs" checked={settings.stairUnderfill} description="Fills the volume below the inclined stair run with a solid mesh that follows stair height." showDescription={showDescriptions} onChange={(stairUnderfill) => onSettingsChange({ stairUnderfill })} />
         <Toggle label="Allow trains to run" checked={settings.train} description="Runs one train through the station at the configured interval." showDescription={showDescriptions} onChange={(train) => onSettingsChange({ train })} />
         <Toggle label="Powered shaft fans" checked={settings.shaftFans} description="Adds powered upward airflow in the three ventilation shafts." showDescription={showDescriptions} onChange={(shaftFans) => onSettingsChange({ shaftFans })} />
         <Toggle label="Clerestory windows" checked={settings.clerestoryWindows} description="Shows the bridging windows and enables clerestory exchange." showDescription={showDescriptions} onChange={(clerestoryWindows) => onSettingsChange({ clerestoryWindows })} />
@@ -1090,6 +1494,7 @@ function TelemetryPanel({ settings, onSettingsChange, temperature, gpuError, sus
         <ControlSlider label="Particle count" value={settings.particleCount} min={1024} max={9216} step={512} suffix="" description="Rebuilds the GPU field with the selected number of rendered particles." showDescription={showDescriptions} onChange={(particleCount) => onSettingsChange({ particleCount })} />
         <ControlSlider label="Particle diameter" value={settings.particleDiameter} min={0.2} max={1.4} step={0.05} suffix=" m" description="Changes the rendered diameter of each airflow particle." showDescription={showDescriptions} onChange={(particleDiameter) => onSettingsChange({ particleDiameter })} />
         <ControlSlider label="Velocity diameter response" value={settings.particleMagnitudeScale} min={0} max={2} step={0.05} suffix="" description="Scales individual particle diameter according to velocity magnitude." showDescription={showDescriptions} onChange={(particleMagnitudeScale) => onSettingsChange({ particleMagnitudeScale })} />
+        <ControlSlider label="Orbital tracking speed" value={settings.orbitalTrackingSpeed} min={0.1} max={2.5} step={0.05} suffix="x" description="Sets how quickly the camera orbits the station while the orbital tracking mode is active." showDescription={showDescriptions} onChange={(orbitalTrackingSpeed) => onSettingsChange({ orbitalTrackingSpeed })} />
       </div>
       <details className="parameter-group">
         <summary>Fluid parameters</summary>
@@ -1104,9 +1509,34 @@ function TelemetryPanel({ settings, onSettingsChange, temperature, gpuError, sus
   );
 }
 
+function ViewToolbar({ viewMode, onViewChange, parametersVisible, onToggleParameters }) {
+  return (
+    <nav className="view-toolbar panel" aria-label="Camera views">
+      <div className="view-modes" role="group" aria-label="Select camera perspective">
+        {CAMERA_VIEWS.map((view) => (
+          <button
+            key={view.id}
+            type="button"
+            className={viewMode === view.id ? 'active' : ''}
+            aria-pressed={viewMode === view.id}
+            onClick={() => onViewChange(view.id)}
+          >
+            {view.label}
+          </button>
+        ))}
+      </div>
+      <button className="params-toggle" type="button" aria-pressed={parametersVisible} onClick={onToggleParameters}>
+        {parametersVisible ? 'Hide params' : 'Show params'}
+      </button>
+    </nav>
+  );
+}
+
 function App() {
   const [settings, setSettings] = useState(INITIALS);
   const [showDescriptions, setShowDescriptions] = useState(false);
+  const [parametersVisible, setParametersVisible] = useState(true);
+  const [viewMode, setViewMode] = useState('ortho1');
   const [reportOpen, setReportOpen] = useState(false);
   const [temperature, setTemperature] = useState(81.5);
   const [gpuError, setGpuError] = useState('');
@@ -1124,10 +1554,10 @@ function App() {
   return (
     <main className="app-shell">
       <div className="scene-layer">
-        <Canvas camera={{ position: [-18, 10, 22], fov: 45, near: 0.1, far: 1000 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}>
+        <Canvas camera={{ position: [7, 20, 55], fov: 45, near: 0.1, far: 1000 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}>
           <color attach="background" args={['#071316']} />
           <fog attach="fog" args={['#071316', 28, 72]} />
-          <SimulationScene settings={settings} onTelemetry={setTemperature} onGpuError={setGpuError} />
+          <SimulationScene settings={settings} viewMode={viewMode} onManualViewChange={() => setViewMode(null)} onTelemetry={setTemperature} onGpuError={setGpuError} />
         </Canvas>
       </div>
       <header className="topbar">
@@ -1135,7 +1565,8 @@ function App() {
         <div className="topbar-meta"><span>GPGPU / SPH</span><span>FIELD 04</span></div>
       </header>
       {/* <section className="scene-title"><p>Airflow study</p><h1>Heat is a passenger.</h1><span>Watch the station exchange energy in real time.</span></section> */}
-      <TelemetryPanel settings={settings} onSettingsChange={handleSettingsChange} temperature={temperature} gpuError={gpuError} sustainabilityScore={resilienceReport.score} showDescriptions={showDescriptions} onShowDescriptionsChange={setShowDescriptions} onOpenReport={() => setReportOpen(true)} />
+      <ViewToolbar viewMode={viewMode} onViewChange={setViewMode} parametersVisible={parametersVisible} onToggleParameters={() => setParametersVisible((visible) => !visible)} />
+      {parametersVisible && <TelemetryPanel settings={settings} onSettingsChange={handleSettingsChange} temperature={temperature} gpuError={gpuError} sustainabilityScore={resilienceReport.score} showDescriptions={showDescriptions} onShowDescriptionsChange={setShowDescriptions} onOpenReport={() => setReportOpen(true)} onHide={() => setParametersVisible(false)} />}
       <aside className="legend-panel panel">
         <div className="legend-heading"><span>Thermal dispersion</span><span className="legend-unit">NORMALIZED / 0—1</span></div>
         <div className="gradient-bar" />

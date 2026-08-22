@@ -10,19 +10,32 @@ import {
   SHAFT_POSITIONS,
   SHAFT_ROUTE,
   STAIR_ROUTE,
+  STREET_LAYOUT,
   STREET_VOLUME,
+  TRACK_ROUTE,
   TRAIN_ROUTE,
+  TURNSTILE_ROUTE,
   constrainFloodPositionY,
+  constrainStairUnderfillPositionY,
+  constrainSurfacePositionY,
+  constrainTurnstilePositionX,
   glslFloat,
   isInsideStairTunnel,
   isInsideStreetVolume,
+  isSurfaceOpening,
+  minimumImageSurfaceDelta,
+  stairStreetPortalX,
   clerestoryOpeningStrength,
   stairSurfaceY,
   roofGapEndpoints,
   roofCeilingAt,
   roofPanelSegments,
   thermalResilienceReport,
-  trainStateAtTime
+  trainStateAtTime,
+  trainThermalSource,
+  surfacePressureAccelerations,
+  verticalLayout,
+  wrapSurfacePositionZ
 } from './routeModel.js';
 
 test('fluid bounds contain the entire stair route and street volume', () => {
@@ -39,18 +52,75 @@ test('particle seeding reaches the flood gallery cold-sink band', () => {
   assert.ok(PARTICLE_SEED_BOUNDS.maxY >= FLOOD_GALLERY.minY);
 });
 
-test('stair profile rises continuously from platform to street route', () => {
+test('stair profile has lower and upper flights separated by a level landing', () => {
+  assert.equal(STAIR_ROUTE.startX, 11);
+  assert.ok(STAIR_ROUTE.landingStartX < STAIR_ROUTE.startX);
   assert.equal(stairSurfaceY(STAIR_ROUTE.startX), STAIR_ROUTE.baseY);
+  assert.equal(stairSurfaceY(STAIR_ROUTE.lowerFlightEndX), STAIR_ROUTE.landingY);
+  assert.equal(stairSurfaceY(STAIR_ROUTE.upperFlightStartX), STAIR_ROUTE.landingY);
   assert.equal(stairSurfaceY(STAIR_ROUTE.endX), STAIR_ROUTE.baseY + STAIR_ROUTE.riseY);
-  assert.ok(stairSurfaceY(10) > stairSurfaceY(STAIR_ROUTE.startX));
+  assert.equal(stairSurfaceY(STAIR_ROUTE.endX), SHAFT_ROUTE.streetY);
+  assert.equal(stairSurfaceY(10), STAIR_ROUTE.baseY);
+  assert.ok(stairSurfaceY(15) > stairSurfaceY(STAIR_ROUTE.startX));
   assert.ok(isInsideStairTunnel(10, stairSurfaceY(10) + 0.5, STAIR_ROUTE.z));
   assert.ok(!isInsideStairTunnel(10, stairSurfaceY(10) - 0.2, STAIR_ROUTE.z));
 });
 
+test('stair height moves the street and shaft outlet together', () => {
+  const low = verticalLayout(10);
+  const high = verticalLayout(12);
+  assert.ok(Math.abs(high.streetY - low.streetY - 2) < 1e-9);
+  assert.ok(Math.abs(high.shaftOutletY - low.shaftOutletY - 2) < 1e-9);
+  assert.ok(Math.abs(high.surfaceParticleFloorY - low.surfaceParticleFloorY - 2) < 1e-9);
+  assert.ok(Math.abs(high.streetMaxY - low.streetMaxY - 2) < 1e-9);
+  assert.equal(stairSurfaceY(STAIR_ROUTE.endX, STAIR_ROUTE.baseY, STAIR_ROUTE.landingY, high.streetY), high.streetY);
+  assert.equal(SHAFT_ROUTE.throatY, 3.6);
+});
+
+test('enabled stair underfill always occludes particles at the dynamic stair surface', () => {
+  const stairX = 20;
+  const lowSurfaceY = stairSurfaceY(stairX, -3.05, 2, 8.2);
+  const highSurfaceY = stairSurfaceY(stairX, -3.05, 4, 10);
+  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z, false, -3.05, 2, 8.2), -4);
+  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z + STAIR_ROUTE.width, true, -3.05, 2, 8.2), -4);
+  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z, true, -3.05, 2, 8.2), lowSurfaceY + 0.12);
+  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z, true, -3.05, 4, 10), highSurfaceY + 0.12);
+  assert.ok(highSurfaceY > lowSurfaceY);
+});
+
+test('turnstile pedestals occlude while fare lanes remain open', () => {
+  const floorY = -2.8;
+  assert.equal(
+    constrainTurnstilePositionX(TURNSTILE_ROUTE.x, floorY, TURNSTILE_ROUTE.pedestalZ[1], 1),
+    TURNSTILE_ROUTE.x - TURNSTILE_ROUTE.halfDepth
+  );
+  assert.equal(
+    constrainTurnstilePositionX(TURNSTILE_ROUTE.x, floorY, -2.5, 1),
+    TURNSTILE_ROUTE.x
+  );
+  assert.equal(
+    constrainTurnstilePositionX(TURNSTILE_ROUTE.x, floorY, TURNSTILE_ROUTE.pedestalZ[1], -1),
+    TURNSTILE_ROUTE.x + TURNSTILE_ROUTE.halfDepth
+  );
+});
+
+test('underground opening clearance changes the tunnel portal without moving stairs or turnstiles', () => {
+  const stairFloorY = stairSurfaceY(STAIR_ROUTE.startX);
+  const lowPortalX = stairStreetPortalX(STAIR_ROUTE.landingY, SHAFT_ROUTE.streetY, 2.2);
+  const highPortalX = stairStreetPortalX(STAIR_ROUTE.landingY, SHAFT_ROUTE.streetY, 5);
+  assert.equal(stairFloorY, STAIR_ROUTE.baseY);
+  assert.notEqual(lowPortalX, highPortalX);
+  assert.equal(
+    constrainTurnstilePositionX(TURNSTILE_ROUTE.x, STAIR_ROUTE.baseY + 0.2, TURNSTILE_ROUTE.pedestalZ[0], 1),
+    TURNSTILE_ROUTE.x - TURNSTILE_ROUTE.halfDepth
+  );
+});
+
 test('shaft outlets sit above the station roof and inside the street volume', () => {
   assert.deepEqual(SHAFT_POSITIONS, [-7, 0, 7]);
+  assert.ok(SHAFT_POSITIONS.every((shaftX) => shaftX < STAIR_ROUTE.landingStartX - STAIR_ROUTE.width / 2));
   assert.ok(SHAFT_ROUTE.throatY < SHAFT_ROUTE.outletY);
-  assert.ok(SHAFT_ROUTE.outletY >= STREET_VOLUME.minY);
+  assert.ok(SHAFT_ROUTE.streetY >= STREET_VOLUME.minY);
   assert.ok(isInsideStreetVolume(0, SHAFT_ROUTE.streetY, SHAFT_ROUTE.z));
 });
 
@@ -106,6 +176,9 @@ const settings = {
   downFans: 1,
   floorAirMovers: 1,
   surfaceTemperature: 81.5,
+  surfaceCrosswind: 3,
+  density: 1.18,
+  stiffness: 5,
   ceilingFans: 1,
   grooves: 1,
   roofOffset: 0,
@@ -140,6 +213,117 @@ test('surface temperature changes floor buoyancy and thermal response', () => {
   const warm = airflowControlResponse('surfaceTemperature', position, { ...settings, surfaceTemperature: 110 });
   assert.ok(warm.y > cool.y);
   assert.ok(warm.cooling < cool.cooling);
+});
+
+test('surface crosswind changes direction and stays above the station roof', () => {
+  const positive = airflowControlResponse('surfaceCrosswind', [0, STREET_VOLUME.minY + 1, 0], settings);
+  const negative = airflowControlResponse('surfaceCrosswind', [0, STREET_VOLUME.minY + 1, 0], {
+    ...settings, surfaceCrosswind: -3
+  });
+  const underground = airflowControlResponse('surfaceCrosswind', [0, 4, 0], settings);
+  assert.ok(positive.z > 0);
+  assert.ok(negative.z < 0);
+  assert.deepEqual(underground, { x: 0, y: 0, z: 0, cooling: 0 });
+});
+
+test('surface crosswind returns particles from both vertical boundaries', () => {
+  const nearFloor = airflowControlResponse('surfaceCrosswind', [3, STREET_LAYOUT.surfaceParticleFloorY, 2], settings);
+  const nearCeiling = airflowControlResponse('surfaceCrosswind', [3, FLUID_BOUNDS.maxY, 2], settings);
+  assert.ok(nearFloor.y > 0);
+  assert.ok(nearCeiling.y < 0);
+});
+
+test('surface crosswind creates an upward pressure draw at each shaft outlet', () => {
+  SHAFT_POSITIONS.forEach((shaftX) => {
+    const outlet = airflowControlResponse('surfaceCrosswind', [shaftX, STREET_VOLUME.minY + 0.5, SHAFT_ROUTE.z], settings);
+    const openStreet = airflowControlResponse('surfaceCrosswind', [shaftX + 2.5, STREET_VOLUME.minY + 0.5, 2], settings);
+    assert.ok(outlet.y > 0);
+    assert.ok(Math.abs(outlet.z) < Math.abs(openStreet.z));
+  });
+  const ceilingReturn = airflowControlResponse('surfaceCrosswind', [0, FLUID_BOUNDS.maxY, 2], settings);
+  assert.ok(ceilingReturn.y < 0);
+});
+
+test('periodic surface pressure repels particles across the road seam', () => {
+  const accelerations = surfacePressureAccelerations([-4.8, 4.8], 0.85, 1.18, 5);
+  assert.ok(accelerations[0] > 0);
+  assert.ok(accelerations[1] < 0);
+  assert.ok(Math.abs(minimumImageSurfaceDelta(-9.6) - 0.4) < 1e-9);
+});
+
+test('surface crosswind pressure remains distributed instead of bunching at one side', () => {
+  const binCount = 10;
+  const span = FLUID_BOUNDS.maxZ - FLUID_BOUNDS.minZ;
+  let positions = Array.from({ length: 40 }, (_, index) => (
+    FLUID_BOUNDS.minZ + (index + 0.5) * span / 40 + Math.sin(index * 1.7) * 0.035
+  ));
+  let velocities = positions.map(() => 0);
+  for (let step = 0; step < 240; step += 1) {
+    const pressure = surfacePressureAccelerations(positions, 0.85, settings.density, settings.stiffness);
+    velocities = velocities.map((velocity, index) => (
+      (velocity + (pressure[index] + (settings.surfaceCrosswind - velocity) * 1.2) * 0.01) * 0.985
+    ));
+    positions = positions.map((z, index) => wrapSurfacePositionZ(z + velocities[index] * 0.01));
+  }
+  const occupancy = Array(binCount).fill(0);
+  positions.forEach((z) => {
+    const bin = Math.min(binCount - 1, Math.floor((z - FLUID_BOUNDS.minZ) / span * binCount));
+    occupancy[bin] += 1;
+  });
+  assert.ok(occupancy.every((count) => count >= 2));
+  assert.ok(Math.max(...occupancy) <= 6);
+  assert.ok(positions.every((z) => z >= FLUID_BOUNDS.minZ && z < FLUID_BOUNDS.maxZ));
+  assert.equal(wrapSurfacePositionZ(FLUID_BOUNDS.maxZ + span * 3.25), FLUID_BOUNDS.minZ + span * 0.25);
+});
+
+test('sidewalk stops where the stair tunnel enters the street plane', () => {
+  const portalX = stairStreetPortalX();
+  const upperRise = STREET_VOLUME.minY - STAIR_ROUTE.landingY;
+  const centerlinePortalX = STAIR_ROUTE.upperFlightStartX
+    + ((STREET_VOLUME.minY - STAIR_ROUTE.tunnelHeight - STAIR_ROUTE.landingY) / upperRise)
+      * (STAIR_ROUTE.endX - STAIR_ROUTE.upperFlightStartX);
+  assert.ok(portalX > STAIR_ROUTE.startX);
+  assert.ok(portalX < centerlinePortalX);
+  assert.ok(STREET_LAYOUT.sidewalkRoadEdgeZ > SHAFT_ROUTE.z + STREET_LAYOUT.shaftApertureSize / 2);
+});
+
+test('street ground occludes surface particles except at route openings', () => {
+  assert.equal(constrainSurfacePositionY(4, 7, 2, true), STREET_LAYOUT.surfaceParticleFloorY);
+  assert.equal(constrainSurfacePositionY(4, 7, 2, false), 7);
+  SHAFT_POSITIONS.forEach((shaftX) => {
+    assert.ok(isSurfaceOpening(shaftX, SHAFT_ROUTE.z));
+    assert.equal(constrainSurfacePositionY(shaftX, 7, SHAFT_ROUTE.z, true), 7);
+  });
+  assert.ok(isSurfaceOpening(STAIR_ROUTE.endX, STAIR_ROUTE.z));
+  assert.equal(constrainSurfacePositionY(STAIR_ROUTE.endX, 9, STAIR_ROUTE.z, true), 9);
+});
+
+test('insulated ground blocks direct train heat from the surface crosswind', () => {
+  const acPosition = [0, 2, 2.5];
+  const brakePosition = [0, -3, 2.5];
+  assert.equal(trainThermalSource(acPosition, true, 0, true, false), 0);
+  assert.equal(trainThermalSource(brakePosition, true, 0, false, true), 0);
+  assert.ok(trainThermalSource(acPosition, false, 0, true, false) > 0);
+  assert.ok(trainThermalSource(brakePosition, false, 0, false, true) > 0);
+});
+
+test('surface crosswind draws air up ventilation shafts and stairs', () => {
+  const noWindSettings = {
+    ...settings,
+    surfaceCrosswind: 0,
+    shaftFans: false,
+    stackEffect: 0
+  };
+  const windSettings = { ...noWindSettings, surfaceCrosswind: -6 };
+  const shaftPosition = [0, 5, SHAFT_ROUTE.z];
+  const stairX = STAIR_ROUTE.endX - 1;
+  const stairPosition = [stairX, stairSurfaceY(stairX) + 1, STAIR_ROUTE.z];
+  const shaftWithoutWind = airflowControlResponse('shaftStack', shaftPosition, noWindSettings);
+  const shaftWithWind = airflowControlResponse('shaftStack', shaftPosition, windSettings);
+  const stairWithoutWind = airflowControlResponse('stairRoute', stairPosition, noWindSettings);
+  const stairWithWind = airflowControlResponse('stairRoute', stairPosition, windSettings);
+  assert.ok(shaftWithWind.y > shaftWithoutWind.y);
+  assert.ok(stairWithWind.y > stairWithoutWind.y);
 });
 
 test('thermal resilience report balances passive credits and active load', () => {
@@ -208,6 +392,10 @@ test('shaft stack effect lifts and cools air without shaft exchange', () => {
 test('shaft lift starts at the intake and continues through the outlet', () => {
   assert.ok(airflowControlResponse('shaftStack', [0, 1.5, SHAFT_ROUTE.z], settings).y > 0);
   assert.ok(airflowControlResponse('shaftStack', [0, SHAFT_ROUTE.outletY, SHAFT_ROUTE.z], settings).y > 0);
+  assert.deepEqual(
+    airflowControlResponse('shaftStack', [0, STREET_VOLUME.minY + 0.6, SHAFT_ROUTE.z], settings),
+    { x: 0, y: 0, z: 0, cooling: 0 }
+  );
 });
 
 test('shaft flow recenters particles inside the shaft column', () => {
@@ -307,6 +495,19 @@ test('allowed trains cross the station once per configured interval', () => {
   assert.equal(betweenRuns.active, false);
   assert.deepEqual(nextRun, entering);
   assert.equal(trainStateAtTime(2, interval, false).active, false);
+});
+
+test('track and tunnel contain the full train at both route endpoints', () => {
+  const halfCarLength = 8;
+  assert.ok(TRACK_ROUTE.minX <= Math.min(TRAIN_ROUTE.startX, TRAIN_ROUTE.endX) - halfCarLength);
+  assert.ok(TRACK_ROUTE.maxX >= Math.max(TRAIN_ROUTE.startX, TRAIN_ROUTE.endX) + halfCarLength);
+  assert.ok(TRACK_ROUTE.tunnelHeight > 3.4);
+  assert.ok(TRACK_ROUTE.tunnelWidth > 2.8);
+});
+
+test('flood gallery extends across the full track route', () => {
+  assert.equal(FLOOD_GALLERY.minX, TRACK_ROUTE.minX);
+  assert.equal(FLOOD_GALLERY.maxX, TRACK_ROUTE.maxX);
 });
 
 test('train stop frequency and duration control station dwell', () => {
