@@ -3,11 +3,25 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { ContactShadows, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { GPUComputationRenderer } from 'three/addons/misc/GPUComputationRenderer.js';
+import {
+  AIRFLOW_PARAMS,
+  FLUID_BOUNDS,
+  FLOOD_GALLERY,
+  PARTICLE_SEED_BOUNDS,
+  SHAFT_POSITIONS,
+  SHAFT_ROUTE,
+  STAIR_ROUTE,
+  STREET_VOLUME,
+  glslFloat,
+  roofGapEndpoints,
+  stairSurfaceY,
+  thermalResilienceReport
+} from './routeModel.js';
 
 const SIM_RESOLUTION = 64;
 const PARTICLE_COUNT = SIM_RESOLUTION * SIM_RESOLUTION;
-const TUNNEL = { x: 22, y: 8, z: 10 };
 const INITIALS = {
+  surfaceTemperature: 81.5,
   density: 1.18,
   stiffness: 5,
   viscosity: 0.012,
@@ -16,6 +30,7 @@ const INITIALS = {
   brakes: true,
   shaftExchange: 0.65,
   downFans: 0.45,
+  floorAirMovers: 0.5,
   ceilingFans: 0.5,
   grooves: 0.7,
   floodTunnels: true,
@@ -23,7 +38,9 @@ const INITIALS = {
   floodPumpDirection: 1,
   roofPitch: 14,
   roofOffset: 0,
+  roofGap: 0.8,
   clerestoryOpen: 0.55,
+  clerestorySize: 0.65,
   stackEffect: 0.65
 };
 
@@ -31,6 +48,9 @@ const positionShader = `
   uniform float uDt;
   uniform float uRoofPitch;
   uniform float uRoofOffset;
+  uniform float uRoofGap;
+  uniform float uClerestoryOpen;
+  uniform float uClerestorySize;
 
   void main() {
     vec2 uv = gl_FragCoord.xy / resolution.xy;
@@ -38,16 +58,16 @@ const positionShader = `
     vec4 velocityData = texture2D(uVelocityTex, uv);
     positionData.xyz += velocityData.xyz * uDt;
 
-    if (positionData.x < -11.0) positionData.x += 22.0;
-    if (positionData.x > 11.0) positionData.x -= 22.0;
-    positionData.y = clamp(positionData.y, -6.2, 8.0);
-    positionData.z = clamp(positionData.z, -5.0, 5.0);
+    if (positionData.x < ${glslFloat(FLUID_BOUNDS.minX)}) positionData.x += ${glslFloat(FLUID_BOUNDS.maxX - FLUID_BOUNDS.minX)};
+    if (positionData.x > ${glslFloat(FLUID_BOUNDS.maxX)}) positionData.x -= ${glslFloat(FLUID_BOUNDS.maxX - FLUID_BOUNDS.minX)};
+    positionData.y = clamp(positionData.y, ${glslFloat(FLUID_BOUNDS.minY)}, ${glslFloat(FLUID_BOUNDS.maxY)});
+    positionData.z = clamp(positionData.z, ${glslFloat(FLUID_BOUNDS.minZ)}, ${glslFloat(FLUID_BOUNDS.maxZ)});
 
-    float stairX = positionData.x < -6.6 ? positionData.x + 22.0 : positionData.x;
-    float stairProgress = clamp((stairX - 7.0) / 8.4, 0.0, 1.0);
-    float stairSurfaceY = -3.05 + stairProgress * 5.25;
-    float stairZone = step(7.0, stairX) * step(stairX, 15.4);
-    float stairDistance = abs(positionData.z + 2.5);
+    float stairX = positionData.x;
+    float stairProgress = clamp((stairX - ${glslFloat(STAIR_ROUTE.startX)}) / ${glslFloat(STAIR_ROUTE.endX - STAIR_ROUTE.startX)}, 0.0, 1.0);
+    float stairSurfaceY = ${glslFloat(STAIR_ROUTE.baseY)} + stairProgress * ${glslFloat(STAIR_ROUTE.riseY)};
+    float stairZone = step(${glslFloat(STAIR_ROUTE.startX)}, stairX) * step(stairX, ${glslFloat(STAIR_ROUTE.endX)});
+    float stairDistance = abs(positionData.z - ${glslFloat(STAIR_ROUTE.z)});
     float stairContact = stairZone * (1.0 - smoothstep(0.0, 1.7, stairDistance));
     float thermalContact = smoothstep(0.05, 0.4, velocityData.w) * stairContact;
     if (thermalContact > 0.0 && positionData.y < stairSurfaceY + 0.12) {
@@ -58,13 +78,24 @@ const positionShader = `
     float roofCeiling = positionData.z <= uRoofOffset
       ? mix(4.0, roofRidgeY, clamp((positionData.z + 4.6) / (uRoofOffset + 4.6), 0.0, 1.0))
       : mix(roofRidgeY, 4.0, clamp((positionData.z - uRoofOffset) / (4.6 - uRoofOffset), 0.0, 1.0));
+    float clerestoryHalfGap = max(${glslFloat(AIRFLOW_PARAMS.clerestoryMinGap)}, uRoofGap * 0.5);
+    float clerestoryOpening = uClerestoryOpen * uClerestorySize
+      * (1.0 - smoothstep(clerestoryHalfGap, clerestoryHalfGap + 0.35, abs(positionData.z - uRoofOffset)));
     float shaftNorth = 1.0 - smoothstep(0.0, 0.72, abs(positionData.x + 7.0));
     float shaftCenter = 1.0 - smoothstep(0.0, 0.72, abs(positionData.x));
     float shaftSouth = 1.0 - smoothstep(0.0, 0.72, abs(positionData.x - 7.0));
     float shaftOpening = max(shaftNorth, max(shaftCenter, shaftSouth))
-      * (1.0 - smoothstep(0.0, 0.9, abs(positionData.z + 1.4)))
-      * smoothstep(2.8, 3.6, positionData.y);
-    if (shaftOpening < 0.5) positionData.y = min(positionData.y, roofCeiling);
+      * (1.0 - smoothstep(0.0, 0.9, abs(positionData.z - ${glslFloat(SHAFT_ROUTE.z)})))
+      * smoothstep(${glslFloat(SHAFT_ROUTE.throatY - 0.8)}, ${glslFloat(SHAFT_ROUTE.throatY)}, positionData.y);
+    float stairTunnelCeiling = stairSurfaceY + ${glslFloat(STAIR_ROUTE.tunnelHeight)};
+    float stairPassage = stairZone
+      * (1.0 - smoothstep(0.0, ${glslFloat(STAIR_ROUTE.width / 2)}, stairDistance))
+      * step(positionData.y, stairTunnelCeiling);
+    float stairExit = step(${glslFloat(STAIR_ROUTE.endX - 1.4)}, stairX)
+      * (1.0 - smoothstep(0.0, ${glslFloat(STAIR_ROUTE.width / 2)}, stairDistance))
+      * step(stairSurfaceY, positionData.y);
+    if (stairPassage > 0.5) positionData.y = min(positionData.y, max(roofCeiling, stairTunnelCeiling));
+    if (shaftOpening < 0.5 && stairExit < 0.5 && clerestoryOpening < 0.5) positionData.y = min(positionData.y, roofCeiling);
 
     gl_FragColor = positionData;
   }
@@ -72,6 +103,7 @@ const positionShader = `
 
 const velocityShader = `
   uniform float uDt;
+  uniform float uSurfaceTemperature;
   uniform float uRadius;
   uniform float uRestDensity;
   uniform float uStiffness;
@@ -80,13 +112,16 @@ const velocityShader = `
   uniform float uTrainVelX;
   uniform float uShaftExchange;
   uniform float uDownFans;
+  uniform float uFloorAirMovers;
   uniform float uCeilingFans;
   uniform float uGrooves;
   uniform float uFloodFlow;
   uniform float uFloodPumpDirection;
   uniform float uRoofPitch;
   uniform float uRoofOffset;
+  uniform float uRoofGap;
   uniform float uClerestoryOpen;
+  uniform float uClerestorySize;
   uniform float uStackEffect;
   uniform bool uTrainActive;
   uniform bool uAcActive;
@@ -133,18 +168,28 @@ const velocityShader = `
     }
 
     vec3 acceleration = pressureForce + viscosityForce + vec3(0.6, 0.0, 0.0);
+    float surfaceHeat = clamp((uSurfaceTemperature - 60.0) / 50.0, 0.0, 1.0);
+    float surfaceBand = 1.0 - smoothstep(0.0, 2.1, abs(particlePosition.y + 2.4));
+    float surfaceThermalDelta = surfaceHeat - 0.42;
+    acceleration.y += surfaceThermalDelta * surfaceBand * 0.55;
+    thermalIntensity = clamp(thermalIntensity + uDt * surfaceThermalDelta * surfaceBand * 0.25, 0.0, 1.0);
 
-    float stairX = particlePosition.x < -6.6 ? particlePosition.x + 22.0 : particlePosition.x;
-    float stairProgress = clamp((stairX - 7.0) / 8.4, 0.0, 1.0);
-    float stairSurfaceY = -3.05 + stairProgress * 5.25;
-    float stairZone = step(7.0, stairX) * step(stairX, 15.4);
+    float stairX = particlePosition.x;
+    float stairProgress = clamp((stairX - ${glslFloat(STAIR_ROUTE.startX)}) / ${glslFloat(STAIR_ROUTE.endX - STAIR_ROUTE.startX)}, 0.0, 1.0);
+    float stairSurfaceY = ${glslFloat(STAIR_ROUTE.baseY)} + stairProgress * ${glslFloat(STAIR_ROUTE.riseY)};
+    float stairZone = step(${glslFloat(STAIR_ROUTE.startX)}, stairX) * step(stairX, ${glslFloat(STAIR_ROUTE.endX)});
     float stairProximity = stairZone
-      * (1.0 - smoothstep(0.0, 1.7, abs(particlePosition.z + 2.5)))
+      * (1.0 - smoothstep(0.0, 1.7, abs(particlePosition.z - ${glslFloat(STAIR_ROUTE.z)})))
       * (1.0 - smoothstep(0.0, 1.8, abs(particlePosition.y - stairSurfaceY)));
     float stairApproach = smoothstep(3.5, 5.0, stairX) * (1.0 - smoothstep(8.5, 10.0, stairX));
     vec3 stairDirection = normalize(vec3(1.0, 0.625, 0.0));
     acceleration += stairDirection * stairProximity * (0.45 + thermalIntensity * 2.4);
-    acceleration.z += (-2.5 - particlePosition.z) * stairApproach * thermalIntensity * 0.35;
+    acceleration.z += (${glslFloat(STAIR_ROUTE.z)} - particlePosition.z) * stairApproach * thermalIntensity * 0.35;
+    float stairExit = smoothstep(${glslFloat(STAIR_ROUTE.endX - 2.4)}, ${glslFloat(STAIR_ROUTE.endX)}, stairX)
+      * (1.0 - smoothstep(0.0, ${glslFloat(STAIR_ROUTE.width / 2)}, abs(particlePosition.z - ${glslFloat(STAIR_ROUTE.z)})))
+      * smoothstep(stairSurfaceY - 0.2, stairSurfaceY + 1.0, particlePosition.y);
+    acceleration.y += stairExit * (1.4 + uStackEffect * 2.8) * (0.3 + thermalIntensity * 2.2);
+    acceleration.x += stairExit * (1.0 - stairX) * thermalIntensity * 0.12;
     acceleration.y += thermalIntensity * 0.22;
 
     float shaftNorth = 1.0 - smoothstep(0.0, 1.8, abs(particlePosition.x + 7.0));
@@ -153,24 +198,48 @@ const velocityShader = `
     float shaftInfluence = max(shaftNorth, max(shaftCenter, shaftSouth));
     float ceilingBand = smoothstep(1.8, 4.0, particlePosition.y);
     float shaftHorizontalCapture = shaftInfluence
-      * (1.0 - smoothstep(0.0, 1.3, abs(particlePosition.z + 1.4)))
+      * (1.0 - smoothstep(0.0, 1.3, abs(particlePosition.z - ${glslFloat(SHAFT_ROUTE.z)})))
       * smoothstep(0.4, 2.5, particlePosition.y);
     float shaftVerticalColumn = shaftInfluence
-      * (1.0 - smoothstep(0.0, 0.9, abs(particlePosition.z + 1.4)))
-      * smoothstep(2.0, 3.6, particlePosition.y);
+      * (1.0 - smoothstep(0.0, 0.9, abs(particlePosition.z - ${glslFloat(SHAFT_ROUTE.z)})))
+      * smoothstep(2.0, ${glslFloat(SHAFT_ROUTE.throatY)}, particlePosition.y);
     float shaftTargetX = shaftSouth > shaftCenter && shaftSouth > shaftNorth ? 7.0 : (shaftNorth > shaftCenter ? -7.0 : 0.0);
     float floodBand = 1.0 - smoothstep(0.0, 2.4, abs(particlePosition.z + 4.15));
+    float fanBand = max(
+      (1.0 - smoothstep(${glslFloat(AIRFLOW_PARAMS.fanRadius * 0.6)}, ${glslFloat(AIRFLOW_PARAMS.fanRadius)}, abs(particlePosition.x + 6.0))),
+      max(
+        (1.0 - smoothstep(${glslFloat(AIRFLOW_PARAMS.fanRadius * 0.6)}, ${glslFloat(AIRFLOW_PARAMS.fanRadius)}, abs(particlePosition.x))),
+        (1.0 - smoothstep(${glslFloat(AIRFLOW_PARAMS.fanRadius * 0.6)}, ${glslFloat(AIRFLOW_PARAMS.fanRadius)}, abs(particlePosition.x - 6.0)))
+      )
+    )
+      * (1.0 - smoothstep(1.4, 2.3, abs(particlePosition.z - ${glslFloat(AIRFLOW_PARAMS.fanZ)})))
+      * smoothstep(${glslFloat(AIRFLOW_PARAMS.fanMinY)}, ${glslFloat(AIRFLOW_PARAMS.fanMinY + 0.4)}, particlePosition.y)
+      * (1.0 - smoothstep(${glslFloat(AIRFLOW_PARAMS.fanMaxY - 0.4)}, ${glslFloat(AIRFLOW_PARAMS.fanMaxY)}, particlePosition.y));
+    float floodCaptureBand = 1.0 - smoothstep(0.0, 1.6, abs(particlePosition.y + 3.1));
+    float floodGalleryBand = (1.0 - smoothstep(0.0, ${glslFloat(FLOOD_GALLERY.radius)}, abs(particlePosition.z - ${glslFloat(FLOOD_GALLERY.z)})))
+      * (1.0 - smoothstep(${glslFloat(FLOOD_GALLERY.minY)}, ${glslFloat(FLOOD_GALLERY.maxY)}, particlePosition.y));
+    float floorMoverInfluence = max(
+      (1.0 - smoothstep(${glslFloat(AIRFLOW_PARAMS.fanRadius * 0.6)}, ${glslFloat(AIRFLOW_PARAMS.fanRadius)}, abs(particlePosition.x + 6.0))),
+      max(
+        (1.0 - smoothstep(${glslFloat(AIRFLOW_PARAMS.fanRadius * 0.6)}, ${glslFloat(AIRFLOW_PARAMS.fanRadius)}, abs(particlePosition.x))),
+        (1.0 - smoothstep(${glslFloat(AIRFLOW_PARAMS.fanRadius * 0.6)}, ${glslFloat(AIRFLOW_PARAMS.fanRadius)}, abs(particlePosition.x - 6.0)))
+      )
+    )
+      * (1.0 - smoothstep(1.0, 1.8, abs(particlePosition.z - ${glslFloat(AIRFLOW_PARAMS.floorMoverZ)})))
+      * smoothstep(${glslFloat(AIRFLOW_PARAMS.floorMoverMinY)}, ${glslFloat(AIRFLOW_PARAMS.floorMoverMinY + 0.4)}, particlePosition.y)
+      * (1.0 - smoothstep(${glslFloat(AIRFLOW_PARAMS.floorMoverMaxY - 0.4)}, ${glslFloat(AIRFLOW_PARAMS.floorMoverMaxY)}, particlePosition.y));
 
     if (particlePosition.y > 0.4) {
       acceleration.x += (shaftTargetX - particlePosition.x)
         * shaftHorizontalCapture * uShaftExchange * 0.9;
-      acceleration.y += shaftVerticalColumn * uShaftExchange * (2.4 + uStackEffect * 3.4) * (0.35 + thermalIntensity * 1.8);
-      acceleration.y -= shaftInfluence * uDownFans * 1.35;
+      acceleration.y += shaftVerticalColumn * (uShaftExchange * 2.4 + uStackEffect * 3.4) * (0.35 + thermalIntensity * 1.8);
+      acceleration.y -= fanBand * uDownFans * 1.8;
       acceleration.x += ceilingBand * uCeilingFans * 1.4;
       acceleration.x += ceilingBand * uGrooves * 0.5;
-      thermalIntensity = max(0.0, thermalIntensity - uDt * shaftVerticalColumn * uShaftExchange * (0.2 + uStackEffect * 0.35));
+      thermalIntensity = max(0.0, thermalIntensity - uDt * shaftVerticalColumn * (uShaftExchange * 0.2 + uStackEffect * 0.35));
       thermalIntensity = max(0.0, thermalIntensity - uDt * ceilingBand * (uDownFans + uCeilingFans) * 0.08);
     }
+    acceleration.x += floorMoverInfluence * uFloorAirMovers * 2.0;
     float roofRidgeY = 4.0 + tan(uRoofPitch) * 2.3;
     float roofCeiling = particlePosition.z <= uRoofOffset
       ? mix(4.0, roofRidgeY, clamp((particlePosition.z + 4.6) / (uRoofOffset + 4.6), 0.0, 1.0))
@@ -179,16 +248,19 @@ const velocityShader = `
       acceleration.y -= (particlePosition.y - roofCeiling + 0.18) * 1.8;
       acceleration.x += sign(particlePosition.z) * uGrooves * 0.22;
     }
-    float clerestoryBand = (1.0 - smoothstep(0.0, 1.1, abs(particlePosition.z - uRoofOffset)))
-      * smoothstep(0.0, 1.0, particlePosition.y - roofCeiling + 0.9);
+    float clerestoryWidth = max(${glslFloat(AIRFLOW_PARAMS.clerestoryMinGap)}, mix(0.15, uRoofGap * 0.5, uClerestorySize));
+    float clerestoryHeight = mix(0.15, 1.8, uClerestorySize);
+    float clerestoryBand = (1.0 - smoothstep(0.0, clerestoryWidth, abs(particlePosition.z - uRoofOffset)))
+      * smoothstep(roofCeiling - clerestoryHeight, roofCeiling + 0.9, particlePosition.y);
     if (uClerestoryOpen > 0.0 && clerestoryBand > 0.0) {
       acceleration.y += clerestoryBand * uClerestoryOpen * (0.8 + uStackEffect * 2.2) * (0.35 + thermalIntensity * 1.7);
       thermalIntensity = max(0.0, thermalIntensity - uDt * clerestoryBand * uClerestoryOpen * 0.25);
     }
-    if (uFloodTunnels && particlePosition.y < -3.8 && floodBand > 0.0) {
-      acceleration.x += uFloodPumpDirection * uFloodFlow * floodBand * 1.4;
-      acceleration.y += uFloodFlow * floodBand * 0.16;
-      thermalIntensity = max(0.0, thermalIntensity - uDt * uFloodFlow * floodBand * 0.22);
+    if (uFloodTunnels) {
+      acceleration.y -= uFloodFlow * floodBand * floodCaptureBand * 0.8;
+      acceleration.z += (${glslFloat(FLOOD_GALLERY.z)} - particlePosition.z) * uFloodFlow * floodCaptureBand * 0.45;
+      acceleration.x += uFloodPumpDirection * uFloodFlow * floodGalleryBand * 2.4;
+      thermalIntensity = max(0.0, thermalIntensity - uDt * uFloodFlow * (floodBand * floodCaptureBand * 0.22 + floodGalleryBand * 0.35));
     }
 
     if (uAcActive && abs(particlePosition.x - uTrainPosX) < 5.0 && particlePosition.y > 1.0 && particlePosition.z > 0.5) {
@@ -293,9 +365,9 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
       const velocityTexture = gpuCompute.createTexture();
 
       for (let offset = 0; offset < positionTexture.image.data.length; offset += 4) {
-        positionTexture.image.data[offset] = (Math.random() - 0.5) * TUNNEL.x;
-        positionTexture.image.data[offset + 1] = -3.5 + Math.random() * TUNNEL.y;
-        positionTexture.image.data[offset + 2] = (Math.random() - 0.5) * TUNNEL.z;
+        positionTexture.image.data[offset] = THREE.MathUtils.lerp(FLUID_BOUNDS.minX, FLUID_BOUNDS.maxX, Math.random());
+        positionTexture.image.data[offset + 1] = THREE.MathUtils.lerp(PARTICLE_SEED_BOUNDS.minY, PARTICLE_SEED_BOUNDS.maxY, Math.random());
+        positionTexture.image.data[offset + 2] = THREE.MathUtils.lerp(FLUID_BOUNDS.minZ, FLUID_BOUNDS.maxZ, Math.random());
         positionTexture.image.data[offset + 3] = 1;
         velocityTexture.image.data[offset] = 0;
         velocityTexture.image.data[offset + 1] = 0;
@@ -310,7 +382,11 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
       positionVariable.material.uniforms.uDt = { value: 0.016 };
       positionVariable.material.uniforms.uRoofPitch = { value: THREE.MathUtils.degToRad(INITIALS.roofPitch) };
       positionVariable.material.uniforms.uRoofOffset = { value: INITIALS.roofOffset };
+      positionVariable.material.uniforms.uRoofGap = { value: INITIALS.roofGap };
+      positionVariable.material.uniforms.uClerestoryOpen = { value: INITIALS.clerestoryOpen };
+      positionVariable.material.uniforms.uClerestorySize = { value: INITIALS.clerestorySize };
       velocityVariable.material.uniforms.uDt = { value: 0.016 };
+      velocityVariable.material.uniforms.uSurfaceTemperature = { value: INITIALS.surfaceTemperature };
       velocityVariable.material.uniforms.uRadius = { value: 0.85 };
       velocityVariable.material.uniforms.uRestDensity = { value: INITIALS.density };
       velocityVariable.material.uniforms.uStiffness = { value: INITIALS.stiffness };
@@ -319,13 +395,16 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
       velocityVariable.material.uniforms.uTrainVelX = { value: 0 };
       velocityVariable.material.uniforms.uShaftExchange = { value: INITIALS.shaftExchange };
       velocityVariable.material.uniforms.uDownFans = { value: INITIALS.downFans };
+      velocityVariable.material.uniforms.uFloorAirMovers = { value: INITIALS.floorAirMovers };
       velocityVariable.material.uniforms.uCeilingFans = { value: INITIALS.ceilingFans };
       velocityVariable.material.uniforms.uGrooves = { value: INITIALS.grooves };
       velocityVariable.material.uniforms.uFloodFlow = { value: INITIALS.floodFlow };
       velocityVariable.material.uniforms.uFloodPumpDirection = { value: INITIALS.floodPumpDirection };
       velocityVariable.material.uniforms.uRoofPitch = { value: THREE.MathUtils.degToRad(INITIALS.roofPitch) };
       velocityVariable.material.uniforms.uRoofOffset = { value: INITIALS.roofOffset };
+      velocityVariable.material.uniforms.uRoofGap = { value: INITIALS.roofGap };
       velocityVariable.material.uniforms.uClerestoryOpen = { value: INITIALS.clerestoryOpen };
+      velocityVariable.material.uniforms.uClerestorySize = { value: INITIALS.clerestorySize };
       velocityVariable.material.uniforms.uStackEffect = { value: INITIALS.stackEffect };
       velocityVariable.material.uniforms.uTrainActive = { value: true };
       velocityVariable.material.uniforms.uAcActive = { value: true };
@@ -369,7 +448,11 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
     positionVariable.material.uniforms.uDt.value = frameDelta;
     positionVariable.material.uniforms.uRoofPitch.value = THREE.MathUtils.degToRad(currentSettings.roofPitch);
     positionVariable.material.uniforms.uRoofOffset.value = currentSettings.roofOffset;
+    positionVariable.material.uniforms.uRoofGap.value = currentSettings.roofGap;
+    positionVariable.material.uniforms.uClerestoryOpen.value = currentSettings.clerestoryOpen;
+    positionVariable.material.uniforms.uClerestorySize.value = currentSettings.clerestorySize;
     velocityVariable.material.uniforms.uDt.value = frameDelta;
+    velocityVariable.material.uniforms.uSurfaceTemperature.value = currentSettings.surfaceTemperature;
     velocityVariable.material.uniforms.uRestDensity.value = currentSettings.density;
     velocityVariable.material.uniforms.uStiffness.value = currentSettings.stiffness;
     velocityVariable.material.uniforms.uViscosity.value = currentSettings.viscosity;
@@ -377,13 +460,16 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
     velocityVariable.material.uniforms.uTrainVelX.value = trainVelocity;
     velocityVariable.material.uniforms.uShaftExchange.value = currentSettings.shaftExchange;
     velocityVariable.material.uniforms.uDownFans.value = currentSettings.downFans;
+    velocityVariable.material.uniforms.uFloorAirMovers.value = currentSettings.floorAirMovers;
     velocityVariable.material.uniforms.uCeilingFans.value = currentSettings.ceilingFans;
     velocityVariable.material.uniforms.uGrooves.value = currentSettings.grooves;
     velocityVariable.material.uniforms.uFloodFlow.value = currentSettings.floodFlow;
     velocityVariable.material.uniforms.uFloodPumpDirection.value = currentSettings.floodPumpDirection;
     velocityVariable.material.uniforms.uRoofPitch.value = THREE.MathUtils.degToRad(currentSettings.roofPitch);
     velocityVariable.material.uniforms.uRoofOffset.value = currentSettings.roofOffset;
+    velocityVariable.material.uniforms.uRoofGap.value = currentSettings.roofGap;
     velocityVariable.material.uniforms.uClerestoryOpen.value = currentSettings.clerestoryOpen;
+    velocityVariable.material.uniforms.uClerestorySize.value = currentSettings.clerestorySize;
     velocityVariable.material.uniforms.uStackEffect.value = currentSettings.stackEffect;
     velocityVariable.material.uniforms.uTrainActive.value = currentSettings.train;
     velocityVariable.material.uniforms.uAcActive.value = currentSettings.ac;
@@ -395,7 +481,7 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
 
     telemetryTimer.current += frameDelta;
     if (telemetryTimer.current > 0.12) {
-      let targetTemperature = 80;
+      let targetTemperature = currentSettings.surfaceTemperature;
       if (currentSettings.ac) targetTemperature += 4.5;
       if (currentSettings.brakes && Math.abs(nextTrainX) < 2) targetTemperature += 3.2;
       if (currentSettings.train) targetTemperature -= 2;
@@ -453,63 +539,53 @@ const Train = forwardRef(function Train({ active, brakes }, ref) {
   );
 });
 
-const SHAFT_POSITIONS = [-7, 0, 7];
 const GROOVE_POSITIONS = [-2.4, -0.8, 0.8, 2.4];
 
 function VentilationInfrastructure({ settings }) {
-  const downwardFanRefs = useRef([]);
   const ceilingFanRefs = useRef([]);
+  const floorFanRefs = useRef([]);
   const roofPitchRadians = THREE.MathUtils.degToRad(settings.roofPitch);
   const roofRidgeZ = settings.roofOffset;
   const roofRidgeY = 4 + Math.tan(roofPitchRadians) * 2.3;
-  const leftRoofLength = Math.hypot(roofRidgeZ + 4.6, roofRidgeY - 4);
-  const rightRoofLength = Math.hypot(4.6 - roofRidgeZ, 4 - roofRidgeY);
-  const leftRoofCenter = [0, (4 + roofRidgeY) / 2, (-4.6 + roofRidgeZ) / 2];
-  const rightRoofCenter = [0, (roofRidgeY + 4) / 2, (roofRidgeZ + 4.6) / 2];
-  const leftRoofRotation = Math.atan2(-(roofRidgeY - 4), roofRidgeZ + 4.6);
-  const rightRoofRotation = Math.atan2(-(4 - roofRidgeY), 4.6 - roofRidgeZ);
+  const roofGap = Math.max(0, settings.roofGap);
+  const { leftEndZ: leftRoofEndZ, rightStartZ: rightRoofStartZ } = roofGapEndpoints(roofRidgeZ, roofGap);
+  const leftRoofSpan = leftRoofEndZ + 4.6;
+  const rightRoofSpan = 4.6 - rightRoofStartZ;
+  const leftRoofLength = Math.max(0.2, Math.hypot(leftRoofSpan, roofRidgeY - 4));
+  const rightRoofLength = Math.max(0.2, Math.hypot(rightRoofSpan, 4 - roofRidgeY));
+  const leftRoofCenter = [0, (4 + roofRidgeY) / 2, (-4.6 + leftRoofEndZ) / 2];
+  const rightRoofCenter = [0, (roofRidgeY + 4) / 2, (rightRoofStartZ + 4.6) / 2];
+  const leftRoofRotation = Math.atan2(-(roofRidgeY - 4), leftRoofSpan);
+  const rightRoofRotation = Math.atan2(-(4 - roofRidgeY), rightRoofSpan);
   const louverAngle = THREE.MathUtils.lerp(0, THREE.MathUtils.degToRad(58), settings.clerestoryOpen);
+  const louverWidth = THREE.MathUtils.lerp(0.75, 1.6, settings.clerestorySize);
 
   useFrame((_, delta) => {
-    downwardFanRefs.current.forEach((fan) => {
-      if (fan) fan.rotation.y += delta * (2 + settings.downFans * 5);
-    });
     ceilingFanRefs.current.forEach((fan) => {
       if (fan) fan.rotation.x += delta * (2 + settings.ceilingFans * 5);
+    });
+    floorFanRefs.current.forEach((fan) => {
+      if (fan) fan.rotation.x += delta * (1.5 + settings.floorAirMovers * 6);
     });
   });
 
   return (
     <group>
-      <group visible={settings.shaftExchange > 0.01}>
+      <group>
         {SHAFT_POSITIONS.map((shaftX) => (
           <group key={shaftX} position={[shaftX, 0, -1.4]}>
-            <mesh position={[0, 5.2, 0]}>
-              <boxGeometry args={[1.25, 2.5, 1.25]} />
-              <meshStandardMaterial color="#708b82" metalness={0.45} roughness={0.55} transparent opacity={0.78} />
+            <mesh position={[0, (SHAFT_ROUTE.throatY + SHAFT_ROUTE.streetY) / 2, 0]}>
+              <boxGeometry args={[1.25, SHAFT_ROUTE.streetY - SHAFT_ROUTE.throatY, 1.25]} />
+              <meshStandardMaterial color="#708b82" metalness={0.45} roughness={0.55} transparent opacity={0.18} depthWrite={false} />
             </mesh>
-            <mesh position={[0, 6.55, 0]}>
+            <mesh position={[0, SHAFT_ROUTE.streetY, 0]}>
               <boxGeometry args={[1.5, 0.12, 1.5]} />
-              <meshStandardMaterial color="#d5b75e" metalness={0.7} roughness={0.3} />
+              <meshStandardMaterial color="#d5b75e" metalness={0.7} roughness={0.3} transparent opacity={0.65} />
             </mesh>
-            <mesh position={[0, 3.98, 0]}>
+            <mesh position={[0, SHAFT_ROUTE.throatY, 0]}>
               <boxGeometry args={[1.05, 0.08, 1.05]} />
               <meshStandardMaterial color="#1d3536" metalness={0.35} roughness={0.45} />
             </mesh>
-            <group ref={(element) => { downwardFanRefs.current[SHAFT_POSITIONS.indexOf(shaftX)] = element; }} position={[0, 3.84, 0]}>
-              <mesh>
-                <cylinderGeometry args={[0.48, 0.48, 0.1, 16]} />
-                <meshStandardMaterial color="#e0a24e" emissive="#7a3d18" emissiveIntensity={0.25} metalness={0.65} roughness={0.25} />
-              </mesh>
-              <mesh position={[0, 0.06, 0]}>
-                <boxGeometry args={[0.9, 0.04, 0.08]} />
-                <meshBasicMaterial color="#f7d68a" />
-              </mesh>
-              <mesh position={[0, 0.06, 0]} rotation={[0, Math.PI / 2, 0]}>
-                <boxGeometry args={[0.9, 0.04, 0.08]} />
-                <meshBasicMaterial color="#f7d68a" />
-              </mesh>
-            </group>
           </group>
         ))}
       </group>
@@ -527,6 +603,24 @@ function VentilationInfrastructure({ settings }) {
             <mesh position={[0, 0.05, 0]} rotation={[0, Math.PI / 2, 0]}>
               <boxGeometry args={[0.75, 0.035, 0.06]} />
               <meshBasicMaterial color="#bce8d5" />
+            </mesh>
+          </group>
+        ))}
+      </group>
+      <group>
+        {AIRFLOW_PARAMS.fanPositions.map((fanX, index) => (
+          <group key={fanX} ref={(element) => { floorFanRefs.current[index] = element; }} position={[fanX, -2.34, AIRFLOW_PARAMS.floorMoverZ]} rotation={[0, 0, Math.PI / 2]}>
+            <mesh>
+              <cylinderGeometry args={[0.42, 0.42, 0.14, 16]} />
+              <meshStandardMaterial color="#d5b75e" emissive="#7a5421" emissiveIntensity={0.35} metalness={0.65} roughness={0.3} />
+            </mesh>
+            <mesh position={[0, 0.05, 0]}>
+              <boxGeometry args={[0.72, 0.035, 0.06]} />
+              <meshBasicMaterial color="#f0d38a" />
+            </mesh>
+            <mesh position={[0, 0.05, 0]} rotation={[0, Math.PI / 2, 0]}>
+              <boxGeometry args={[0.72, 0.035, 0.06]} />
+              <meshBasicMaterial color="#f0d38a" />
             </mesh>
           </group>
         ))}
@@ -551,7 +645,7 @@ function VentilationInfrastructure({ settings }) {
         <group visible={settings.clerestoryOpen > 0.01} position={[0, roofRidgeY + 0.16, roofRidgeZ]}>
           {Array.from({ length: 10 }, (_, louverIndex) => (
             <mesh key={louverIndex} position={[-9 + louverIndex * 2, 0, 0]} rotation={[louverAngle, 0, 0]}>
-              <boxGeometry args={[1.35, 0.08, 0.16]} />
+              <boxGeometry args={[louverWidth, 0.08, 0.16]} />
               <meshStandardMaterial color="#bce8d5" emissive="#2f8e83" emissiveIntensity={0.25 + settings.clerestoryOpen * 0.8} transparent opacity={0.35 + settings.clerestoryOpen * 0.65} metalness={0.25} roughness={0.35} />
             </mesh>
           ))}
@@ -561,6 +655,55 @@ function VentilationInfrastructure({ settings }) {
           <meshBasicMaterial color="#9bd1aa" />
         </mesh>
       </group>
+    </group>
+  );
+}
+
+function StairRouteEnclosure() {
+  const stairRiseY = STAIR_ROUTE.baseY + STAIR_ROUTE.riseY - STAIR_ROUTE.baseY;
+  const stairLength = Math.hypot(STAIR_ROUTE.endX - STAIR_ROUTE.startX, stairRiseY);
+  const stairAngle = Math.atan2(stairRiseY, STAIR_ROUTE.endX - STAIR_ROUTE.startX);
+  const stairCenterX = (STAIR_ROUTE.startX + STAIR_ROUTE.endX) / 2;
+  const stairCenterY = (STAIR_ROUTE.baseY + STAIR_ROUTE.baseY + STAIR_ROUTE.riseY) / 2;
+  const stairMaterial = {
+    color: '#9bd1c1',
+    emissive: '#2f8e83',
+    emissiveIntensity: 0.18,
+    transparent: true,
+    opacity: 0.11,
+    depthWrite: false,
+    side: THREE.DoubleSide
+  };
+  const streetMaterial = {
+    color: '#d5eadf',
+    emissive: '#5da99b',
+    emissiveIntensity: 0.12,
+    transparent: true,
+    opacity: 0.035,
+    depthWrite: false,
+    side: THREE.DoubleSide
+  };
+
+  return (
+    <group>
+      <mesh position={[stairCenterX, stairCenterY + STAIR_ROUTE.tunnelHeight, STAIR_ROUTE.z]} rotation={[0, 0, stairAngle]}>
+        <boxGeometry args={[stairLength, 0.08, STAIR_ROUTE.width]} />
+        <meshStandardMaterial {...stairMaterial} />
+      </mesh>
+      {[-1, 1].map((side) => (
+        <mesh key={side} position={[stairCenterX, stairCenterY + STAIR_ROUTE.tunnelHeight / 2, STAIR_ROUTE.z + side * STAIR_ROUTE.width / 2]} rotation={[0, 0, stairAngle]}>
+          <boxGeometry args={[stairLength, STAIR_ROUTE.tunnelHeight, 0.08]} />
+          <meshStandardMaterial {...stairMaterial} />
+        </mesh>
+      ))}
+      <mesh position={[STAIR_ROUTE.endX, (stairSurfaceY(STAIR_ROUTE.endX) + STREET_VOLUME.maxY) / 2, STAIR_ROUTE.z]}>
+        <boxGeometry args={[STAIR_ROUTE.width, STREET_VOLUME.maxY - stairSurfaceY(STAIR_ROUTE.endX), STAIR_ROUTE.width]} />
+        <meshStandardMaterial {...stairMaterial} />
+      </mesh>
+      <mesh position={[(STREET_VOLUME.minX + STREET_VOLUME.maxX) / 2, (STREET_VOLUME.minY + STREET_VOLUME.maxY) / 2, (STREET_VOLUME.minZ + STREET_VOLUME.maxZ) / 2]}>
+        <boxGeometry args={[STREET_VOLUME.maxX - STREET_VOLUME.minX, STREET_VOLUME.maxY - STREET_VOLUME.minY, STREET_VOLUME.maxZ - STREET_VOLUME.minZ]} />
+        <meshStandardMaterial {...streetMaterial} />
+      </mesh>
     </group>
   );
 }
@@ -646,6 +789,7 @@ function SimulationScene({ settings, onTelemetry, onGpuError }) {
       <directionalLight color="#fff4dd" intensity={2.3} position={[10, 20, 15]} castShadow />
       <StationArchitecture />
       <VentilationInfrastructure settings={settings} />
+      <StairRouteEnclosure />
       <FloodControlTunnels enabled={settings.floodTunnels} flow={settings.floodFlow} pumpDirection={settings.floodPumpDirection} />
       <Train ref={trainRef} active={settings.train} brakes={settings.brakes} />
       <ParticleField settings={settings} trainRef={trainRef} onTelemetry={onTelemetry} onGpuError={onGpuError} />
@@ -665,26 +809,77 @@ function Sparkline({ values }) {
   );
 }
 
-function Toggle({ label, checked, onChange }) {
+function Toggle({ label, checked, onChange, description, showDescription }) {
   return (
     <label className="toggle-row">
       <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
       <span className="toggle-track"><span /></span>
-      <span>{label}</span>
+      <span className="toggle-copy"><span>{label}</span>{showDescription && <small className="parameter-description">{description}</small>}</span>
     </label>
   );
 }
 
-function ControlSlider({ label, value, min, max, step, suffix, onChange }) {
+function ControlSlider({ label, value, min, max, step, suffix, description, showDescription, onChange }) {
+  const displayValue = Number.isFinite(value) ? value : min;
   return (
     <label className="slider-control">
-      <span className="control-label"><span>{label}</span><strong>{value.toFixed(step < 0.01 ? 3 : step < 1 ? 1 : 2)}{suffix}</strong></span>
-      <input type="range" min={min} max={max} step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+      <span className="control-label"><span>{label}</span><strong>{displayValue.toFixed(step < 0.01 ? 3 : step < 1 ? 1 : 2)}{suffix}</strong></span>
+      <input type="range" min={min} max={max} step={step} value={displayValue} onChange={(event) => onChange(Number(event.target.value))} />
+      {showDescription && <small className="parameter-description">{description}</small>}
     </label>
   );
 }
 
-function TelemetryPanel({ settings, onSettingsChange, temperature, gpuError, sustainabilityScore }) {
+function ReportContributionList({ title, items, tone }) {
+  const maximum = Math.max(...items.map((item) => item.points), 1);
+  return (
+    <section className="report-contributions">
+      <div className="report-section-heading"><span>{title}</span><strong>{items.reduce((total, item) => total + item.points, 0).toFixed(1)} pts</strong></div>
+      <div className="contribution-list">
+        {items.map((item) => (
+          <div className="contribution-row" key={item.key}>
+            <div className="contribution-label"><span>{item.label}</span><strong className={`contribution-points ${tone}`}>{tone === 'positive' ? '+' : '-'}{item.points.toFixed(1)}</strong></div>
+            <div className="contribution-track"><span className={tone} style={{ width: `${(item.points / maximum) * 100}%` }} /></div>
+            <small>{item.description}</small>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ThermalResilienceReport({ report, onClose }) {
+  return (
+    <div className="report-layer" onClick={onClose}>
+      <section className="report-screen panel" role="dialog" aria-modal="true" aria-labelledby="resilience-report-title" onClick={(event) => event.stopPropagation()}>
+        <header className="report-header">
+          <div>
+            <div className="panel-kicker"><span className="status-dot" />THERMAL RESILIENCE / FIELD REPORT</div>
+            <h2 id="resilience-report-title">What is moving the score</h2>
+          </div>
+          <button className="report-close" type="button" onClick={onClose} aria-label="Close thermal resilience report">Close</button>
+        </header>
+        <div className="report-score-block">
+          <span>Current resilience</span>
+          <strong>{report.score}%</strong>
+          <div className="sustainability-meter"><span style={{ width: `${report.score}%` }} /></div>
+          <p>Higher scores favor passive heat removal and penalize powered air movement.</p>
+        </div>
+        <div className="report-equation">
+          <span>Baseline</span><strong>{report.baseline.toFixed(0)}</strong>
+          <span>+</span><strong className="positive-text">{report.passiveTotal.toFixed(1)}</strong>
+          <span>-</span><strong className="negative-text">{report.activeTotal.toFixed(1)}</strong>
+          <span>=</span><strong>{report.score}</strong>
+        </div>
+        <ReportContributionList title="Passive cooling credits" items={report.passive} tone="positive" />
+        <ReportContributionList title="Active airflow load" items={report.active} tone="negative" />
+        <div className="report-note"><strong>Field note</strong><span>Surface temperature changes floor buoyancy and particle heat, but remains a physical input rather than a resilience-score credit or penalty.</span></div>
+      </section>
+    </div>
+  );
+}
+
+function TelemetryPanel({ settings, onSettingsChange, temperature, gpuError, sustainabilityScore, showDescriptions, onShowDescriptionsChange, onOpenReport }) {
   const [temperatureHistory, setTemperatureHistory] = useState(() => new Array(48).fill(81.5));
   useEffect(() => {
     setTemperatureHistory((history) => [...history.slice(-47), temperature]);
@@ -696,34 +891,47 @@ function TelemetryPanel({ settings, onSettingsChange, temperature, gpuError, sus
       <div className="telemetry-heading"><span>Ambient field</span><strong>{temperature.toFixed(1)}°F</strong></div>
       <Sparkline values={temperatureHistory} />
       {gpuError && <p className="error-copy">GPU field offline: {gpuError}</p>}
-      <div className="controls-group">
-        <ControlSlider label="Air density" value={settings.density} min={0.5} max={3} step={0.05} suffix=" kg/m³" onChange={(density) => onSettingsChange({ density })} />
-        <ControlSlider label="Fluid stiffness" value={settings.stiffness} min={1} max={20} step={0.5} suffix="" onChange={(stiffness) => onSettingsChange({ stiffness })} />
-        <ControlSlider label="Viscosity" value={settings.viscosity} min={0.001} max={0.05} step={0.001} suffix=" Pa·s" onChange={(viscosity) => onSettingsChange({ viscosity })} />
+      <div className="primary-parameter">
+        <ControlSlider label="Surface temperature" value={settings.surfaceTemperature} min={60} max={110} step={0.5} suffix="°F" description="Sets the station floor's thermal influence on nearby air." showDescription={showDescriptions} onChange={(surfaceTemperature) => onSettingsChange({ surfaceTemperature })} />
       </div>
+      <details className="parameter-group">
+        <summary>Fluid parameters</summary>
+        <div className="controls-group">
+          <ControlSlider label="Air density" value={settings.density} min={0.5} max={3} step={0.05} suffix=" kg/m³" description="Mass packed into each simulated air volume." showDescription={showDescriptions} onChange={(density) => onSettingsChange({ density })} />
+          <ControlSlider label="Fluid stiffness" value={settings.stiffness} min={1} max={20} step={0.5} suffix="" description="How strongly nearby particles resist compression." showDescription={showDescriptions} onChange={(stiffness) => onSettingsChange({ stiffness })} />
+          <ControlSlider label="Viscosity" value={settings.viscosity} min={0.001} max={0.05} step={0.001} suffix=" Pa·s" description="How quickly neighboring air velocities blend." showDescription={showDescriptions} onChange={(viscosity) => onSettingsChange({ viscosity })} />
+        </div>
+      </details>
       <div className="systems-group">
         <div className="subsection-label">SUSTAINABLE AIRFLOW SYSTEMS</div>
-        <ControlSlider label="Shaft exchange" value={settings.shaftExchange} min={0} max={1} step={0.05} suffix="" onChange={(shaftExchange) => onSettingsChange({ shaftExchange })} />
-        <ControlSlider label="Downward fans" value={settings.downFans} min={0} max={1} step={0.05} suffix="" onChange={(downFans) => onSettingsChange({ downFans })} />
-        <ControlSlider label="Ceiling flow" value={settings.ceilingFans} min={0} max={1} step={0.05} suffix="" onChange={(ceilingFans) => onSettingsChange({ ceilingFans })} />
-        <ControlSlider label="Passive grooves" value={settings.grooves} min={0} max={1} step={0.05} suffix="" onChange={(grooves) => onSettingsChange({ grooves })} />
-        <ControlSlider label="Roof pitch" value={settings.roofPitch} min={-28} max={28} step={1} suffix="°" onChange={(roofPitch) => onSettingsChange({ roofPitch })} />
-        <ControlSlider label="Ridge offset" value={settings.roofOffset} min={-2} max={2} step={0.1} suffix=" z" onChange={(roofOffset) => onSettingsChange({ roofOffset })} />
-        <ControlSlider label="Clerestory louvers" value={settings.clerestoryOpen} min={0} max={1} step={0.05} suffix="" onChange={(clerestoryOpen) => onSettingsChange({ clerestoryOpen })} />
-        <ControlSlider label="Shaft stack effect" value={settings.stackEffect} min={0} max={1} step={0.05} suffix="" onChange={(stackEffect) => onSettingsChange({ stackEffect })} />
-        <ControlSlider label="Flood gallery flow" value={settings.floodFlow} min={0} max={1} step={0.05} suffix="" onChange={(floodFlow) => onSettingsChange({ floodFlow })} />
-        <ControlSlider label="Flood pump direction" value={settings.floodPumpDirection} min={-1} max={1} step={0.1} suffix="" onChange={(floodPumpDirection) => onSettingsChange({ floodPumpDirection })} />
+        <ControlSlider label="Shaft exchange" value={settings.shaftExchange} min={0} max={1} step={0.05} suffix="" description="Captures air toward the three passive vertical shafts." showDescription={showDescriptions} onChange={(shaftExchange) => onSettingsChange({ shaftExchange })} />
+        <ControlSlider label="Downward fans" value={settings.downFans} min={0} max={1} step={0.05} suffix="" description="Pushes air down from the station ceiling fan banks." showDescription={showDescriptions} onChange={(downFans) => onSettingsChange({ downFans })} />
+        <ControlSlider label="Floor air movers" value={settings.floorAirMovers} min={0} max={1} step={0.05} suffix="" description="Blows air across the platform floor toward the stair route." showDescription={showDescriptions} onChange={(floorAirMovers) => onSettingsChange({ floorAirMovers })} />
+        <ControlSlider label="Ceiling flow" value={settings.ceilingFans} min={0} max={1} step={0.05} suffix="" description="Sweeps the warm ceiling band toward the egress." showDescription={showDescriptions} onChange={(ceilingFans) => onSettingsChange({ ceilingFans })} />
+        <ControlSlider label="Passive grooves" value={settings.grooves} min={0} max={1} step={0.05} suffix="" description="Adds low-energy guidance along the roof grooves." showDescription={showDescriptions} onChange={(grooves) => onSettingsChange({ grooves })} />
+        <ControlSlider label="Roof pitch" value={settings.roofPitch} min={-28} max={28} step={1} suffix="°" description="Tilts the roof envelope and changes buoyant headroom." showDescription={showDescriptions} onChange={(roofPitch) => onSettingsChange({ roofPitch })} />
+        <ControlSlider label="Ridge offset" value={settings.roofOffset} min={-2} max={2} step={0.1} suffix=" z" description="Moves the roof ridge across the station width." showDescription={showDescriptions} onChange={(roofOffset) => onSettingsChange({ roofOffset })} />
+        <ControlSlider label="Roof gap" value={settings.roofGap} min={0.08} max={2.4} step={0.1} suffix=" z" description="Sets the open distance between the two roof panels." showDescription={showDescriptions} onChange={(roofGap) => onSettingsChange({ roofGap })} />
+        <ControlSlider label="Clerestory louvers" value={settings.clerestoryOpen} min={0} max={1} step={0.05} suffix="" description="Opens the ridge louvers for passive heat escape." showDescription={showDescriptions} onChange={(clerestoryOpen) => onSettingsChange({ clerestoryOpen })} />
+        <ControlSlider label="Clerestory window size" value={settings.clerestorySize} min={0} max={1} step={0.05} suffix="" description="Scales the vertical and lateral clerestory aperture." showDescription={showDescriptions} onChange={(clerestorySize) => onSettingsChange({ clerestorySize })} />
+        <ControlSlider label="Shaft stack effect" value={settings.stackEffect} min={0} max={1} step={0.05} suffix="" description="Lifts warm air through the shafts without powered fans." showDescription={showDescriptions} onChange={(stackEffect) => onSettingsChange({ stackEffect })} />
+        <ControlSlider label="Flood gallery flow" value={settings.floodFlow} min={0} max={1} step={0.05} suffix="" description="Pulls warm lower air into the gallery as a cold sink." showDescription={showDescriptions} onChange={(floodFlow) => onSettingsChange({ floodFlow })} />
+        <ControlSlider label="Flood pump direction" value={settings.floodPumpDirection} min={-1} max={1} step={0.1} suffix="" description="Sets the flood-gallery air-pump direction along X." showDescription={showDescriptions} onChange={(floodPumpDirection) => onSettingsChange({ floodPumpDirection })} />
+      </div>
+      <div className="description-toggle">
+        <Toggle label="Show descriptions" checked={showDescriptions} onChange={onShowDescriptionsChange} />
       </div>
       <div className="toggles-group">
-        <Toggle label="Train piston force" checked={settings.train} onChange={(train) => onSettingsChange({ train })} />
-        <Toggle label="AC exhaust heat" checked={settings.ac} onChange={(ac) => onSettingsChange({ ac })} />
-        <Toggle label="Brake friction" checked={settings.brakes} onChange={(brakes) => onSettingsChange({ brakes })} />
-        <Toggle label="Flood control tunnels" checked={settings.floodTunnels} onChange={(floodTunnels) => onSettingsChange({ floodTunnels })} />
+        <Toggle label="Train piston force" checked={settings.train} description="Adds the train's moving-air displacement." showDescription={showDescriptions} onChange={(train) => onSettingsChange({ train })} />
+        <Toggle label="AC exhaust heat" checked={settings.ac} description="Adds heat and lift near the active train." showDescription={showDescriptions} onChange={(ac) => onSettingsChange({ ac })} />
+        <Toggle label="Brake friction" checked={settings.brakes} description="Adds localized heat and turbulence during braking." showDescription={showDescriptions} onChange={(brakes) => onSettingsChange({ brakes })} />
+        <Toggle label="Flood control tunnels" checked={settings.floodTunnels} description="Enables the below-station cold-sink gallery." showDescription={showDescriptions} onChange={(floodTunnels) => onSettingsChange({ floodTunnels })} />
       </div>
       <div className="sustainability-readout">
         <div className="sustainability-heading"><span>Thermal resilience</span><strong>{sustainabilityScore}%</strong></div>
         <div className="sustainability-meter"><span style={{ width: `${sustainabilityScore}%` }} /></div>
         <div className="balance-labels"><span>PASSIVE FIRST</span><span>LOW ENERGY LOAD</span></div>
+        <button className="report-link" type="button" onClick={onOpenReport}>Open resilience report</button>
       </div>
     </aside>
   );
@@ -731,12 +939,20 @@ function TelemetryPanel({ settings, onSettingsChange, temperature, gpuError, sus
 
 function App() {
   const [settings, setSettings] = useState(INITIALS);
+  const [showDescriptions, setShowDescriptions] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
   const [temperature, setTemperature] = useState(81.5);
   const [gpuError, setGpuError] = useState('');
   const handleSettingsChange = (change) => setSettings((currentSettings) => ({ ...currentSettings, ...change }));
-  const passiveCooling = settings.shaftExchange * 32 + settings.grooves * 18 + (settings.floodTunnels ? settings.floodFlow * 22 : 0);
-  const activeLoad = settings.downFans * 8 + settings.ceilingFans * 10;
-  const sustainabilityScore = Math.round(Math.max(0, Math.min(100, 45 + passiveCooling - activeLoad)));
+  const resilienceReport = thermalResilienceReport(settings);
+  useEffect(() => {
+    if (!reportOpen) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setReportOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [reportOpen]);
 
   return (
     <main className="app-shell">
@@ -752,12 +968,13 @@ function App() {
         <div className="topbar-meta"><span>GPGPU / SPH</span><span>FIELD 04</span></div>
       </header>
       {/* <section className="scene-title"><p>Airflow study</p><h1>Heat is a passenger.</h1><span>Watch the station exchange energy in real time.</span></section> */}
-      <TelemetryPanel settings={settings} onSettingsChange={handleSettingsChange} temperature={temperature} gpuError={gpuError} sustainabilityScore={sustainabilityScore} />
+      <TelemetryPanel settings={settings} onSettingsChange={handleSettingsChange} temperature={temperature} gpuError={gpuError} sustainabilityScore={resilienceReport.score} showDescriptions={showDescriptions} onShowDescriptionsChange={setShowDescriptions} onOpenReport={() => setReportOpen(true)} />
       <aside className="legend-panel panel">
         <div className="legend-heading"><span>Thermal dispersion</span><span className="legend-unit">NORMALIZED / 0—1</span></div>
         <div className="gradient-bar" />
         <div className="legend-labels"><span>60°F <small>cool air</small></span><span>85°F <small>mixed</small></span><span>110°F <small>heat input</small></span></div>
       </aside>
+      {reportOpen && <ThermalResilienceReport report={resilienceReport} onClose={() => setReportOpen(false)} />}
       <footer className="footer-note"><span>PLATFORM 04 / ACTIVE</span><span>Drag to orbit · Scroll to zoom</span></footer>
     </main>
   );
