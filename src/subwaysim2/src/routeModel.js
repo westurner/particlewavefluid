@@ -90,6 +90,41 @@ export function roofGapEndpoints(roofOffset, roofGap) {
   };
 }
 
+export function roofCeilingAt(z, roofPitch, roofOffset, roofGapVertical = 0) {
+  const ridgeY = 4 + Math.tan(roofPitch * Math.PI / 180) * 2.3;
+  if (z <= roofOffset) {
+    const progress = clamp01((z + 4.6) / (roofOffset + 4.6));
+    return 4 + (ridgeY - 4) * progress;
+  }
+  const progress = clamp01((z - roofOffset) / (4.6 - roofOffset));
+  return ridgeY + roofGapVertical + (4 - ridgeY) * progress;
+}
+
+export function roofPanelSegments(startX, endX, startZ, endZ, shaftPositions = SHAFT_POSITIONS, shaftZ = SHAFT_ROUTE.z, apertureSize = 1.5) {
+  if (shaftZ <= startZ || shaftZ >= endZ) return [{ startX, endX, startZ, endZ }];
+  const halfAperture = apertureSize / 2;
+  const apertureStartZ = Math.max(startZ, shaftZ - halfAperture);
+  const apertureEndZ = Math.min(endZ, shaftZ + halfAperture);
+  const segments = [
+    { startX, endX, startZ, endZ: apertureStartZ },
+    { startX, endX, startZ: apertureEndZ, endZ }
+  ];
+  const sortedShafts = [...shaftPositions].sort((left, right) => left - right);
+  let segmentStartX = startX;
+  sortedShafts.forEach((shaftX) => {
+    const apertureStartX = Math.max(startX, shaftX - halfAperture);
+    const apertureEndX = Math.min(endX, shaftX + halfAperture);
+    if (apertureStartX > segmentStartX) {
+      segments.push({ startX: segmentStartX, endX: apertureStartX, startZ: apertureStartZ, endZ: apertureEndZ });
+    }
+    segmentStartX = Math.max(segmentStartX, apertureEndX);
+  });
+  if (segmentStartX < endX) {
+    segments.push({ startX: segmentStartX, endX, startZ: apertureStartZ, endZ: apertureEndZ });
+  }
+  return segments.filter((segment) => segment.endX > segment.startX && segment.endZ > segment.startZ);
+}
+
 export function thermalResilienceReport(settings) {
   const passive = [
     { key: 'shaftExchange', label: 'Shaft exchange', points: settings.shaftExchange * 32, description: 'Passive lift through the three street shafts.' },
@@ -187,7 +222,8 @@ function band(minimum, maximum, value) {
   return smoothstep(minimum, minimum + 0.4, value) * (1 - smoothstep(maximum - 0.4, maximum, value));
 }
 
-export function clerestoryOpeningStrength(z, { roofOffset, roofGapHorizontal, roofGapVertical, clerestoryOpen }) {
+export function clerestoryOpeningStrength(z, { roofOffset, roofGapHorizontal, roofGapVertical, clerestoryOpen, clerestoryWindows = true }) {
+  if (!clerestoryWindows) return 0;
   const halfGap = Math.max(AIRFLOW_PARAMS.clerestoryMinGap, roofGapHorizontal * 0.5);
   return clerestoryOpen * roofGapVertical
     * (1 - smoothstep(halfGap, halfGap + 0.35, Math.abs(z - roofOffset)));
@@ -233,15 +269,43 @@ export function airflowControlResponse(control, position, settings) {
     response.x = settings.grooves * ceilingBand * 0.5;
     response.z = -Math.sign(z - settings.roofOffset) * settings.grooves * smoothstep(3.2, 4, y) * 0.22;
   }
+  if (control === 'roofUnderside') {
+    const roofY = roofCeilingAt(z, settings.roofPitch, settings.roofOffset, settings.roofGapVertical);
+    const distanceBelowRoof = roofY - y;
+    const roofBand = 1 - smoothstep(0.15, 1.35, Math.abs(distanceBelowRoof - 0.25));
+    const ridgeDirection = -Math.sign(z - settings.roofOffset);
+    const roofSlope = Math.abs(Math.tan(settings.roofPitch * Math.PI / 180));
+    response.y = (distanceBelowRoof - 0.25) * roofBand * 3.2
+      + roofSlope * settings.grooves * roofBand * 0.9;
+    response.z = ridgeDirection * settings.grooves * roofBand * 1.4;
+  }
   if (control === 'shaftStack') {
-    const shaftColumn = Math.max(...SHAFT_POSITIONS.map((shaftX) => (
-      (1 - smoothstep(0.9, 1.8, Math.abs(x - shaftX)))
+    const shaftTargetX = SHAFT_POSITIONS.reduce((nearest, shaftX) => (
+      Math.abs(x - shaftX) < Math.abs(x - nearest) ? shaftX : nearest
+    ), SHAFT_POSITIONS[0]);
+    const shaftColumn = (1 - smoothstep(0.9, 1.8, Math.abs(x - shaftTargetX)))
         * (1 - smoothstep(0.0, 0.9, Math.abs(z - SHAFT_ROUTE.z)))
-        * smoothstep(0.4, SHAFT_ROUTE.throatY, y)
-    )));
+        * smoothstep(0.4, SHAFT_ROUTE.throatY, y);
     const poweredVelocity = settings.shaftFans ? settings.shaftFanVelocity : 0;
+    response.x = (shaftTargetX - x) * shaftColumn * 3.6;
     response.y = shaftColumn * (settings.stackEffect * 3.4 + poweredVelocity);
+    response.z = (SHAFT_ROUTE.z - z) * shaftColumn * 4.4;
     response.cooling = shaftColumn * settings.stackEffect * 0.35;
+  }
+  if (control === 'sceneOcclusion') {
+    if (!settings.windOcclusion) return response;
+    const nearestColumnX = [-8, -4, 0, 4].reduce((nearest, columnX) => (
+      Math.abs(x - columnX) < Math.abs(x - nearest) ? columnX : nearest
+    ), -8);
+    const columnDistance = Math.hypot(x - nearestColumnX, z + 0.6);
+    const columnBand = (1 - smoothstep(0.25, 1.1, columnDistance)) * band(-3, 4, y);
+    if (columnBand > 0) {
+      const inverseDistance = 1 / Math.max(columnDistance, 0.05);
+      response.x += (x - nearestColumnX) * inverseDistance * columnBand * 2.4;
+      response.z += (z + 0.6) * inverseDistance * columnBand * 2.4;
+    }
+    const platformBand = band(-4, -2.45, y) * (1 - smoothstep(0.3, 1.2, Math.abs(z + 0.6)));
+    response.z += platformBand * 1.6;
   }
   if (control === 'stairRoute') {
     const routeProgress = stairProgress(x);

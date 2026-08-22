@@ -19,6 +19,8 @@ import {
   clerestoryOpeningStrength,
   stairSurfaceY,
   roofGapEndpoints,
+  roofCeilingAt,
+  roofPanelSegments,
   thermalResilienceReport,
   trainStateAtTime
 } from './routeModel.js';
@@ -66,6 +68,23 @@ test('roof gap widens symmetrically around the ridge', () => {
   assert.ok(roofGapEndpoints(0, 2).rightStartZ - roofGapEndpoints(0, 2).leftEndZ > 0);
 });
 
+test('vertical roof gap raises only the elevated roof panel', () => {
+  const leftRoof = roofCeilingAt(-2, 14, 0, 1.4);
+  const rightRoof = roofCeilingAt(2, 14, 0, 1.4);
+  assert.equal(leftRoof, roofCeilingAt(-2, 14, 0, 0));
+  assert.ok(Math.abs(rightRoof - roofCeilingAt(2, 14, 0, 0) - 1.4) < 0.000001);
+});
+
+test('roof panel segments leave apertures around every shaft', () => {
+  const segments = roofPanelSegments(-11, 11, -4.6, -0.4);
+  SHAFT_POSITIONS.forEach((shaftX) => {
+    assert.ok(!segments.some((segment) => (
+      shaftX > segment.startX && shaftX < segment.endX
+      && SHAFT_ROUTE.z > segment.startZ && SHAFT_ROUTE.z < segment.endZ
+    )));
+  });
+});
+
 test('clerestory horizontal and vertical gaps independently increase ridge exchange', () => {
   const base = { roofOffset: 0, roofGapHorizontal: 0.8, roofGapVertical: 0.4, clerestoryOpen: 1 };
   const tallerGap = { ...base, roofGapVertical: 0.9 };
@@ -73,6 +92,7 @@ test('clerestory horizontal and vertical gaps independently increase ridge excha
   assert.equal(clerestoryOpeningStrength(2, base), 0);
   assert.ok(clerestoryOpeningStrength(0, tallerGap) > clerestoryOpeningStrength(0, base));
   assert.ok(clerestoryOpeningStrength(0.7, widerGap) > clerestoryOpeningStrength(0.7, base));
+  assert.equal(clerestoryOpeningStrength(0, { ...base, clerestoryWindows: false }), 0);
 });
 
 test('shader route constants are emitted as GLSL float literals', () => {
@@ -141,6 +161,43 @@ test('ceiling flow and passive grooves have distinct directional responses', () 
   assert.ok(grooveResponse.z > 0);
 });
 
+function integrateResponse(control, initialPosition, simulationSettings, steps = 160, delta = 0.05) {
+  const position = [...initialPosition];
+  const velocity = [0, 0, 0];
+  for (let stepIndex = 0; stepIndex < steps; stepIndex += 1) {
+    const response = airflowControlResponse(control, position, simulationSettings);
+    velocity[0] = (velocity[0] + response.x * delta) * 0.94;
+    velocity[1] = (velocity[1] + response.y * delta) * 0.94;
+    velocity[2] = (velocity[2] + response.z * delta) * 0.94;
+    position[0] += velocity[0] * delta;
+    position[1] += velocity[1] * delta;
+    position[2] += velocity[2] * delta;
+  }
+  return { position, velocity };
+}
+
+test('particles follow the roof underside toward the ridge', () => {
+  const roofSettings = { ...settings, roofPitch: 14, roofOffset: 0, grooves: 1 };
+  const startZ = -3.2;
+  const startY = roofCeilingAt(startZ, roofSettings.roofPitch, roofSettings.roofOffset) - 0.35;
+  const result = integrateResponse('roofUnderside', [2, startY, startZ], roofSettings, 120);
+  const finalRoofY = roofCeilingAt(result.position[2], roofSettings.roofPitch, roofSettings.roofOffset);
+  assert.ok(result.position[2] > startZ);
+  assert.ok(Math.abs(finalRoofY - result.position[1] - 0.25) < 0.55);
+});
+
+test('vertical roof gap updates roof underside airflow', () => {
+  const position = [2, 6, 2];
+  const lowRoof = airflowControlResponse('roofUnderside', position, {
+    ...settings, roofPitch: 14, roofGapVertical: 0.2
+  });
+  const raisedRoof = airflowControlResponse('roofUnderside', position, {
+    ...settings, roofPitch: 14, roofGapVertical: 2
+  });
+  assert.ok(raisedRoof.y > lowRoof.y);
+  assert.ok(raisedRoof.z < lowRoof.z);
+});
+
 test('shaft stack effect lifts and cools air without shaft exchange', () => {
   const response = airflowControlResponse('shaftStack', [0, 3, SHAFT_ROUTE.z], settings);
   assert.ok(response.y > 0);
@@ -151,6 +208,33 @@ test('shaft stack effect lifts and cools air without shaft exchange', () => {
 test('shaft lift starts at the intake and continues through the outlet', () => {
   assert.ok(airflowControlResponse('shaftStack', [0, 1.5, SHAFT_ROUTE.z], settings).y > 0);
   assert.ok(airflowControlResponse('shaftStack', [0, SHAFT_ROUTE.outletY, SHAFT_ROUTE.z], settings).y > 0);
+});
+
+test('shaft flow recenters particles inside the shaft column', () => {
+  const response = airflowControlResponse('shaftStack', [0.7, 5, SHAFT_ROUTE.z + 0.35], settings);
+  assert.ok(response.x < 0);
+  assert.ok(response.z < 0);
+  assert.ok(response.y > 0);
+});
+
+test('particles travel from the shaft intake through its outlet', () => {
+  const start = [0.65, 1.2, SHAFT_ROUTE.z + 0.35];
+  const result = integrateResponse('shaftStack', start, settings, 180);
+  assert.ok(result.position[1] > SHAFT_ROUTE.outletY);
+  assert.ok(Math.abs(result.position[0]) < Math.abs(start[0]));
+  assert.ok(Math.abs(result.position[2] - SHAFT_ROUTE.z) < Math.abs(start[2] - SHAFT_ROUTE.z));
+  assert.ok(result.velocity[1] > 0);
+});
+
+test('scene occlusion deflects flow around solid station objects when enabled', () => {
+  const position = [0.35, 0, -0.3];
+  assert.deepEqual(
+    airflowControlResponse('sceneOcclusion', position, { ...settings, windOcclusion: false }),
+    { x: 0, y: 0, z: 0, cooling: 0 }
+  );
+  const deflected = airflowControlResponse('sceneOcclusion', position, { ...settings, windOcclusion: true });
+  assert.ok(deflected.x > 0);
+  assert.ok(deflected.z > 0);
 });
 
 test('powered shaft fans add controllable upward velocity', () => {

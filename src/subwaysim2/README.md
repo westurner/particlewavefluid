@@ -29,8 +29,8 @@ Thermal intensity is a normalized value in the range $[0, 1]$ and is transported
 - The train's air-conditioning and braking zones add heat in different spatial bands.
 - Train motion contributes longitudinal acceleration and a small thermal decay during each interval-controlled pass. Stop frequency selects how many passes dwell at the platform, and stop duration controls that dwell.
 - The enclosed rising stair applies directional lift, with stronger transport for hotter particles, then opens into the street volume.
-- Shafts combine horizontal capture with vertical lift beginning at their intake. Their roof openings match the capture columns, while stack effect and optional powered fans add adjustable upward velocity.
-- Roof grooves guide ceiling flow toward the ridge. Independent horizontal and vertical roof gaps define the clerestory aperture, and the window rows span its full height.
+- Shafts combine horizontal capture, strong centerline restoring force, and vertical lift beginning at their intake. Their roof openings match the capture columns, and ceiling-band crossflow is suppressed inside each shaft so particles remain in the enclosure while stack effect and optional powered fans lift them through the outlet. Slatted cap vents make each outlet visible.
+- A near-roof spring keeps particles close to the sloped underside while a slope-aware tangential force carries them toward the ridge. Independent horizontal and vertical roof gaps define the clerestory aperture, with one continuous window pane per longitudinal bay bridging the two roof-section edges. The windows can be disabled independently.
 - Downward fans and floor air movers are localized powered forces, so their sliders affect only their intended capture bands.
 - The flood-control waterfall captures lower warm air, draws it visibly downward into the gallery, and removes thermal intensity. The gallery then pumps the cooled air laterally; disabling the tunnels restores a solid ground boundary at the gallery ceiling.
 
@@ -38,9 +38,9 @@ Spatial transitions use clamped linear interpolation and smoothstep bands rather
 
 ### Rendering and interaction
 
-Particle geometry is instanced once and carries a simulation UV per instance. The vertex shader samples the position texture and scales each particle from the adjustable diameter, with a small additional thermal-intensity increase. The fragment shader maps cool, warm, and hot colors across that intensity and uses additive blending to make overlapping flow visible.
+Particle geometry is instanced once and carries a simulation UV per instance. Changing particle count recreates the compute texture and instance set. The vertex shader samples position and velocity, scales each particle from the adjustable base diameter, and optionally adds diameter according to velocity magnitude. The fragment shader maps cool, warm, and hot colors across thermal intensity and uses additive blending to make overlapping flow visible.
 
-The UI updates uniforms without rebuilding the simulation. Geometry controls change the roof pitch, ridge offset, horizontal gap, vertical gap, and clerestory opening; infrastructure controls change force strengths and source toggles; fluid controls adjust density, stiffness, viscosity, and surface temperature. The scene therefore remains a live experiment: users can alter a parameter and observe both the field and the infrastructure that explains it.
+The UI updates uniforms without rebuilding the simulation except when particle count changes. Geometry controls change the roof pitch, ridge offset, horizontal gap, vertical gap, and clerestory opening; infrastructure controls change force strengths, source toggles, and approximate wind occlusion around major station solids; fluid controls adjust density, stiffness, viscosity, and surface temperature. The scene therefore remains a live experiment: users can alter a parameter and observe both the field and the infrastructure that explains it.
 
 ### Resilience index
 
@@ -50,7 +50,7 @@ Surface temperature affects buoyancy, particle heat, and the live temperature re
 
 ### Verification approach
 
-The Node test suite checks the CPU-side model without requiring a browser or WebGL context. It verifies that route geometry fits inside the simulation bounds, shaft lift starts at its intake and rises toward the street, the flood waterfall flows downward and cools, powered shaft velocity is gated and adjustable, train frequency produces a mix of stopping and through passes with the configured dwell, independent roof gaps change exchange, and the resilience report balances its contributions. GLSL constants are formatted as explicit floating-point literals to keep shader compilation portable across WebGL implementations.
+The Node test suite checks the CPU-side model without requiring a browser or WebGL context. Multi-step damped trajectory tests verify that a particle stays near the roof underside while moving toward the ridge, and that a particle entering off-center rises through the shaft outlet while converging toward its centerline. Additional tests cover the flood waterfall, powered shaft velocity, train stopping and dwell, independent roof gaps, and resilience scoring. GLSL constants are formatted as explicit floating-point literals to keep shader compilation portable across WebGL implementations.
 
 ## Requirements
 
