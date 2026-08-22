@@ -47,6 +47,20 @@ export const FLOOD_GALLERY = {
   radius: 1.25
 };
 
+export const FLOOD_WATERFALL = {
+  x: -8,
+  topY: -2.6,
+  bottomY: -5.4,
+  z: -4.15,
+  radius: 1.5
+};
+
+export const TRAIN_ROUTE = {
+  startX: 35,
+  endX: -35,
+  traversalSeconds: 8
+};
+
 export const AIRFLOW_PARAMS = {
   fanPositions: [-6, 0, 6],
   fanZ: 1.4,
@@ -83,6 +97,7 @@ export function thermalResilienceReport(settings) {
     { key: 'floodFlow', label: 'Flood gallery', points: settings.floodTunnels ? settings.floodFlow * 22 : 0, description: 'Cold-sink exchange through the lower gallery.' }
   ];
   const active = [
+    { key: 'shaftFans', label: 'Shaft fans', points: settings.shaftFans ? settings.shaftFanVelocity / 8 * 12 : 0, description: 'Powered upward flow through the street shafts.' },
     { key: 'downFans', label: 'Downward fans', points: settings.downFans * 8, description: 'Powered ceiling fan transport.' },
     { key: 'floorAirMovers', label: 'Floor air movers', points: settings.floorAirMovers * 8, description: 'Powered platform-level transport.' },
     { key: 'ceilingFans', label: 'Ceiling flow', points: settings.ceilingFans * 10, description: 'Powered ceiling-band sweep.' }
@@ -123,6 +138,42 @@ export function isInsideStreetVolume(x, y, z) {
     && z >= STREET_VOLUME.minZ && z <= STREET_VOLUME.maxZ;
 }
 
+export function constrainFloodPositionY(y, floodTunnels) {
+  return floodTunnels ? y : Math.max(y, FLOOD_GALLERY.maxY);
+}
+
+function trainStopsOnCycle(cycleIndex, stopFrequency) {
+  if (stopFrequency <= 0) return false;
+  if (stopFrequency >= 1) return true;
+  const sequence = ((cycleIndex * 0.61803398875) % 1 + 1) % 1;
+  return sequence < stopFrequency;
+}
+
+export function trainStateAtTime(elapsedSeconds, intervalSeconds, allowTrains, stopFrequency = 0, stopDuration = 0) {
+  if (!allowTrains) return { active: false, positionX: TRAIN_ROUTE.startX, velocityX: 0 };
+  const interval = Math.max(TRAIN_ROUTE.traversalSeconds + stopDuration, intervalSeconds);
+  const cycleTime = ((elapsedSeconds % interval) + interval) % interval;
+  const cycleIndex = Math.floor(Math.max(0, elapsedSeconds) / interval);
+  const stops = trainStopsOnCycle(cycleIndex, stopFrequency);
+  const halfTraversal = TRAIN_ROUTE.traversalSeconds / 2;
+  const dwell = stops ? stopDuration : 0;
+  if (cycleTime > TRAIN_ROUTE.traversalSeconds + dwell) {
+    return { active: false, positionX: TRAIN_ROUTE.startX, velocityX: 0 };
+  }
+  const routeDistance = TRAIN_ROUTE.endX - TRAIN_ROUTE.startX;
+  const routeVelocity = routeDistance / TRAIN_ROUTE.traversalSeconds;
+  if (stops && cycleTime >= halfTraversal && cycleTime <= halfTraversal + dwell) {
+    return { active: true, positionX: 0, velocityX: 0, stopped: true };
+  }
+  const travelTime = stops && cycleTime > halfTraversal ? cycleTime - dwell : cycleTime;
+  return {
+    active: true,
+    positionX: TRAIN_ROUTE.startX + routeDistance * (travelTime / TRAIN_ROUTE.traversalSeconds),
+    velocityX: routeVelocity,
+    stopped: false
+  };
+}
+
 function clamp01(value) {
   return Math.max(0, Math.min(1, value));
 }
@@ -136,9 +187,9 @@ function band(minimum, maximum, value) {
   return smoothstep(minimum, minimum + 0.4, value) * (1 - smoothstep(maximum - 0.4, maximum, value));
 }
 
-export function clerestoryOpeningStrength(z, { roofOffset, roofGap, clerestoryOpen, clerestorySize }) {
-  const halfGap = Math.max(AIRFLOW_PARAMS.clerestoryMinGap, roofGap * 0.5);
-  return clerestoryOpen * clerestorySize
+export function clerestoryOpeningStrength(z, { roofOffset, roofGapHorizontal, roofGapVertical, clerestoryOpen }) {
+  const halfGap = Math.max(AIRFLOW_PARAMS.clerestoryMinGap, roofGapHorizontal * 0.5);
+  return clerestoryOpen * roofGapVertical
     * (1 - smoothstep(halfGap, halfGap + 0.35, Math.abs(z - roofOffset)));
 }
 
@@ -186,12 +237,26 @@ export function airflowControlResponse(control, position, settings) {
     const shaftColumn = Math.max(...SHAFT_POSITIONS.map((shaftX) => (
       (1 - smoothstep(0.9, 1.8, Math.abs(x - shaftX)))
         * (1 - smoothstep(0.0, 0.9, Math.abs(z - SHAFT_ROUTE.z)))
-        * smoothstep(2.0, SHAFT_ROUTE.throatY, y)
+        * smoothstep(0.4, SHAFT_ROUTE.throatY, y)
     )));
-    response.y = shaftColumn * settings.stackEffect * 3.4;
+    const poweredVelocity = settings.shaftFans ? settings.shaftFanVelocity : 0;
+    response.y = shaftColumn * (settings.stackEffect * 3.4 + poweredVelocity);
     response.cooling = shaftColumn * settings.stackEffect * 0.35;
   }
+  if (control === 'stairRoute') {
+    const routeProgress = stairProgress(x);
+    const floorY = stairSurfaceY(x);
+    const inRoute = x >= STAIR_ROUTE.startX && x <= STAIR_ROUTE.endX
+      && Math.abs(z - STAIR_ROUTE.z) <= STAIR_ROUTE.width / 2
+      && y >= floorY && y <= floorY + STAIR_ROUTE.tunnelHeight;
+    if (inRoute) {
+      response.x = 0.45 + routeProgress * settings.stackEffect;
+      response.y = 0.28 + settings.stackEffect * (0.5 + routeProgress * 2.8);
+      response.z = (STAIR_ROUTE.z - z) * 0.35;
+    }
+  }
   if (control === 'floodGallery') {
+    if (!settings.floodTunnels || settings.floodFlow <= 0) return response;
     const floodBand = 1 - smoothstep(0, 2.4, Math.abs(z - FLOOD_GALLERY.z));
     const captureBand = 1 - smoothstep(0, 1.6, Math.abs(y + 3.1));
     const galleryBand = 1 - smoothstep(0, FLOOD_GALLERY.radius, Math.abs(z - FLOOD_GALLERY.z));
@@ -199,6 +264,14 @@ export function airflowControlResponse(control, position, settings) {
     response.z = (FLOOD_GALLERY.z - z) * settings.floodFlow * captureBand * 0.45;
     response.x = settings.floodPumpDirection * settings.floodFlow * galleryBand * 2.4;
     response.cooling = settings.floodFlow * (floodBand * captureBand * 0.22 + galleryBand * 0.35);
+  }
+  if (control === 'floodWaterfall') {
+    if (!settings.floodTunnels || settings.floodFlow <= 0) return response;
+    const radialDistance = Math.hypot(x - FLOOD_WATERFALL.x, z - FLOOD_WATERFALL.z);
+    const waterfallBand = 1 - smoothstep(FLOOD_WATERFALL.radius * 0.5, FLOOD_WATERFALL.radius, radialDistance);
+    const verticalBand = band(FLOOD_WATERFALL.bottomY, FLOOD_WATERFALL.topY, y);
+    response.y = -settings.floodFlow * waterfallBand * verticalBand * 2.4;
+    response.cooling = settings.floodFlow * waterfallBand * verticalBand * 0.8;
   }
 
   return response;

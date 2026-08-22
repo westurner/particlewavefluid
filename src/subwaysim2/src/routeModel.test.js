@@ -5,18 +5,22 @@ import {
   AIRFLOW_PARAMS,
   airflowControlResponse,
   FLOOD_GALLERY,
+  FLOOD_WATERFALL,
   PARTICLE_SEED_BOUNDS,
   SHAFT_POSITIONS,
   SHAFT_ROUTE,
   STAIR_ROUTE,
   STREET_VOLUME,
+  TRAIN_ROUTE,
+  constrainFloodPositionY,
   glslFloat,
   isInsideStairTunnel,
   isInsideStreetVolume,
   clerestoryOpeningStrength,
   stairSurfaceY,
   roofGapEndpoints,
-  thermalResilienceReport
+  thermalResilienceReport,
+  trainStateAtTime
 } from './routeModel.js';
 
 test('fluid bounds contain the entire stair route and street volume', () => {
@@ -62,12 +66,12 @@ test('roof gap widens symmetrically around the ridge', () => {
   assert.ok(roofGapEndpoints(0, 2).rightStartZ - roofGapEndpoints(0, 2).leftEndZ > 0);
 });
 
-test('clerestory window size and opening controls increase ridge exchange', () => {
-  const base = { roofOffset: 0, roofGap: 0.8, clerestoryOpen: 1, clerestorySize: 0.4 };
-  const largerWindow = { ...base, clerestorySize: 0.9 };
-  const widerGap = { ...base, roofGap: 1.8 };
+test('clerestory horizontal and vertical gaps independently increase ridge exchange', () => {
+  const base = { roofOffset: 0, roofGapHorizontal: 0.8, roofGapVertical: 0.4, clerestoryOpen: 1 };
+  const tallerGap = { ...base, roofGapVertical: 0.9 };
+  const widerGap = { ...base, roofGapHorizontal: 1.8 };
   assert.equal(clerestoryOpeningStrength(2, base), 0);
-  assert.ok(clerestoryOpeningStrength(0, largerWindow) > clerestoryOpeningStrength(0, base));
+  assert.ok(clerestoryOpeningStrength(0, tallerGap) > clerestoryOpeningStrength(0, base));
   assert.ok(clerestoryOpeningStrength(0.7, widerGap) > clerestoryOpeningStrength(0.7, base));
 });
 
@@ -86,6 +90,8 @@ const settings = {
   grooves: 1,
   roofOffset: 0,
   stackEffect: 1,
+  shaftFans: true,
+  shaftFanVelocity: 3,
   floodTunnels: true,
   floodFlow: 1,
   floodPumpDirection: 1
@@ -120,9 +126,10 @@ test('thermal resilience report balances passive credits and active load', () =>
   const report = thermalResilienceReport(settings);
   assert.equal(report.baseline, 45);
   assert.equal(report.passiveTotal, 60.8);
-  assert.equal(report.activeTotal, 26);
-  assert.equal(report.score, 80);
+  assert.equal(report.activeTotal, 30.5);
+  assert.equal(report.score, 75);
   assert.equal(report.passive.find((item) => item.key === 'floodFlow').points, 22);
+  assert.equal(report.active.find((item) => item.key === 'shaftFans').points, 4.5);
   assert.equal(report.active.find((item) => item.key === 'floorAirMovers').points, 8);
 });
 
@@ -141,6 +148,29 @@ test('shaft stack effect lifts and cools air without shaft exchange', () => {
   assert.equal(airflowControlResponse('shaftStack', [3, 3, SHAFT_ROUTE.z], settings).y, 0);
 });
 
+test('shaft lift starts at the intake and continues through the outlet', () => {
+  assert.ok(airflowControlResponse('shaftStack', [0, 1.5, SHAFT_ROUTE.z], settings).y > 0);
+  assert.ok(airflowControlResponse('shaftStack', [0, SHAFT_ROUTE.outletY, SHAFT_ROUTE.z], settings).y > 0);
+});
+
+test('powered shaft fans add controllable upward velocity', () => {
+  const position = [0, 3, SHAFT_ROUTE.z];
+  const passive = airflowControlResponse('shaftStack', position, { ...settings, shaftFans: false });
+  const slow = airflowControlResponse('shaftStack', position, { ...settings, shaftFanVelocity: 1 });
+  const fast = airflowControlResponse('shaftStack', position, { ...settings, shaftFanVelocity: 5 });
+  assert.ok(slow.y > passive.y);
+  assert.ok(fast.y > slow.y);
+});
+
+test('enclosed stair route carries heat uphill toward its street exit', () => {
+  const routeX = 10;
+  const response = airflowControlResponse('stairRoute', [routeX, stairSurfaceY(routeX) + 1, STAIR_ROUTE.z], settings);
+  assert.ok(isInsideStairTunnel(routeX, stairSurfaceY(routeX) + 1, STAIR_ROUTE.z));
+  assert.ok(response.x > 0);
+  assert.ok(response.y > 0);
+  assert.equal(airflowControlResponse('stairRoute', [routeX, stairSurfaceY(routeX) + 1, 2], settings).y, 0);
+});
+
 test('flood gallery flow captures warm air, pumps through the gallery, and cools it', () => {
   const response = airflowControlResponse('floodGallery', [0, -3.1, -3], settings);
   assert.ok(response.y < 0);
@@ -149,4 +179,63 @@ test('flood gallery flow captures warm air, pumps through the gallery, and cools
   const galleryResponse = airflowControlResponse('floodGallery', [0, FLOOD_GALLERY.y, FLOOD_GALLERY.z], settings);
   assert.ok(galleryResponse.x > 0);
   assert.equal(airflowControlResponse('floodGallery', [0, 1, 0], settings).cooling, 0);
+});
+
+test('disabled flood tunnels occlude the below-ground gallery volume', () => {
+  assert.equal(constrainFloodPositionY(FLOOD_GALLERY.y, false), FLOOD_GALLERY.maxY);
+  assert.equal(constrainFloodPositionY(FLOOD_GALLERY.y, true), FLOOD_GALLERY.y);
+  assert.equal(constrainFloodPositionY(-3, false), -3);
+  assert.deepEqual(
+    airflowControlResponse('floodGallery', [0, -3.1, FLOOD_GALLERY.z], { ...settings, floodTunnels: false }),
+    { x: 0, y: 0, z: 0, cooling: 0 }
+  );
+});
+
+test('enabled flood tunnels require positive control to create cold-sink flow', () => {
+  const position = [0, FLOOD_GALLERY.y, FLOOD_GALLERY.z];
+  const stopped = airflowControlResponse('floodGallery', position, { ...settings, floodFlow: 0 });
+  const flowing = airflowControlResponse('floodGallery', position, { ...settings, floodFlow: 0.5 });
+  assert.deepEqual(stopped, { x: 0, y: 0, z: 0, cooling: 0 });
+  assert.ok(flowing.x > 0);
+  assert.ok(flowing.cooling > 0);
+});
+
+test('flood waterfall pulls air downward and cools it', () => {
+  const position = [FLOOD_WATERFALL.x, (FLOOD_WATERFALL.topY + FLOOD_WATERFALL.bottomY) / 2, FLOOD_WATERFALL.z];
+  const flowing = airflowControlResponse('floodWaterfall', position, settings);
+  assert.ok(flowing.y < 0);
+  assert.ok(flowing.cooling > 0);
+  assert.deepEqual(
+    airflowControlResponse('floodWaterfall', position, { ...settings, floodTunnels: false }),
+    { x: 0, y: 0, z: 0, cooling: 0 }
+  );
+});
+
+test('allowed trains cross the station once per configured interval', () => {
+  const interval = 20;
+  const entering = trainStateAtTime(0, interval, true);
+  const midpoint = trainStateAtTime(TRAIN_ROUTE.traversalSeconds / 2, interval, true);
+  const betweenRuns = trainStateAtTime(12, interval, true);
+  const nextRun = trainStateAtTime(interval, interval, true);
+  assert.equal(entering.positionX, TRAIN_ROUTE.startX);
+  assert.equal(midpoint.positionX, 0);
+  assert.ok(midpoint.velocityX < 0);
+  assert.equal(betweenRuns.active, false);
+  assert.deepEqual(nextRun, entering);
+  assert.equal(trainStateAtTime(2, interval, false).active, false);
+});
+
+test('train stop frequency and duration control station dwell', () => {
+  const stopStart = TRAIN_ROUTE.traversalSeconds / 2;
+  assert.equal(trainStateAtTime(stopStart + 2, 20, true, 0, 5).stopped, false);
+  const stopped = trainStateAtTime(stopStart + 2, 20, true, 1, 5);
+  assert.equal(stopped.positionX, 0);
+  assert.equal(stopped.velocityX, 0);
+  assert.equal(stopped.stopped, true);
+  assert.ok(trainStateAtTime(stopStart + 5.5, 20, true, 1, 5).positionX < 0);
+  const partialStops = Array.from({ length: 20 }, (_, cycleIndex) => (
+    trainStateAtTime(cycleIndex * 20 + stopStart + 1, 20, true, 0.5, 5).stopped
+  ));
+  assert.ok(partialStops.some(Boolean));
+  assert.ok(partialStops.some((didStop) => !didStop));
 });

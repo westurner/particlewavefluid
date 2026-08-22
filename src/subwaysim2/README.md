@@ -27,20 +27,20 @@ Thermal intensity is a normalized value in the range $[0, 1]$ and is transported
 
 - Surface temperature applies a localized buoyancy and thermal response near the platform floor.
 - The train's air-conditioning and braking zones add heat in different spatial bands.
-- Train motion contributes longitudinal acceleration and a small thermal decay while active.
-- The rising stair applies directional lift, with stronger transport for hotter particles, then opens into the street volume.
-- Shafts combine horizontal capture with vertical lift. Stack effect adds independent buoyancy and cooling in the shaft columns.
-- Roof grooves guide ceiling flow toward the ridge, while clerestory openings provide an adjustable escape path.
+- Train motion contributes longitudinal acceleration and a small thermal decay during each interval-controlled pass. Stop frequency selects how many passes dwell at the platform, and stop duration controls that dwell.
+- The enclosed rising stair applies directional lift, with stronger transport for hotter particles, then opens into the street volume.
+- Shafts combine horizontal capture with vertical lift beginning at their intake. Their roof openings match the capture columns, while stack effect and optional powered fans add adjustable upward velocity.
+- Roof grooves guide ceiling flow toward the ridge. Independent horizontal and vertical roof gaps define the clerestory aperture, and the window rows span its full height.
 - Downward fans and floor air movers are localized powered forces, so their sliders affect only their intended capture bands.
-- The flood gallery captures lower warm air, draws it toward the gallery, pumps it laterally, and removes thermal intensity as a cold-sink exchange.
+- The flood-control waterfall captures lower warm air, draws it visibly downward into the gallery, and removes thermal intensity. The gallery then pumps the cooled air laterally; disabling the tunnels restores a solid ground boundary at the gallery ceiling.
 
 Spatial transitions use clamped linear interpolation and smoothstep bands rather than hard on/off boundaries. This keeps force fields visually continuous and avoids abrupt changes as particles cross a control zone. The same response logic is represented in `routeModel.js` for deterministic unit tests; the GLSL shaders contain the frame-by-frame GPU implementation.
 
 ### Rendering and interaction
 
-Particle geometry is instanced once and carries a simulation UV per instance. The vertex shader samples the position texture and slightly scales each particle with thermal intensity. The fragment shader maps cool, warm, and hot colors across that intensity and uses additive blending to make overlapping flow visible.
+Particle geometry is instanced once and carries a simulation UV per instance. The vertex shader samples the position texture and scales each particle from the adjustable diameter, with a small additional thermal-intensity increase. The fragment shader maps cool, warm, and hot colors across that intensity and uses additive blending to make overlapping flow visible.
 
-The UI updates uniforms without rebuilding the simulation. Geometry controls change the roof pitch, ridge offset, roof gap, and clerestory opening; infrastructure controls change force strengths and source toggles; fluid controls adjust density, stiffness, viscosity, and surface temperature. The scene therefore remains a live experiment: users can alter a parameter and observe both the field and the infrastructure that explains it.
+The UI updates uniforms without rebuilding the simulation. Geometry controls change the roof pitch, ridge offset, horizontal gap, vertical gap, and clerestory opening; infrastructure controls change force strengths and source toggles; fluid controls adjust density, stiffness, viscosity, and surface temperature. The scene therefore remains a live experiment: users can alter a parameter and observe both the field and the infrastructure that explains it.
 
 ### Resilience index
 
@@ -50,7 +50,7 @@ Surface temperature affects buoyancy, particle heat, and the live temperature re
 
 ### Verification approach
 
-The Node test suite checks the CPU-side model without requiring a browser or WebGL context. It verifies that route geometry fits inside the simulation bounds, the stair and shaft paths are connected, roof openings respond to their controls, localized airflow produces the expected direction, surface temperature changes thermal response, and the resilience report balances its contributions. GLSL constants are formatted as explicit floating-point literals to keep shader compilation portable across WebGL implementations.
+The Node test suite checks the CPU-side model without requiring a browser or WebGL context. It verifies that route geometry fits inside the simulation bounds, shaft lift starts at its intake and rises toward the street, the flood waterfall flows downward and cools, powered shaft velocity is gated and adjustable, train frequency produces a mix of stopping and through passes with the configured dwell, independent roof gaps change exchange, and the resilience report balances its contributions. GLSL constants are formatted as explicit floating-point literals to keep shader compilation portable across WebGL implementations.
 
 ## Requirements
 
