@@ -1,6 +1,6 @@
 export const FLUID_BOUNDS = {
   minX: -16,
-  maxX: 16,
+  maxX: 34,
   minY: -6.2,
   maxY: 14,
   minZ: -5,
@@ -13,13 +13,28 @@ export const PARTICLE_SEED_BOUNDS = {
 };
 
 export const STAIR_ROUTE = {
-  startX: 7,
-  endX: 15.4,
+  landingStartX: 9.5,
+  startX: 11,
+  lowerFlightEndX: 19.5,
+  upperFlightStartX: 22.5,
+  endX: 32,
   baseY: -3.05,
-  riseY: 5.25,
+  landingY: 3,
+  riseY: 13.05,
   z: -2.5,
   width: 2.8,
-  tunnelHeight: 3.2
+  tunnelHeight: 3.2,
+  stepCount: 75,
+  maxRiserHeight: 0.175,
+  minTreadDepth: 0.28
+};
+
+export const TURNSTILE_ROUTE = {
+  x: 8.65,
+  halfDepth: 0.42,
+  pedestalHalfWidth: 0.12,
+  pedestalHeight: 1.15,
+  pedestalZ: [-3.7, -2.9, -2.1, -1.3]
 };
 
 export const SHAFT_POSITIONS = [-7, 0, 7];
@@ -32,14 +47,54 @@ export const SHAFT_ROUTE = {
 
 export const STREET_VOLUME = {
   minX: -15.5,
-  maxX: 15.5,
-  minY: 8,
+  maxX: 33,
+  minY: 10,
   maxY: 13,
   minZ: -4.8,
   maxZ: 4.8
 };
 
+export const STREET_LAYOUT = {
+  sidewalkRoadEdgeZ: -0.55,
+  shaftApertureSize: 1.5,
+  sidewalkThickness: 0.2,
+  surfaceParticleFloorY: 10.22
+};
+
+export function verticalLayout(stairHeight = STAIR_ROUTE.riseY) {
+  const streetY = STAIR_ROUTE.baseY + stairHeight;
+  return {
+    stairHeight,
+    streetY,
+    streetMaxY: streetY + (STREET_VOLUME.maxY - STREET_VOLUME.minY),
+    shaftOutletY: streetY + (SHAFT_ROUTE.outletY - SHAFT_ROUTE.streetY),
+    surfaceParticleFloorY: streetY + (STREET_LAYOUT.surfaceParticleFloorY - STREET_VOLUME.minY)
+  };
+}
+
+export function verticalLayoutFromSurfaceY(surfaceY = STAIR_ROUTE.baseY + STAIR_ROUTE.riseY) {
+  return verticalLayout(surfaceY - STAIR_ROUTE.baseY);
+}
+
+export const TRAIN_ROUTE = {
+  startX: 35,
+  endX: -35,
+  traversalSeconds: 8
+};
+
+export const TRACK_ROUTE = {
+  minX: Math.min(TRAIN_ROUTE.startX, TRAIN_ROUTE.endX) - 8,
+  maxX: Math.max(TRAIN_ROUTE.startX, TRAIN_ROUTE.endX) + 8,
+  bedY: -3.8,
+  centerZ: 2.5,
+  width: 5,
+  tunnelHeight: 5.4,
+  tunnelWidth: 5.8
+};
+
 export const FLOOD_GALLERY = {
+  minX: TRACK_ROUTE.minX,
+  maxX: TRACK_ROUTE.maxX,
   y: -5,
   minY: -6.1,
   maxY: -3.8,
@@ -53,12 +108,6 @@ export const FLOOD_WATERFALL = {
   bottomY: -5.4,
   z: -4.15,
   radius: 1.5
-};
-
-export const TRAIN_ROUTE = {
-  startX: 35,
-  endX: -35,
-  traversalSeconds: 8
 };
 
 export const AIRFLOW_PARAMS = {
@@ -156,12 +205,69 @@ export function stairProgress(x) {
   return Math.max(0, Math.min(1, (x - STAIR_ROUTE.startX) / (STAIR_ROUTE.endX - STAIR_ROUTE.startX)));
 }
 
-export function stairSurfaceY(x) {
-  return STAIR_ROUTE.baseY + stairProgress(x) * STAIR_ROUTE.riseY;
+export function stairSurfaceY(
+  x,
+  undergroundY = STAIR_ROUTE.baseY,
+  landingY = STAIR_ROUTE.landingY,
+  surfaceY = STAIR_ROUTE.baseY + STAIR_ROUTE.riseY
+) {
+  if (x <= STAIR_ROUTE.startX) return undergroundY;
+  if (x < STAIR_ROUTE.lowerFlightEndX) {
+    const progress = (x - STAIR_ROUTE.startX) / (STAIR_ROUTE.lowerFlightEndX - STAIR_ROUTE.startX);
+    return undergroundY + progress * (landingY - undergroundY);
+  }
+  if (x <= STAIR_ROUTE.upperFlightStartX) return landingY;
+  if (x < STAIR_ROUTE.endX) {
+    const progress = (x - STAIR_ROUTE.upperFlightStartX) / (STAIR_ROUTE.endX - STAIR_ROUTE.upperFlightStartX);
+    return landingY + progress * (surfaceY - landingY);
+  }
+  return surfaceY;
+}
+
+export function constrainStairUnderfillPositionY(
+  x,
+  y,
+  z,
+  enabled,
+  undergroundY = STAIR_ROUTE.baseY,
+  landingY = STAIR_ROUTE.landingY,
+  surfaceY = STAIR_ROUTE.baseY + STAIR_ROUTE.riseY
+) {
+  const insideRun = x >= STAIR_ROUTE.startX && x <= STAIR_ROUTE.endX;
+  const insideWidth = Math.abs(z - STAIR_ROUTE.z) <= STAIR_ROUTE.width / 2;
+  return enabled && insideRun && insideWidth
+    ? Math.max(y, stairSurfaceY(x, undergroundY, landingY, surfaceY) + 0.12)
+    : y;
+}
+
+export function constrainTurnstilePositionX(x, y, z, velocityX) {
+  const insideX = Math.abs(x - TURNSTILE_ROUTE.x) <= TURNSTILE_ROUTE.halfDepth;
+  const insideY = y >= STAIR_ROUTE.baseY && y <= STAIR_ROUTE.baseY + TURNSTILE_ROUTE.pedestalHeight;
+  const insidePedestal = TURNSTILE_ROUTE.pedestalZ.some((pedestalZ) => (
+    Math.abs(z - pedestalZ) <= TURNSTILE_ROUTE.pedestalHalfWidth
+  ));
+  if (!insideX || !insideY || !insidePedestal) return x;
+  return TURNSTILE_ROUTE.x + (velocityX >= 0 ? -TURNSTILE_ROUTE.halfDepth : TURNSTILE_ROUTE.halfDepth);
+}
+
+export function stairStreetPortalX(
+  landingY = STAIR_ROUTE.landingY,
+  surfaceY = STAIR_ROUTE.baseY + STAIR_ROUTE.riseY,
+  tunnelHeight = STAIR_ROUTE.tunnelHeight
+) {
+  const run = STAIR_ROUTE.endX - STAIR_ROUTE.upperFlightStartX;
+  const rise = surfaceY - landingY;
+  const angle = Math.atan2(rise, run);
+  const centerX = (STAIR_ROUTE.upperFlightStartX + STAIR_ROUTE.endX) / 2;
+  const centerY = landingY + rise / 2 + tunnelHeight / 2;
+  const halfHeight = tunnelHeight / 2;
+  const sidewalkBottomY = surfaceY - STREET_LAYOUT.sidewalkThickness / 2;
+  const distanceAlongRun = (sidewalkBottomY - centerY - halfHeight * Math.cos(angle)) / Math.sin(angle);
+  return centerX + distanceAlongRun * Math.cos(angle) - halfHeight * Math.sin(angle);
 }
 
 export function isInsideStairTunnel(x, y, z, margin = 0) {
-  const inX = x >= STAIR_ROUTE.startX - margin && x <= STAIR_ROUTE.endX + margin;
+  const inX = x >= STAIR_ROUTE.landingStartX - margin && x <= STAIR_ROUTE.endX + margin;
   const inZ = Math.abs(z - STAIR_ROUTE.z) <= STAIR_ROUTE.width / 2 + margin;
   const floorY = stairSurfaceY(x);
   return inX && inZ && y >= floorY - margin && y <= floorY + STAIR_ROUTE.tunnelHeight + margin;
@@ -171,6 +277,64 @@ export function isInsideStreetVolume(x, y, z) {
   return x >= STREET_VOLUME.minX && x <= STREET_VOLUME.maxX
     && y >= STREET_VOLUME.minY && y <= STREET_VOLUME.maxY
     && z >= STREET_VOLUME.minZ && z <= STREET_VOLUME.maxZ;
+}
+
+export function isSurfaceOpening(x, z) {
+  const shaftOpening = SHAFT_POSITIONS.some((shaftX) => (
+    Math.abs(x - shaftX) <= 0.75 && Math.abs(z - SHAFT_ROUTE.z) <= 0.75
+  ));
+  const stairOpening = x >= STAIR_ROUTE.endX - 1.4
+    && x <= STAIR_ROUTE.endX + STAIR_ROUTE.width / 2
+    && Math.abs(z - STAIR_ROUTE.z) <= STAIR_ROUTE.width / 2;
+  return shaftOpening || stairOpening;
+}
+
+export function constrainSurfacePositionY(x, y, z, isSurfaceParticle) {
+  if (!isSurfaceParticle || isSurfaceOpening(x, z)) return y;
+  return Math.max(y, STREET_LAYOUT.surfaceParticleFloorY);
+}
+
+export function wrapSurfacePositionZ(z) {
+  const span = FLUID_BOUNDS.maxZ - FLUID_BOUNDS.minZ;
+  return ((z - FLUID_BOUNDS.minZ) % span + span) % span + FLUID_BOUNDS.minZ;
+}
+
+export function minimumImageSurfaceDelta(delta) {
+  const span = FLUID_BOUNDS.maxZ - FLUID_BOUNDS.minZ;
+  return delta - span * Math.floor(delta / span + 0.5);
+}
+
+export function surfacePressureAccelerations(zPositions, radius, restDensity, stiffness) {
+  const kernelScale = 8 / (Math.PI * radius ** 3);
+  return zPositions.map((position, particleIndex) => {
+    const neighbors = [];
+    let density = 0;
+    zPositions.forEach((neighborPosition, neighborIndex) => {
+      if (neighborIndex === particleIndex) return;
+      const offset = minimumImageSurfaceDelta(position - neighborPosition);
+      const distance = Math.abs(offset);
+      if (distance <= 0.0001 || distance >= radius) return;
+      const kernelPosition = distance / radius;
+      const kernelWeight = kernelPosition <= 0.5
+        ? kernelScale * (6 * (kernelPosition ** 3 - kernelPosition ** 2) + 1)
+        : kernelScale * 2 * (1 - kernelPosition) ** 3;
+      density += kernelWeight;
+      neighbors.push({ offset, kernelPosition });
+    });
+    const pressure = Math.max(0, stiffness * (density - restDensity));
+    return neighbors.reduce((force, neighbor) => (
+      force + Math.sign(neighbor.offset) * pressure * (1 - neighbor.kernelPosition)
+    ), 0);
+  });
+}
+
+export function trainThermalSource(position, isSurfaceParticle, trainX, acActive, brakesActive) {
+  if (isSurfaceParticle) return 0;
+  const [x, y, z] = position;
+  let heatRate = 0;
+  if (acActive && Math.abs(x - trainX) < 5 && y > 1 && z > 0.5) heatRate += 0.45;
+  if (brakesActive && Math.abs(x - trainX) < 8 && y < -2 && Math.abs(z - 2.5) < 1) heatRate += 0.6;
+  return heatRate;
 }
 
 export function constrainFloodPositionY(y, floodTunnels) {
@@ -262,6 +426,20 @@ export function airflowControlResponse(control, position, settings) {
     response.y = thermalDelta * surfaceBand * 0.55;
     response.cooling = -thermalDelta * surfaceBand * 0.25;
   }
+  if (control === 'surfaceCrosswind') {
+    const surfaceWindBand = smoothstep(STREET_VOLUME.minY - 0.5, STREET_VOLUME.minY + 0.5, y);
+    const shaftTargetX = SHAFT_POSITIONS.reduce((nearest, shaftX) => (
+      Math.abs(x - shaftX) < Math.abs(x - nearest) ? shaftX : nearest
+    ), SHAFT_POSITIONS[0]);
+    const shaftOutlet = (1 - smoothstep(0.55, 1.4, Math.abs(x - shaftTargetX)))
+      * (1 - smoothstep(0.45, 1.25, Math.abs(z - SHAFT_ROUTE.z)))
+      * band(SHAFT_ROUTE.outletY, STREET_VOLUME.maxY, y);
+    const floorReturn = surfaceWindBand
+      * (1 - smoothstep(STREET_LAYOUT.surfaceParticleFloorY, STREET_LAYOUT.surfaceParticleFloorY + 0.9, y));
+    const ceilingReturn = smoothstep(FLUID_BOUNDS.maxY - 1.5, FLUID_BOUNDS.maxY - 0.2, y);
+    response.y = floorReturn * 0.9 + Math.abs(settings.surfaceCrosswind) * shaftOutlet * 1.8 - ceilingReturn * 4;
+    response.z = settings.surfaceCrosswind * surfaceWindBand * 1.2 * (1 - shaftOutlet * 0.82);
+  }
   if (control === 'ceilingFlow') {
     response.x = settings.ceilingFans * ceilingBand * 1.4;
   }
@@ -285,10 +463,12 @@ export function airflowControlResponse(control, position, settings) {
     ), SHAFT_POSITIONS[0]);
     const shaftColumn = (1 - smoothstep(0.9, 1.8, Math.abs(x - shaftTargetX)))
         * (1 - smoothstep(0.0, 0.9, Math.abs(z - SHAFT_ROUTE.z)))
-        * smoothstep(0.4, SHAFT_ROUTE.throatY, y);
+      * smoothstep(0.4, SHAFT_ROUTE.throatY, y)
+      * (1 - smoothstep(STREET_VOLUME.minY, STREET_VOLUME.minY + 0.6, y));
     const poweredVelocity = settings.shaftFans ? settings.shaftFanVelocity : 0;
+    const crosswindDraw = Math.abs(settings.surfaceCrosswind || 0) * 0.3;
     response.x = (shaftTargetX - x) * shaftColumn * 3.6;
-    response.y = shaftColumn * (settings.stackEffect * 3.4 + poweredVelocity);
+    response.y = shaftColumn * (settings.stackEffect * 3.4 + poweredVelocity + crosswindDraw);
     response.z = (SHAFT_ROUTE.z - z) * shaftColumn * 4.4;
     response.cooling = shaftColumn * settings.stackEffect * 0.35;
   }
@@ -310,12 +490,13 @@ export function airflowControlResponse(control, position, settings) {
   if (control === 'stairRoute') {
     const routeProgress = stairProgress(x);
     const floorY = stairSurfaceY(x);
-    const inRoute = x >= STAIR_ROUTE.startX && x <= STAIR_ROUTE.endX
+    const inRoute = x >= STAIR_ROUTE.landingStartX && x <= STAIR_ROUTE.endX
       && Math.abs(z - STAIR_ROUTE.z) <= STAIR_ROUTE.width / 2
       && y >= floorY && y <= floorY + STAIR_ROUTE.tunnelHeight;
     if (inRoute) {
+      const crosswindDraw = Math.abs(settings.surfaceCrosswind || 0) * (0.12 + routeProgress * 0.28);
       response.x = 0.45 + routeProgress * settings.stackEffect;
-      response.y = 0.28 + settings.stackEffect * (0.5 + routeProgress * 2.8);
+      response.y = 0.28 + settings.stackEffect * (0.5 + routeProgress * 2.8) + crosswindDraw;
       response.z = (STAIR_ROUTE.z - z) * 0.35;
     }
   }
