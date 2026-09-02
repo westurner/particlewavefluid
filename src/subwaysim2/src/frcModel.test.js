@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateFrcModel, FRC_CONFIGURATIONS, FRC_INPUTS, FRC_SHAPES } from './frcModel.js';
+import { calculateFrcModel, FRC_CONFIGURATIONS, FRC_INPUTS, FRC_SHAPES, getFrcVisualizationVisibility } from './frcModel.js';
+import { advanceFlowProgress, createFlowPathPoints, createInputParticlePathPoints, FLOW_PARTICLE_STREAMS, getFlowParticleVisibility, getInputParticleVisibility, INPUT_PARTICLE_STREAMS } from './flowParticles.js';
 
 test('every FRC shape produces a contained plasma volume', () => {
   for (const shape of Object.keys(FRC_SHAPES)) {
@@ -137,4 +138,57 @@ test('invalid plasma input falls back to DT', () => {
   assert.equal(fallback.input, 'DT');
   assert.equal(fallback.fusionPowerMW, baseline.fusionPowerMW);
   assert.equal(fallback.neutronProductionRate, baseline.neutronProductionRate);
+});
+
+test('gas and charge particles flow through their respective conduits', () => {
+  const paths = createFlowPathPoints({ wallHalfLength: 5.8, wallRadius: 2.9 });
+  const gasStart = paths.nitrogenPath[0];
+  const gasOutlet = paths.nitrogenPath.at(-1);
+  const chargeStart = paths.chargePath[0];
+  const chargeOutlet = paths.chargePath.at(-1);
+
+  assert.ok(FLOW_PARTICLE_STREAMS.gas.color !== FLOW_PARTICLE_STREAMS.charge.color);
+  assert.equal(FLOW_PARTICLE_STREAMS.gas.pathKey, 'nitrogenPath');
+  assert.equal(FLOW_PARTICLE_STREAMS.charge.pathKey, 'chargePath');
+  assert.deepEqual(getFlowParticleVisibility(), { gas: true, charge: true });
+  assert.deepEqual(getFlowParticleVisibility({ showGasFlow: false }), { gas: false, charge: true });
+  assert.deepEqual(getFlowParticleVisibility({ showChargeFlow: false }), { gas: true, charge: false });
+  assert.deepEqual(getFlowParticleVisibility({ showCabling: false }), { gas: false, charge: false });
+  assert.ok(gasStart[0] < gasOutlet[0]);
+  assert.ok(chargeStart[0] < chargeOutlet[0]);
+  assert.ok(advanceFlowProgress(0.25, FLOW_PARTICLE_STREAMS.gas.speed, 1) > 0.25);
+  assert.ok(advanceFlowProgress(0.25, FLOW_PARTICLE_STREAMS.charge.speed, 1) > 0.25);
+  assert.ok(advanceFlowProgress(0.9, FLOW_PARTICLE_STREAMS.gas.speed, 2) < 0.2);
+});
+
+test('plasma input particles have distinct axial lanes and independent visibility', () => {
+  const paths = createInputParticlePathPoints({ plasmaHalfLength: 5, plasmaRadius: 2 });
+  const streamInputs = Object.keys(INPUT_PARTICLE_STREAMS);
+
+  assert.deepEqual(streamInputs, ['DT', 'DHe_3', 'Argon']);
+  assert.equal(new Set(streamInputs.map((input) => INPUT_PARTICLE_STREAMS[input].color)).size, 3);
+  for (const input of streamInputs) {
+    assert.ok(paths[input][0][0] < paths[input].at(-1)[0]);
+    assert.equal(INPUT_PARTICLE_STREAMS[input].pathKey, input);
+    assert.ok(advanceFlowProgress(0.25, INPUT_PARTICLE_STREAMS[input].speed, 1) > 0.25);
+  }
+  assert.deepEqual(getInputParticleVisibility(), { DT: true, DHe_3: true, Argon: true });
+  assert.deepEqual(getInputParticleVisibility({ showDTInput: false }), { DT: false, DHe_3: true, Argon: true });
+  assert.deepEqual(getInputParticleVisibility({ showDHe3Input: false }), { DT: true, DHe_3: false, Argon: true });
+  assert.deepEqual(getInputParticleVisibility({ showArgonInput: false }), { DT: true, DHe_3: true, Argon: false });
+  assert.deepEqual(getInputParticleVisibility({ showInputParticles: false }), { DT: false, DHe_3: false, Argon: false });
+  assert.deepEqual(getInputParticleVisibility({ showCabling: false }), { DT: false, DHe_3: false, Argon: false });
+});
+
+test('selected plasma input controls active particles and reaction output channels', () => {
+  const dtVisibility = getFrcVisualizationVisibility({ configuration: 'thetaPinch', input: 'DT' });
+  const dHe3Visibility = getFrcVisualizationVisibility({ configuration: 'rotatingField', input: 'DHe_3' });
+  const argonVisibility = getFrcVisualizationVisibility({ configuration: 'steadyState', input: 'Argon' });
+
+  assert.deepEqual(dtVisibility.input, { DT: true, DHe_3: false, Argon: false });
+  assert.deepEqual(dtVisibility.output, { nitrogen: true, helium: true, neutrons: true });
+  assert.deepEqual(dHe3Visibility.input, { DT: false, DHe_3: true, Argon: false });
+  assert.deepEqual(dHe3Visibility.output, { nitrogen: true, helium: true, neutrons: true });
+  assert.deepEqual(argonVisibility.input, { DT: false, DHe_3: false, Argon: true });
+  assert.deepEqual(argonVisibility.output, { nitrogen: true, helium: false, neutrons: false });
 });

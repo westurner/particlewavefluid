@@ -121,6 +121,22 @@ export const FRC_INPUTS = {
   }
 };
 
+export function getFrcVisualizationVisibility({ configuration = 'thetaPinch', input = 'DT' } = {}) {
+  const configurationModel = FRC_CONFIGURATIONS[configuration] || FRC_CONFIGURATIONS.thetaPinch;
+  const inputKey = FRC_INPUTS[input] ? input : 'DT';
+  const inputModel = FRC_INPUTS[inputKey];
+  const hasCaptureStage = configurationModel.energyCaptureEfficiency > 0;
+
+  return {
+    input: Object.fromEntries(Object.keys(FRC_INPUTS).map((key) => [key, key === inputKey])),
+    output: {
+      nitrogen: configurationModel.nitrogenPurgeSLM > 0,
+      helium: hasCaptureStage && inputModel.heliumYield > 0,
+      neutrons: hasCaptureStage && inputModel.neutronYield > 0
+    }
+  };
+}
+
 const MU_0 = 4 * Math.PI * 1e-7;
 const PLASMA_PRESSURE_PER_DENSITY_TEMPERATURE = 32.1;
 const MAGNETIC_PRESSURE_PER_FIELD_SQUARED = 398;
