@@ -1,8 +1,8 @@
 export const FLUID_BOUNDS = {
-  minX: -16,
-  maxX: 34,
+  minX: -48,
+  maxX: 48,
   minY: -6.2,
-  maxY: 14,
+  maxY: 32,
   minZ: -5,
   maxZ: 5
 };
@@ -11,6 +11,28 @@ export const PARTICLE_SEED_BOUNDS = {
   minY: -5.5,
   maxY: 5
 };
+export const SURFACE_PARTICLE_STRIDE = 5;
+export const SURFACE_MIXING = {
+  minimumHeight: 1.25,
+  ceilingMargin: 1.5,
+  strength: 0.8
+};
+
+export function surfaceParticleSeedFraction(particleIndex, particleCount) {
+  const surfaceParticleIndex = Math.floor(particleIndex / SURFACE_PARTICLE_STRIDE);
+  const surfaceParticleCount = Math.ceil(particleCount / SURFACE_PARTICLE_STRIDE);
+  return (Math.min(surfaceParticleIndex, surfaceParticleCount - 1) + 0.5) / surfaceParticleCount;
+}
+
+export function surfaceParticleSeedY(
+  particleIndex,
+  particleCount,
+  streetY = STREET_VOLUME.minY,
+  maxY = FLUID_BOUNDS.maxY
+) {
+  const heightFraction = surfaceParticleSeedFraction(particleIndex, particleCount);
+  return streetY + (maxY - streetY) * heightFraction;
+}
 
 export const STAIR_ROUTE = {
   landingStartX: 9.5,
@@ -38,12 +60,56 @@ export const TURNSTILE_ROUTE = {
 };
 
 export const SHAFT_POSITIONS = [-7, 0, 7];
+export const SHAFT_LABELS = ['West', 'Central', 'East'];
 export const SHAFT_ROUTE = {
   z: -1.4,
   throatY: 3.6,
   outletY: 8,
   streetY: 10
 };
+
+export function shaftControlAtX(x, controls = [1, 1, 1]) {
+  const shaftIndex = SHAFT_POSITIONS.reduce((nearestIndex, shaftX, index) => (
+    Math.abs(x - shaftX) < Math.abs(x - SHAFT_POSITIONS[nearestIndex]) ? index : nearestIndex
+  ), 0);
+  return controls[shaftIndex] ?? 1;
+}
+
+export function measureShaftEndpoints(positionData, velocityData, particleCount, streetY = SHAFT_ROUTE.streetY) {
+  const endpointDefinitions = [
+    { key: 'intake', y: SHAFT_ROUTE.throatY },
+    { key: 'outlet', y: streetY }
+  ];
+  return SHAFT_POSITIONS.map((shaftX, shaftIndex) => {
+    const endpoints = Object.fromEntries(endpointDefinitions.map(({ key, y: endpointY }) => {
+      const samples = [];
+      for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
+        const offset = particleIndex * 4;
+        const deltaX = positionData[offset] - shaftX;
+        const deltaY = positionData[offset + 1] - endpointY;
+        const deltaZ = positionData[offset + 2] - SHAFT_ROUTE.z;
+        if (Math.abs(deltaX) > 3.4 || Math.abs(deltaZ) > 3.5) continue;
+        samples.push({ offset, distanceSquared: deltaX ** 2 + deltaY ** 2 + deltaZ ** 2 });
+      }
+      const nearestSamples = samples.sort((left, right) => left.distanceSquared - right.distanceSquared).slice(0, 8);
+      let verticalVelocity = 0;
+      let thermalIntensity = 0;
+      let totalWeight = 0;
+      nearestSamples.forEach(({ offset, distanceSquared }) => {
+        const weight = 1 / (distanceSquared + 0.01);
+        verticalVelocity += velocityData[offset + 1] * weight;
+        thermalIntensity += velocityData[offset + 3] * weight;
+        totalWeight += weight;
+      });
+      return [key, nearestSamples.length > 0 ? {
+        flow: verticalVelocity / totalWeight,
+        temperature: 60 + (thermalIntensity / totalWeight) * 50,
+        count: nearestSamples.length
+      } : { flow: null, temperature: null, count: 0 }];
+    }));
+    return { id: shaftIndex, label: SHAFT_LABELS[shaftIndex], x: shaftX, ...endpoints };
+  });
+}
 
 export const STREET_VOLUME = {
   minX: -15.5,
@@ -60,6 +126,12 @@ export const STREET_LAYOUT = {
   sidewalkThickness: 0.2,
   surfaceParticleFloorY: 10.22
 };
+
+export const PASSENGER_POSITIONS = Array.from({ length: 18 }, (_, passengerIndex) => ({
+  x: -6 + (passengerIndex * 37 % 120) / 10,
+  y: -1.75,
+  z: -2 - (passengerIndex * 17 % 15) / 10
+}));
 
 export function verticalLayout(stairHeight = STAIR_ROUTE.riseY) {
   const streetY = STAIR_ROUTE.baseY + stairHeight;
@@ -90,6 +162,12 @@ export const TRACK_ROUTE = {
   width: 5,
   tunnelHeight: 5.4,
   tunnelWidth: 5.8
+};
+
+export const GROUND_LAYOUT = {
+  trackFloorY: TRACK_ROUTE.bedY + 0.2,
+  stairFloorY: STAIR_ROUTE.baseY,
+  stairOuterZ: STAIR_ROUTE.z - STAIR_ROUTE.width / 2
 };
 
 export const FLOOD_GALLERY = {
@@ -228,14 +306,13 @@ export function constrainStairUnderfillPositionY(
   x,
   y,
   z,
-  enabled,
   undergroundY = STAIR_ROUTE.baseY,
   landingY = STAIR_ROUTE.landingY,
   surfaceY = STAIR_ROUTE.baseY + STAIR_ROUTE.riseY
 ) {
   const insideRun = x >= STAIR_ROUTE.startX && x <= STAIR_ROUTE.endX;
   const insideWidth = Math.abs(z - STAIR_ROUTE.z) <= STAIR_ROUTE.width / 2;
-  return enabled && insideRun && insideWidth
+  return insideRun && insideWidth
     ? Math.max(y, stairSurfaceY(x, undergroundY, landingY, surfaceY) + 0.12)
     : y;
 }
@@ -248,6 +325,32 @@ export function constrainTurnstilePositionX(x, y, z, velocityX) {
   ));
   if (!insideX || !insideY || !insidePedestal) return x;
   return TURNSTILE_ROUTE.x + (velocityX >= 0 ? -TURNSTILE_ROUTE.halfDepth : TURNSTILE_ROUTE.halfDepth);
+}
+
+export function constrainPermanentGroundPosition(
+  x,
+  y,
+  z,
+  landingY = STAIR_ROUTE.landingY,
+  surfaceY = STAIR_ROUTE.baseY + STAIR_ROUTE.riseY,
+  tunnelHeight = STAIR_ROUTE.tunnelHeight
+) {
+  let constrainedY = y;
+  let constrainedZ = z;
+  const aboveTrack = x >= TRACK_ROUTE.minX && x <= TRACK_ROUTE.maxX
+    && Math.abs(z - TRACK_ROUTE.centerZ) <= TRACK_ROUTE.tunnelWidth / 2;
+  if (aboveTrack) constrainedY = Math.max(constrainedY, GROUND_LAYOUT.trackFloorY);
+
+  const alongStairs = x >= STAIR_ROUTE.landingStartX && x <= STAIR_ROUTE.endX;
+  const belowStairs = alongStairs && Math.abs(z - STAIR_ROUTE.z) <= STAIR_ROUTE.width / 2;
+  if (belowStairs) constrainedY = Math.max(constrainedY, GROUND_LAYOUT.stairFloorY);
+
+  const stairCeilingY = stairSurfaceY(x, STAIR_ROUTE.baseY, landingY, surfaceY) + tunnelHeight;
+  const insideOuterSoil = alongStairs && constrainedY >= STAIR_ROUTE.baseY
+    && z >= FLUID_BOUNDS.minZ && z < GROUND_LAYOUT.stairOuterZ
+    && constrainedY <= stairCeilingY;
+  if (insideOuterSoil) constrainedZ = GROUND_LAYOUT.stairOuterZ + 0.02;
+  return [x, constrainedY, constrainedZ];
 }
 
 export function stairStreetPortalX(
@@ -337,6 +440,50 @@ export function trainThermalSource(position, isSurfaceParticle, trainX, acActive
   return heatRate;
 }
 
+function passengerHeatInfluence(position) {
+  return PASSENGER_POSITIONS.reduce((maximumInfluence, passenger) => {
+    const horizontalDistance = Math.hypot(position[0] - passenger.x, position[2] - passenger.z);
+    const verticalDistance = Math.abs(position[1] - passenger.y);
+    const influence = (1 - smoothstep(0.25, 1.6, horizontalDistance))
+      * (1 - smoothstep(0.4, 1.9, verticalDistance));
+    return Math.max(maximumInfluence, influence);
+  }, 0);
+}
+
+export function passengerHeatResponse(position, passengerHeat = 1) {
+  const influence = passengerHeatInfluence(position);
+  return {
+    y: passengerHeat * influence * 0.8,
+    thermal: passengerHeat * influence * 0.18
+  };
+}
+
+export function roadThermalResponse(position, settings) {
+  const streetY = verticalLayoutFromSurfaceY(settings.stairSurfaceOpeningHeight).streetY;
+  const [x, y, z] = position;
+  const roadBand = step(streetY, y)
+    * (1 - smoothstep(0, 2.4, y - streetY))
+    * step(STREET_VOLUME.minX, x)
+    * step(x, STREET_VOLUME.maxX)
+    * step(STREET_LAYOUT.sidewalkRoadEdgeZ, z)
+    * step(z, STREET_VOLUME.maxZ);
+  const thermalDelta = (settings.roadSurfaceTemperature - settings.ambientAirTemperature) / 40;
+  return {
+    y: Math.max(-1, Math.min(1, thermalDelta)) * roadBand * 1.15,
+    thermal: thermalDelta * roadBand * 0.35
+  };
+}
+
+export function ambientAirResponse(position, settings) {
+  const streetY = verticalLayoutFromSurfaceY(settings.stairSurfaceOpeningHeight).streetY;
+  const ambientBand = smoothstep(streetY + 0.8, streetY + 2.4, position[1]);
+  const ambientHeat = clamp01((settings.ambientAirTemperature - 60) / 50);
+  return {
+    thermal: (ambientHeat - 0.42) * ambientBand * 0.12,
+    y: (ambientHeat - 0.42) * ambientBand * 0.1
+  };
+}
+
 export function constrainFloodPositionY(y, floodTunnels) {
   return floodTunnels ? y : Math.max(y, FLOOD_GALLERY.maxY);
 }
@@ -382,6 +529,10 @@ function smoothstep(edge0, edge1, value) {
   return normalized * normalized * (3 - 2 * normalized);
 }
 
+function step(edge, value) {
+  return value < edge ? 0 : 1;
+}
+
 function band(minimum, maximum, value) {
   return smoothstep(minimum, minimum + 0.4, value) * (1 - smoothstep(maximum - 0.4, maximum, value));
 }
@@ -408,7 +559,7 @@ function maxFloorMoverInfluence(x, z) {
 }
 
 export function airflowControlResponse(control, position, settings) {
-  const [x, y, z] = position;
+  const [x, y, z, particleMixFraction] = position;
   const response = { x: 0, y: 0, z: 0, cooling: 0 };
   const ceilingBand = band(AIRFLOW_PARAMS.ceilingMinY, AIRFLOW_PARAMS.ceilingMaxY, y);
 
@@ -426,19 +577,47 @@ export function airflowControlResponse(control, position, settings) {
     response.y = thermalDelta * surfaceBand * 0.55;
     response.cooling = -thermalDelta * surfaceBand * 0.25;
   }
+  if (control === 'passengerHeat') {
+    const passengerResponse = passengerHeatResponse(position, settings.passengerHeat);
+    response.y = passengerResponse.y;
+    response.cooling = -passengerResponse.thermal;
+  }
+  if (control === 'roadTemperature') {
+    const roadResponse = roadThermalResponse(position, settings);
+    response.y = roadResponse.y;
+    response.cooling = -roadResponse.thermal;
+  }
+  if (control === 'ambientAirTemperature') {
+    const ambientResponse = ambientAirResponse(position, settings);
+    response.y = ambientResponse.y;
+    response.cooling = -ambientResponse.thermal;
+  }
   if (control === 'surfaceCrosswind') {
     const surfaceWindBand = smoothstep(STREET_VOLUME.minY - 0.5, STREET_VOLUME.minY + 0.5, y);
+    const surfaceMixFraction = particleMixFraction ?? clamp01(
+      (x - FLUID_BOUNDS.minX) / (FLUID_BOUNDS.maxX - FLUID_BOUNDS.minX)
+    );
+    const surfaceMixTargetY = STREET_LAYOUT.surfaceParticleFloorY + SURFACE_MIXING.minimumHeight
+      + surfaceMixFraction * (
+        FLUID_BOUNDS.maxY - SURFACE_MIXING.ceilingMargin
+        - STREET_LAYOUT.surfaceParticleFloorY - SURFACE_MIXING.minimumHeight
+      );
     const shaftTargetX = SHAFT_POSITIONS.reduce((nearest, shaftX) => (
       Math.abs(x - shaftX) < Math.abs(x - nearest) ? shaftX : nearest
     ), SHAFT_POSITIONS[0]);
+    const shaftControl = shaftControlAtX(x, settings.shaftControls);
     const shaftOutlet = (1 - smoothstep(0.55, 1.4, Math.abs(x - shaftTargetX)))
       * (1 - smoothstep(0.45, 1.25, Math.abs(z - SHAFT_ROUTE.z)))
       * band(SHAFT_ROUTE.outletY, STREET_VOLUME.maxY, y);
     const floorReturn = surfaceWindBand
       * (1 - smoothstep(STREET_LAYOUT.surfaceParticleFloorY, STREET_LAYOUT.surfaceParticleFloorY + 0.9, y));
     const ceilingReturn = smoothstep(FLUID_BOUNDS.maxY - 1.5, FLUID_BOUNDS.maxY - 0.2, y);
-    response.y = floorReturn * 0.9 + Math.abs(settings.surfaceCrosswind) * shaftOutlet * 1.8 - ceilingReturn * 4;
-    response.z = settings.surfaceCrosswind * surfaceWindBand * 1.2 * (1 - shaftOutlet * 0.82);
+    response.y = floorReturn * 0.9
+      + Math.abs(settings.surfaceCrosswind) * (
+        shaftOutlet * shaftControl * 1.8 + (surfaceMixTargetY - y) * SURFACE_MIXING.strength * surfaceWindBand
+      )
+      - ceilingReturn * 4;
+    response.z = settings.surfaceCrosswind * surfaceWindBand * 1.2 * (1 - shaftOutlet * shaftControl * 0.82);
   }
   if (control === 'ceilingFlow') {
     response.x = settings.ceilingFans * ceilingBand * 1.4;
@@ -461,16 +640,17 @@ export function airflowControlResponse(control, position, settings) {
     const shaftTargetX = SHAFT_POSITIONS.reduce((nearest, shaftX) => (
       Math.abs(x - shaftX) < Math.abs(x - nearest) ? shaftX : nearest
     ), SHAFT_POSITIONS[0]);
+    const shaftControl = shaftControlAtX(x, settings.shaftControls);
     const shaftColumn = (1 - smoothstep(0.9, 1.8, Math.abs(x - shaftTargetX)))
         * (1 - smoothstep(0.0, 0.9, Math.abs(z - SHAFT_ROUTE.z)))
       * smoothstep(0.4, SHAFT_ROUTE.throatY, y)
       * (1 - smoothstep(STREET_VOLUME.minY, STREET_VOLUME.minY + 0.6, y));
     const poweredVelocity = settings.shaftFans ? settings.shaftFanVelocity : 0;
     const crosswindDraw = Math.abs(settings.surfaceCrosswind || 0) * 0.3;
-    response.x = (shaftTargetX - x) * shaftColumn * 3.6;
-    response.y = shaftColumn * (settings.stackEffect * 3.4 + poweredVelocity + crosswindDraw);
-    response.z = (SHAFT_ROUTE.z - z) * shaftColumn * 4.4;
-    response.cooling = shaftColumn * settings.stackEffect * 0.35;
+    response.x = (shaftTargetX - x) * shaftColumn * shaftControl * 3.6;
+    response.y = shaftColumn * shaftControl * (settings.stackEffect * 3.4 + poweredVelocity + crosswindDraw);
+    response.z = (SHAFT_ROUTE.z - z) * shaftColumn * shaftControl * 4.4;
+    response.cooling = shaftColumn * shaftControl * settings.stackEffect * 0.35;
   }
   if (control === 'sceneOcclusion') {
     if (!settings.windOcclusion) return response;

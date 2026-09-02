@@ -3,19 +3,25 @@ import assert from 'node:assert/strict';
 import {
   FLUID_BOUNDS,
   AIRFLOW_PARAMS,
+  PASSENGER_POSITIONS,
   airflowControlResponse,
   FLOOD_GALLERY,
   FLOOD_WATERFALL,
+  GROUND_LAYOUT,
   PARTICLE_SEED_BOUNDS,
   SHAFT_POSITIONS,
+  SHAFT_LABELS,
   SHAFT_ROUTE,
   STAIR_ROUTE,
   STREET_LAYOUT,
   STREET_VOLUME,
+  SURFACE_MIXING,
+  SURFACE_PARTICLE_STRIDE,
   TRACK_ROUTE,
   TRAIN_ROUTE,
   TURNSTILE_ROUTE,
   constrainFloodPositionY,
+  constrainPermanentGroundPosition,
   constrainStairUnderfillPositionY,
   constrainSurfacePositionY,
   constrainTurnstilePositionX,
@@ -24,6 +30,8 @@ import {
   isInsideStreetVolume,
   isSurfaceOpening,
   minimumImageSurfaceDelta,
+  measureShaftEndpoints,
+  shaftControlAtX,
   stairStreetPortalX,
   clerestoryOpeningStrength,
   stairSurfaceY,
@@ -33,7 +41,10 @@ import {
   thermalResilienceReport,
   trainStateAtTime,
   trainThermalSource,
+  passengerHeatResponse,
   surfacePressureAccelerations,
+  surfaceParticleSeedFraction,
+  surfaceParticleSeedY,
   verticalLayout,
   wrapSurfacePositionZ
 } from './routeModel.js';
@@ -77,14 +88,13 @@ test('stair height moves the street and shaft outlet together', () => {
   assert.equal(SHAFT_ROUTE.throatY, 3.6);
 });
 
-test('enabled stair underfill always occludes particles at the dynamic stair surface', () => {
+test('permanent stair underfill always occludes particles at the dynamic stair surface', () => {
   const stairX = 20;
   const lowSurfaceY = stairSurfaceY(stairX, -3.05, 2, 8.2);
   const highSurfaceY = stairSurfaceY(stairX, -3.05, 4, 10);
-  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z, false, -3.05, 2, 8.2), -4);
-  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z + STAIR_ROUTE.width, true, -3.05, 2, 8.2), -4);
-  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z, true, -3.05, 2, 8.2), lowSurfaceY + 0.12);
-  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z, true, -3.05, 4, 10), highSurfaceY + 0.12);
+  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z + STAIR_ROUTE.width, -3.05, 2, 8.2), -4);
+  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z, -3.05, 2, 8.2), lowSurfaceY + 0.12);
+  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z, -3.05, 4, 10), highSurfaceY + 0.12);
   assert.ok(highSurfaceY > lowSurfaceY);
 });
 
@@ -116,6 +126,20 @@ test('underground opening clearance changes the tunnel portal without moving sta
   );
 });
 
+test('permanent track, stair, and outer-wall ground occlude without sealing passages', () => {
+  const trackGround = constrainPermanentGroundPosition(0, -5, TRACK_ROUTE.centerZ);
+  assert.equal(trackGround[1], GROUND_LAYOUT.trackFloorY);
+  assert.equal(constrainPermanentGroundPosition(0, -3, TRACK_ROUTE.centerZ)[1], -3);
+
+  const stairGround = constrainPermanentGroundPosition(16, -5, STAIR_ROUTE.z);
+  assert.equal(stairGround[1], GROUND_LAYOUT.stairFloorY);
+  assert.equal(constrainPermanentGroundPosition(16, 0, STAIR_ROUTE.z)[1], 0);
+
+  const outerGround = constrainPermanentGroundPosition(16, 0, GROUND_LAYOUT.stairOuterZ - 0.4);
+  assert.equal(outerGround[2], GROUND_LAYOUT.stairOuterZ + 0.02);
+  assert.equal(constrainPermanentGroundPosition(16, 0, STAIR_ROUTE.z)[2], STAIR_ROUTE.z);
+});
+
 test('shaft outlets sit above the station roof and inside the street volume', () => {
   assert.deepEqual(SHAFT_POSITIONS, [-7, 0, 7]);
   assert.ok(SHAFT_POSITIONS.every((shaftX) => shaftX < STAIR_ROUTE.landingStartX - STAIR_ROUTE.width / 2));
@@ -124,11 +148,54 @@ test('shaft outlets sit above the station roof and inside the street volume', ()
   assert.ok(isInsideStreetVolume(0, SHAFT_ROUTE.streetY, SHAFT_ROUTE.z));
 });
 
+test('individual shaft controls select the nearest ventilation shaft', () => {
+  const controls = [0.2, 0.5, 0.9];
+  assert.equal(shaftControlAtX(SHAFT_POSITIONS[0], controls), controls[0]);
+  assert.equal(shaftControlAtX(SHAFT_POSITIONS[1], controls), controls[1]);
+  assert.equal(shaftControlAtX(SHAFT_POSITIONS[2], controls), controls[2]);
+  const isolatedSettings = { ...settings, shaftControls: [0, 1, 1] };
+  assert.equal(airflowControlResponse('shaftStack', [SHAFT_POSITIONS[0], 5, SHAFT_ROUTE.z], isolatedSettings).y, 0);
+  assert.ok(airflowControlResponse('shaftStack', [SHAFT_POSITIONS[1], 5, SHAFT_ROUTE.z], isolatedSettings).y > 0);
+  assert.ok(airflowControlResponse('shaftStack', [SHAFT_POSITIONS[2], 5, SHAFT_ROUTE.z], isolatedSettings).y > 0);
+});
+
+test('shaft endpoint telemetry measures flow and temperature at both ends', () => {
+  const positions = new Float32Array([
+    SHAFT_POSITIONS[0], SHAFT_ROUTE.throatY, SHAFT_ROUTE.z, 1,
+    SHAFT_POSITIONS[0], SHAFT_ROUTE.streetY + 0.6, SHAFT_ROUTE.z, 2,
+    SHAFT_POSITIONS[1], SHAFT_ROUTE.throatY, SHAFT_ROUTE.z, 1,
+    SHAFT_POSITIONS[1], SHAFT_ROUTE.streetY + 0.6, SHAFT_ROUTE.z, 2,
+    30, 20, 4, 2
+  ]);
+  const velocities = new Float32Array([
+    0, 2, 0, 0.4,
+    0, 3, 0, 0.6,
+    0, 1, 0, 0.2,
+    0, 4, 0, 0.8,
+    0, 20, 0, 1
+  ]);
+  const telemetry = measureShaftEndpoints(positions, velocities, 5);
+  assert.equal(telemetry.length, SHAFT_POSITIONS.length);
+  assert.equal(telemetry[0].label, SHAFT_LABELS[0]);
+  assert.ok(Math.abs(telemetry[0].intake.flow - 2) < 0.01);
+  assert.ok(Math.abs(telemetry[0].intake.temperature - 80) < 0.1);
+  assert.ok(Math.abs(telemetry[0].outlet.flow - 3) < 0.01);
+  assert.ok(Math.abs(telemetry[0].outlet.temperature - 90) < 0.1);
+  assert.equal(telemetry[0].intake.count, 2);
+  assert.equal(telemetry[0].outlet.count, 2);
+  assert.deepEqual(telemetry[2].intake, { flow: null, temperature: null, count: 0 });
+  assert.deepEqual(telemetry[2].outlet, { flow: null, temperature: null, count: 0 });
+});
+
 test('street volume remains inside the expanded fluid bounds', () => {
   assert.ok(STREET_VOLUME.minX >= FLUID_BOUNDS.minX);
   assert.ok(STREET_VOLUME.maxX <= FLUID_BOUNDS.maxX);
   assert.ok(STREET_VOLUME.minY >= FLUID_BOUNDS.minY);
   assert.ok(STREET_VOLUME.maxY <= FLUID_BOUNDS.maxY);
+});
+
+test('fluid volume leaves an upper-air region above the street', () => {
+  assert.ok(FLUID_BOUNDS.maxY - STREET_VOLUME.maxY >= 10);
 });
 
 test('roof gap widens symmetrically around the ridge', () => {
@@ -176,6 +243,9 @@ const settings = {
   downFans: 1,
   floorAirMovers: 1,
   surfaceTemperature: 81.5,
+  roadSurfaceTemperature: 92,
+  ambientAirTemperature: 72,
+  passengerHeat: 0.75,
   surfaceCrosswind: 3,
   density: 1.18,
   stiffness: 5,
@@ -215,6 +285,53 @@ test('surface temperature changes floor buoyancy and thermal response', () => {
   assert.ok(warm.cooling < cool.cooling);
 });
 
+test('passenger heat follows the visible commuter positions', () => {
+  assert.equal(PASSENGER_POSITIONS.length, 18);
+  const nearPassenger = passengerHeatResponse([
+    PASSENGER_POSITIONS[0].x,
+    PASSENGER_POSITIONS[0].y,
+    PASSENGER_POSITIONS[0].z
+  ], 1);
+  const farFromPassengers = passengerHeatResponse([-20, -1.75, 0], 1);
+  assert.ok(nearPassenger.y > 0);
+  assert.ok(nearPassenger.thermal > farFromPassengers.thermal);
+  assert.equal(passengerHeatResponse([0, 0, 0], 0).y, 0);
+});
+
+test('road temperature drives signed convection above the road', () => {
+  const roadPosition = [0, STREET_VOLUME.minY + 1, 0];
+  const hotRoad = airflowControlResponse('roadTemperature', roadPosition, {
+    ...settings,
+    roadSurfaceTemperature: 110
+  });
+  const coldRoad = airflowControlResponse('roadTemperature', roadPosition, {
+    ...settings,
+    roadSurfaceTemperature: 50
+  });
+  const sidewalk = airflowControlResponse('roadTemperature', [0, STREET_VOLUME.minY + 1, -2], {
+    ...settings,
+    roadSurfaceTemperature: 110
+  });
+  assert.ok(hotRoad.y > 0);
+  assert.ok(coldRoad.y < 0);
+  assert.equal(sidewalk.y, 0);
+});
+
+test('ambient air temperature affects the retained upper-air band', () => {
+  const position = [0, FLUID_BOUNDS.maxY - 4, 0];
+  const coolAmbient = airflowControlResponse('ambientAirTemperature', position, {
+    ...settings,
+    ambientAirTemperature: 50
+  });
+  const warmAmbient = airflowControlResponse('ambientAirTemperature', position, {
+    ...settings,
+    ambientAirTemperature: 95
+  });
+  assert.ok(warmAmbient.cooling < coolAmbient.cooling);
+  assert.ok(warmAmbient.y > coolAmbient.y);
+  assert.ok(Math.abs(airflowControlResponse('ambientAirTemperature', [0, STREET_VOLUME.minY, 0], settings).y) < 1e-12);
+});
+
 test('surface crosswind changes direction and stays above the station roof', () => {
   const positive = airflowControlResponse('surfaceCrosswind', [0, STREET_VOLUME.minY + 1, 0], settings);
   const negative = airflowControlResponse('surfaceCrosswind', [0, STREET_VOLUME.minY + 1, 0], {
@@ -224,6 +341,59 @@ test('surface crosswind changes direction and stays above the station roof', () 
   assert.ok(positive.z > 0);
   assert.ok(negative.z < 0);
   assert.deepEqual(underground, { x: 0, y: 0, z: 0, cooling: 0 });
+});
+
+test('surface crosswind remains visible ten meters above the road', () => {
+  const particleCount = 4096;
+  [STREET_VOLUME.minY, STREET_VOLUME.minY + 2].forEach((streetY) => {
+    const targetY = streetY + 10;
+    const response = airflowControlResponse('surfaceCrosswind', [3, targetY, 2], settings);
+    const particlesNearTarget = Array.from(
+      { length: Math.ceil(particleCount / SURFACE_PARTICLE_STRIDE) },
+      (_, surfaceIndex) => surfaceParticleSeedY(
+        surfaceIndex * SURFACE_PARTICLE_STRIDE,
+        particleCount,
+        streetY
+      )
+    ).filter((particleY) => Math.abs(particleY - targetY) <= 0.1);
+
+    assert.ok(response.z > 0);
+    assert.ok(particlesNearTarget.length > 0);
+    assert.ok(targetY < FLUID_BOUNDS.maxY);
+  });
+});
+
+test('surface wind keeps particles distributed in the air above the street', () => {
+  const particleXs = [-40, -20, 0, 20, 40];
+  const mixFractions = particleXs.map((_, index) => (index + 0.5) / particleXs.length);
+  const floorResponses = particleXs.map((x, index) => airflowControlResponse(
+    'surfaceCrosswind',
+    [x, STREET_LAYOUT.surfaceParticleFloorY + 0.25, 2, mixFractions[index]],
+    settings
+  ));
+  const results = particleXs.map((x, index) => integrateResponse(
+    'surfaceCrosswind',
+    [x, STREET_LAYOUT.surfaceParticleFloorY + 0.25, 2, mixFractions[index]],
+    settings,
+    500
+  ));
+  const airborneHeights = results.map(({ position }) => position[1] - STREET_LAYOUT.surfaceParticleFloorY);
+
+  assert.ok(floorResponses.every(({ y }) => y > 2));
+  assert.ok(results.every(({ position }) => position[2] > 2));
+  assert.ok(airborneHeights.every((height) => height >= SURFACE_MIXING.minimumHeight - 0.5));
+  assert.ok(Math.max(...airborneHeights) - Math.min(...airborneHeights) > 6);
+  assert.ok(airborneHeights.filter((height) => height > 4).length >= 3);
+});
+
+test('surface particle identities provide stable independent mixing heights', () => {
+  const particleCount = 4096;
+  const fractions = Array.from(
+    { length: Math.ceil(particleCount / SURFACE_PARTICLE_STRIDE) },
+    (_, surfaceIndex) => surfaceParticleSeedFraction(surfaceIndex * SURFACE_PARTICLE_STRIDE, particleCount)
+  );
+  assert.ok(fractions.every((fraction) => fraction > 0 && fraction < 1));
+  assert.ok(fractions.every((fraction, index) => index === 0 || fraction > fractions[index - 1]));
 });
 
 test('surface crosswind returns particles from both vertical boundaries', () => {
@@ -242,6 +412,15 @@ test('surface crosswind creates an upward pressure draw at each shaft outlet', (
   });
   const ceilingReturn = airflowControlResponse('surfaceCrosswind', [0, FLUID_BOUNDS.maxY, 2], settings);
   assert.ok(ceilingReturn.y < 0);
+});
+
+test('surface crosswind carries heat at least one meter above the road through each shaft', () => {
+  const exhaustY = STREET_VOLUME.minY + 1;
+  SHAFT_POSITIONS.forEach((shaftX) => {
+    const exhaust = airflowControlResponse('surfaceCrosswind', [shaftX, exhaustY, SHAFT_ROUTE.z], settings);
+    assert.ok(exhaust.y > 0);
+    assert.equal(exhaust.cooling, 0);
+  });
 });
 
 test('periodic surface pressure repels particles across the road seam', () => {

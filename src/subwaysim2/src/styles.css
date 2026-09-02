@@ -51,6 +51,25 @@ button, input { font: inherit; }
 .parameter-group summary { color: #f0a23a; cursor: pointer; font: 9px 'DM Mono', monospace; letter-spacing: 0.1em; list-style-position: inside; text-transform: uppercase; }
 .parameter-group[open] summary { margin-bottom: 14px; }
 .parameter-group .controls-group { margin-top: 0; }
+.vent-flow-list { display: grid; gap: 18px; }
+.vent-flow-shaft { display: grid; gap: 10px; padding-top: 14px; border-top: 1px solid rgba(182, 215, 204, 0.1); }
+.vent-flow-shaft:first-child { padding-top: 0; border-top: 0; }
+.vent-endpoints { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.vent-endpoint { display: grid; gap: 2px; padding: 7px; border: 1px solid rgba(182, 215, 204, 0.12); background: rgba(3, 13, 15, 0.42); }
+.vent-endpoint span { color: #87a69e; font: 8px 'DM Mono', monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+.vent-endpoint strong { color: #edf3ef; font: 11px 'DM Mono', monospace; font-weight: 400; }
+.vent-endpoint small { color: #77928a; font: 8px 'DM Mono', monospace; }
+.vent-chart { background: rgba(3, 13, 15, 0.5); border-block: 1px solid rgba(172, 208, 194, 0.1); }
+.vent-chart-heading { display: flex; justify-content: space-between; padding: 5px 6px 0; color: #77928a; font: 8px 'DM Mono', monospace; text-transform: uppercase; }
+.vent-chart svg { display: block; width: 100%; height: 44px; }
+.vent-chart-grid { stroke: rgba(172, 208, 194, 0.1); stroke-dasharray: 2 4; }
+.vent-chart-line { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.vent-chart-line.intake { stroke: #6fd5d2; }
+.vent-chart-line.outlet { stroke: #f0a23a; }
+.vent-chart-legend { display: flex; gap: 12px; color: #87a69e; font: 8px 'DM Mono', monospace; text-transform: uppercase; }
+.vent-chart-legend span::before { display: inline-block; width: 12px; height: 2px; margin-right: 5px; vertical-align: middle; content: ''; }
+.vent-chart-legend .intake::before { background: #6fd5d2; }
+.vent-chart-legend .outlet::before { background: #f0a23a; }
 .controls-group { display: grid; gap: 16px; margin-top: 21px; }
 .systems-group { display: grid; gap: 14px; margin-top: 22px; padding-top: 17px; border-top: 1px solid rgba(182, 215, 204, 0.16); }
 .subsection-label { color: #f0a23a; font: 9px 'DM Mono', monospace; letter-spacing: 0.1em; }
