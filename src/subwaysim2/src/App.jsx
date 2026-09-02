@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState, forwardRef } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { ContactShadows, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { GPUComputationRenderer } from 'three/addons/misc/GPUComputationRenderer.js';
+import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
+import { SimpleAttractorSim } from './SimpleAttractorSim.jsx';
+import SqgBlackHoleSim from './SqgBlackHoleSim.jsx';
 import {
   AIRFLOW_PARAMS,
   FLUID_BOUNDS,
@@ -593,17 +595,6 @@ const particleFragmentShader = `
   }
 `;
 
-function createSimulationUvs(resolution, particleCount) {
-  const uvs = new Float32Array(particleCount * 2);
-  for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
-    const row = Math.floor(particleIndex / resolution);
-    const column = particleIndex % resolution;
-    uvs[particleIndex * 2] = (column + 0.5) / resolution;
-    uvs[particleIndex * 2 + 1] = (row + 0.5) / resolution;
-  }
-  return uvs;
-}
-
 function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
   const { gl } = useThree();
   const computeRef = useRef(null);
@@ -645,32 +636,29 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
     let gpuCompute;
     try {
       const initialVerticalLayout = verticalLayoutFromSurfaceY(settingsRef.current.stairSurfaceOpeningHeight);
-      gpuCompute = new GPUComputationRenderer(simulationResolution, simulationResolution, gl);
-      if (!gl.capabilities.isWebGL2) gpuCompute.setDataType(THREE.HalfFloatType);
-      const positionTexture = gpuCompute.createTexture();
-      const velocityTexture = gpuCompute.createTexture();
-
-      for (let offset = 0; offset < positionTexture.image.data.length; offset += 4) {
-        const particleIndex = offset / 4;
-        const isSurfaceParticle = particleIndex % SURFACE_PARTICLE_STRIDE === 0;
-        positionTexture.image.data[offset] = THREE.MathUtils.lerp(FLUID_BOUNDS.minX, FLUID_BOUNDS.maxX, Math.random());
-        positionTexture.image.data[offset + 1] = isSurfaceParticle
-          ? surfaceParticleSeedY(particleIndex, particleCount, initialVerticalLayout.streetY)
-          : THREE.MathUtils.lerp(PARTICLE_SEED_BOUNDS.minY, PARTICLE_SEED_BOUNDS.maxY, Math.random());
-        positionTexture.image.data[offset + 2] = THREE.MathUtils.lerp(FLUID_BOUNDS.minZ, FLUID_BOUNDS.maxZ, Math.random());
-        positionTexture.image.data[offset + 3] = isSurfaceParticle
-          ? 2 + surfaceParticleSeedFraction(particleIndex, particleCount) * 0.999
-          : 1;
-        velocityTexture.image.data[offset] = 0;
-        velocityTexture.image.data[offset + 1] = 0;
-        velocityTexture.image.data[offset + 2] = 0;
-        velocityTexture.image.data[offset + 3] = 0;
-      }
-
-      const positionVariable = gpuCompute.addVariable('uPositionTex', positionShader, positionTexture);
-      const velocityVariable = gpuCompute.addVariable('uVelocityTex', velocityShader, velocityTexture);
-      gpuCompute.setVariableDependencies(positionVariable, [positionVariable, velocityVariable]);
-      gpuCompute.setVariableDependencies(velocityVariable, [positionVariable, velocityVariable]);
+      const simulation = createGpuParticleField({
+        gl,
+        resolution: simulationResolution,
+        positionShader,
+        velocityShader,
+        initialize: ({ particleIndex, positionData, velocityData, offset }) => {
+          const isSurfaceParticle = particleIndex % SURFACE_PARTICLE_STRIDE === 0;
+          positionData[offset] = THREE.MathUtils.lerp(FLUID_BOUNDS.minX, FLUID_BOUNDS.maxX, Math.random());
+          positionData[offset + 1] = isSurfaceParticle
+            ? surfaceParticleSeedY(particleIndex, particleCount, initialVerticalLayout.streetY)
+            : THREE.MathUtils.lerp(PARTICLE_SEED_BOUNDS.minY, PARTICLE_SEED_BOUNDS.maxY, Math.random());
+          positionData[offset + 2] = THREE.MathUtils.lerp(FLUID_BOUNDS.minZ, FLUID_BOUNDS.maxZ, Math.random());
+          positionData[offset + 3] = isSurfaceParticle
+            ? 2 + surfaceParticleSeedFraction(particleIndex, particleCount) * 0.999
+            : 1;
+          velocityData[offset] = 0;
+          velocityData[offset + 1] = 0;
+          velocityData[offset + 2] = 0;
+          velocityData[offset + 3] = 0;
+        }
+      });
+      gpuCompute = simulation.gpuCompute;
+      const { positionVariable, velocityVariable } = simulation;
       positionVariable.material.uniforms.uDt = { value: 0.016 };
       positionVariable.material.uniforms.uRoofPitch = { value: THREE.MathUtils.degToRad(INITIALS.roofPitch) };
       positionVariable.material.uniforms.uRoofOffset = { value: INITIALS.roofOffset };
@@ -1806,7 +1794,7 @@ function ViewToolbar({ viewMode, onViewChange, parametersVisible, onToggleParame
   );
 }
 
-function App() {
+function SubwaySim({ onBack }) {
   const [settings, setSettings] = useState(INITIALS);
   const [showDescriptions, setShowDescriptions] = useState(false);
   const [parametersVisible, setParametersVisible] = useState(true);
@@ -1837,6 +1825,7 @@ function App() {
       <header className="topbar">
         <div className="brand-lockup"><span className="brand-mark">T</span><span><b>TRANSIT / UNDERGROUND</b><em>Thermodynamics lab</em></span></div>
         <div className="topbar-meta"><span>GPGPU / SPH</span><span>FIELD 04</span></div>
+        <button className="mode-switch" type="button" onClick={onBack}>Lab menu</button>
       </header>
       {/* <section className="scene-title"><p>Airflow study</p><h1>Heat is a passenger.</h1><span>Watch the station exchange energy in real time.</span></section> */}
       <ViewToolbar viewMode={viewMode} onViewChange={setViewMode} parametersVisible={parametersVisible} onToggleParameters={() => setParametersVisible((visible) => !visible)} />
@@ -1850,6 +1839,74 @@ function App() {
       <footer className="footer-note"><span>PLATFORM 04 / ACTIVE</span><span>Drag to orbit · Scroll to zoom</span></footer>
     </main>
   );
+}
+
+const SIMULATION_MODES = [
+  {
+    id: 'subwaysim2',
+    index: '01',
+    name: 'subwaysim2',
+    label: 'Transit thermodynamics',
+    description: 'A GPU airflow chamber where trains, shafts, stairs, and thermal sources shape a living station field.',
+    detail: 'FLUID / SPH / INFRASTRUCTURE',
+    accent: 'teal'
+  },
+  {
+    id: 'simpleattractorsim',
+    index: '02',
+    name: 'simpleattractorsim',
+    label: 'Attractor particles',
+    description: 'A direct React port of the Three.js attractor lab with spinning masses, transform rigs, presets, and playback.',
+    detail: 'N-BODY / PRESETS / JOURNAL',
+    accent: 'blue'
+  },
+  {
+    id: 'sqgblackholesim',
+    index: '03',
+    name: 'sqgblackholesim',
+    label: 'Black-hole sandbox',
+    description: 'The attractor rig, copied forward as a blank gravitational playground for the next SQG experiment.',
+    detail: 'PROTOTYPE / INHERITED RIG',
+    accent: 'orange'
+  }
+];
+
+function SimulationLoader() {
+  const [selectedSimulation, setSelectedSimulation] = useState(null);
+  if (selectedSimulation === 'subwaysim2') return <SubwaySim onBack={() => setSelectedSimulation(null)} />;
+  if (selectedSimulation === 'simpleattractorsim') return <SimpleAttractorSim onBack={() => setSelectedSimulation(null)} />;
+  if (selectedSimulation === 'sqgblackholesim') return <SqgBlackHoleSim onBack={() => setSelectedSimulation(null)} />;
+
+  return (
+    <main className="sqg-loader">
+      <header className="sqg-loader-header">
+        <div className="sqg-loader-brand"><span className="sqg-loader-mark">SQG</span><span><b>SQGSIM</b><em>Particle systems / field experiments</em></span></div>
+        <span className="sqg-loader-meta">00 / SIM LOADER</span>
+      </header>
+      <section className="sqg-loader-intro">
+        <span className="sqg-loader-kicker">SELECT A SIMULATION</span>
+        <h1>Particle, Wave, Gravity, Fluid, Plasma<br />simulation</h1>
+        <h2>Simulators for all of the things.</h2>
+        <p>An R3F (React Three Fiber (ThreeJS)) and GPU shader based particle framework. Choose a field to simulate:</p>
+      </section>
+      <section className="sqg-mode-grid" aria-label="Available simulations">
+        {SIMULATION_MODES.map((mode) => (
+          <button key={mode.id} type="button" className={`sqg-mode-card ${mode.accent}`} onClick={() => setSelectedSimulation(mode.id)}>
+            <span className="sqg-mode-index">{mode.index} / LOAD FIELD</span>
+            <span className="sqg-mode-name">{mode.name}</span>
+            <span className="sqg-mode-label">{mode.label}</span>
+            <span className="sqg-mode-description">{mode.description}</span>
+            <span className="sqg-mode-footer"><span>{mode.detail}</span><strong>Enter <span aria-hidden="true">↗</span></strong></span>
+          </button>
+        ))}
+      </section>
+      <footer className="sqg-loader-footer"><span>THREE.JS / REACT / WEBGL</span><span>Choose a field to begin</span></footer>
+    </main>
+  );
+}
+
+function App() {
+  return <SimulationLoader />;
 }
 
 export default App;

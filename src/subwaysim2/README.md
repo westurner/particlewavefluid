@@ -1,6 +1,16 @@
-# Subway Thermodynamics
+# SQGSIM
 
-A React, Three.js, React Three Fiber, and Drei simulation of subway airflow and thermal dispersion. The particle solver runs on the GPU in the browser.
+A React, Three.js, React Three Fiber, and Drei particle-simulation loader. The GPU particle runtime was extracted from the subway airflow experiment so multiple simulations can share the same resource lifecycle and instanced-field boundary.
+
+## Simulation menu
+
+The first screen loads one of three fields:
+
+- **subwaysim2:** the subway airflow and thermal-dispersion experiment with GPU SPH-style transport, train heat, ventilation, stair, street, and flood-gallery controls.
+- **simpleattractorsim:** a React/R3F reimplementation of `three.js/examples/webgpu_tsl_compute_attractors_particles.html`. It keeps the source example's inverse-square attraction, spinning force, bounded particle loop, 20-attractor limit, transform helpers, presets, JSON IO, local snapshots, camera controls, and change playback.
+- **sqgblackholesim:** a separate black-hole sandbox entry point that currently starts from the simple attractor rig and its complete control surface.
+
+The subway mode remains the detailed fluid framework. `src/simulations/gpuParticleRuntime.js` owns the reusable GPU computation setup and simulation UV allocation used by both the subway and attractor fields.
 
 ## Simulation Architecture And Methods
 
