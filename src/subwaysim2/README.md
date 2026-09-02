@@ -4,13 +4,16 @@ A React, Three.js, React Three Fiber, and Drei particle-simulation loader. The G
 
 ## Simulation menu
 
-The first screen loads one of three fields:
+The first screen loads one of four fields:
 
 - **subwaysim2:** the subway airflow and thermal-dispersion experiment with GPU SPH-style transport, train heat, ventilation, stair, street, and flood-gallery controls.
 - **simpleattractorsim:** a React/R3F reimplementation of `three.js/examples/webgpu_tsl_compute_attractors_particles.html`. It keeps the source example's inverse-square attraction, spinning force, bounded particle loop, 20-attractor limit, transform helpers, presets, JSON IO, local snapshots, camera controls, and change playback.
 - **sqgblackholesim:** a separate black-hole sandbox entry point that currently starts from the simple attractor rig and its complete control surface.
+- **frcfusionsim:** a physical FRC device and GPU plasma transport field with transparent vessel and confinement coils, selectable elongated, compact, double-lobed, and oblate shapes, and theta-pinch, rotating-field, translated-toroid, and steady-state configurations. Phase 02 exposes device geometry, derived field quantities, and a bounded 4,096-particle transport field; a kinetic plasma solver is reserved for phase 03.
 
 The subway mode remains the detailed fluid framework. `src/simulations/gpuParticleRuntime.js` owns the reusable GPU computation setup and simulation UV allocation used by both the subway and attractor fields.
+
+The FRC device model is CPU-side while plasma transport runs on the GPU. `src/frcModel.js` derives plasma dimensions, volume, pressure, beta, reversed axial field, current, confinement, and stability from the selected physical configuration. The Plasma input dropdown supports `DHe_3`, `DT`, and `Argon`: `DHe_3` uses an aneutronic primary branch with a small side-neutron allowance, `DT` produces the high-neutron baseline, and `Argon` is a non-fusing working gas with zero fusion products. The model also estimates blanket energy capture, nitrogen purge/blanket flow, helium alpha-product output, neutron production rate and flux, electricity conversion, and the electron plasma frequency. The output telemetry uses a 60 Hz conversion-stage grid interface. Electrical conversion efficiency is dynamic: it combines each input's modeled charged-energy fraction with the current confinement, beta, and rotation state; `electricPowerMW` is the captured power after that calculated efficiency. The plasma frequency treats the configured density as electron density and uses the cold-plasma relation $f_{pe}=(2\pi)^{-1}\sqrt{n_e e^2/(m_e\epsilon_0)}$, with `plasmaPeriodSeconds` equal to its reciprocal. This is a natural microscopic oscillation scale, not an AC frequency emitted by the reactor. `FrcFusionSim.jsx` presents those values alongside the transparent Three.js device, an outer energy-collector cable harness, color-coded nitrogen/helium/neutron output conduits, and a `GPUComputationRenderer` field. Nitrogen is a plant-side stream rather than a fusion product, and the neutron value represents radiation production rather than a material cable output. These figures are engineering estimates for the visualization, not a validated power-plant design. The transport is a bounded visualization model with axial wrapping, azimuthal flow, radial magnetic confinement, temperature-dependent damping, and field-reversal direction; it is not yet a kinetic or MHD solver.
 
 ## Simulation Architecture And Methods
 

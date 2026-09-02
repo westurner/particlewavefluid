@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import { HalfFloatType } from 'three';
 import { GPUComputationRenderer } from 'three/addons/misc/GPUComputationRenderer.js';
 
 export function createSimulationUvs(resolution, particleCount) {
@@ -14,7 +14,7 @@ export function createSimulationUvs(resolution, particleCount) {
 
 export function createGpuParticleField({ gl, resolution, positionShader, velocityShader, initialize }) {
   const gpuCompute = new GPUComputationRenderer(resolution, resolution, gl);
-  if (!gl.capabilities.isWebGL2) gpuCompute.setDataType(THREE.HalfFloatType);
+  if (!gl.capabilities.isWebGL2) gpuCompute.setDataType(HalfFloatType);
 
   const positionTexture = gpuCompute.createTexture();
   const velocityTexture = gpuCompute.createTexture();

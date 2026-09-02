@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html, OrbitControls, TransformControls } from '@react-three/drei';
-import * as THREE from 'three';
+import { AdditiveBlending, Color, DoubleSide, Euler, InstancedBufferAttribute, PlaneGeometry, ShaderMaterial, SRGBColorSpace, Vector3 } from 'three';
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
 
 const MAX_ATTRACTORS = 20;
@@ -236,26 +236,26 @@ function AttractorParticles({ configuration, onGpuError }) {
   configurationRef.current = configuration;
   const resolution = Math.ceil(Math.sqrt(PARTICLE_COUNT));
   const geometry = useMemo(() => {
-    const nextGeometry = new THREE.PlaneGeometry(1, 1);
-    nextGeometry.setAttribute('aSimulationUv', new THREE.InstancedBufferAttribute(createSimulationUvs(resolution, PARTICLE_COUNT), 2));
+    const nextGeometry = new PlaneGeometry(1, 1);
+    nextGeometry.setAttribute('aSimulationUv', new InstancedBufferAttribute(createSimulationUvs(resolution, PARTICLE_COUNT), 2));
     return nextGeometry;
   }, [resolution]);
-  const material = useMemo(() => new THREE.ShaderMaterial({
+  const material = useMemo(() => new ShaderMaterial({
     uniforms: {
       uPositionTex: { value: null },
       uVelocityTex: { value: null },
       uScale: { value: configuration.scale },
       uMaxSpeed: { value: configuration.maxSpeed },
       uCameraFacing: { value: configuration.particleFacing === 'camera' },
-      uColorA: { value: new THREE.Color(configuration.colorA) },
-      uColorB: { value: new THREE.Color(configuration.colorB) }
+      uColorA: { value: new Color(configuration.colorA) },
+      uColorB: { value: new Color(configuration.colorB) }
     },
     vertexShader: ATTRACTOR_VERTEX_SHADER,
     fragmentShader: ATTRACTOR_FRAGMENT_SHADER,
     transparent: true,
     depthWrite: false,
-    side: THREE.DoubleSide,
-    blending: THREE.AdditiveBlending
+    side: DoubleSide,
+    blending: AdditiveBlending
   }), []);
 
   useEffect(() => {
@@ -294,8 +294,8 @@ function AttractorParticles({ configuration, onGpuError }) {
       velocityUniforms.uMaxSpeed = { value: configurationRef.current.maxSpeed };
       velocityUniforms.uVelocityDamping = { value: configurationRef.current.velocityDamping };
       velocityUniforms.uAttractorCount = { value: configurationRef.current.attractors.length };
-      velocityUniforms.uAttractorPositions = { value: Array.from({ length: MAX_ATTRACTORS }, () => new THREE.Vector3()) };
-      velocityUniforms.uAttractorRotationAxes = { value: Array.from({ length: MAX_ATTRACTORS }, () => new THREE.Vector3(0, 1, 0)) };
+      velocityUniforms.uAttractorPositions = { value: Array.from({ length: MAX_ATTRACTORS }, () => new Vector3()) };
+      velocityUniforms.uAttractorRotationAxes = { value: Array.from({ length: MAX_ATTRACTORS }, () => new Vector3(0, 1, 0)) };
       velocityUniforms.uAttractorMagnitudes = { value: new Float32Array(MAX_ATTRACTORS).fill(1) };
       const initializationError = gpuCompute.init();
       if (initializationError) throw new Error(initializationError);
@@ -332,7 +332,7 @@ function AttractorParticles({ configuration, onGpuError }) {
     velocityUniforms.uAttractorCount.value = current.attractors.length;
     current.attractors.forEach((attractor, index) => {
       velocityUniforms.uAttractorPositions.value[index].fromArray(attractor.position);
-      velocityUniforms.uAttractorRotationAxes.value[index].set(0, 1, 0).applyEuler(new THREE.Euler(...attractor.rotation)).normalize();
+      velocityUniforms.uAttractorRotationAxes.value[index].set(0, 1, 0).applyEuler(new Euler(...attractor.rotation)).normalize();
       velocityUniforms.uAttractorMagnitudes.value[index] = attractor.magnitude;
     });
     compute.compute();
@@ -355,9 +355,9 @@ function AttractorHandle({ attractor, index, configuration, onChange }) {
     const controls = controlsRef.current;
     if (!controls?.setColors) return;
     controls.setColors(
-      new THREE.Color(configuration.controlsColorX).getHex(THREE.SRGBColorSpace),
-      new THREE.Color(configuration.controlsColorY).getHex(THREE.SRGBColorSpace),
-      new THREE.Color(configuration.controlsColorZ).getHex(THREE.SRGBColorSpace)
+      new Color(configuration.controlsColorX).getHex(SRGBColorSpace),
+      new Color(configuration.controlsColorY).getHex(SRGBColorSpace),
+      new Color(configuration.controlsColorZ).getHex(SRGBColorSpace)
     );
   }, [configuration.controlsColorX, configuration.controlsColorY, configuration.controlsColorZ]);
   const onObjectChange = () => {
@@ -375,7 +375,7 @@ function AttractorHandle({ attractor, index, configuration, onChange }) {
         <group visible={configuration.helperVisible} scale={0.325}>
           <mesh rotation={[-Math.PI / 2, 0, 0]}>
             <ringGeometry args={[1, 1.02, 32, 1, 0, Math.PI * 1.5]} />
-            <meshBasicMaterial color={configuration.controlsColorY} side={THREE.DoubleSide} />
+            <meshBasicMaterial color={configuration.controlsColorY} side={DoubleSide} />
           </mesh>
           <mesh position={[1, 0, 0.2]} rotation={[Math.PI / 2, 0, 0]} scale={[1, 0.25 + Math.min(attractor.magnitude, 10) / 10 * 0.75, 1]}>
             <coneGeometry args={[0.1, 0.4, 12]} />
@@ -394,8 +394,8 @@ function AttractorCamera({ configuration, onCameraChange, playing }) {
   const configurationRef = useRef(configuration);
   configurationRef.current = configuration;
   useEffect(() => {
-    const nextPosition = new THREE.Vector3(configuration.cameraPosX, configuration.cameraPosY, configuration.cameraPosZ);
-    const target = new THREE.Vector3(configuration.cameraTargetX, configuration.cameraTargetY, configuration.cameraTargetZ);
+    const nextPosition = new Vector3(configuration.cameraPosX, configuration.cameraPosY, configuration.cameraPosZ);
+    const target = new Vector3(configuration.cameraTargetX, configuration.cameraTargetY, configuration.cameraTargetZ);
     if (nextPosition.distanceTo(target) < 0.25) nextPosition.set(target.x, target.y, target.z + 0.25);
     camera.position.copy(nextPosition);
     camera.zoom = configuration.cameraZoomEnabled ? configuration.cameraZoom : 1;
@@ -412,9 +412,9 @@ function AttractorCamera({ configuration, onCameraChange, playing }) {
     const current = configurationRef.current;
     if (current.cameraOrbitOn || (playing && current.replayCameraTrack === 'orbit')) {
       const angle = delta * current.replayCameraOrbitSpeed;
-      const offset = camera.position.clone().sub(controlsRef.current?.target || new THREE.Vector3());
-      offset.applyEuler(new THREE.Euler(angle * current.replayCameraOrbitX, angle * current.replayCameraOrbitY, angle * current.replayCameraOrbitZ));
-      camera.position.copy(controlsRef.current?.target || new THREE.Vector3()).add(offset);
+      const offset = camera.position.clone().sub(controlsRef.current?.target || new Vector3());
+      offset.applyEuler(new Euler(angle * current.replayCameraOrbitX, angle * current.replayCameraOrbitY, angle * current.replayCameraOrbitZ));
+      camera.position.copy(controlsRef.current?.target || new Vector3()).add(offset);
       controlsRef.current?.update();
     }
   });
@@ -641,14 +641,14 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
     if (configurationRef.current.attractors.length >= MAX_ATTRACTORS) return;
     const current = configurationRef.current;
     const index = current.attractors.length;
-    const position = new THREE.Vector3();
+    const position = new Vector3();
     if (current.newAttractorPlacement === 'previous') position.fromArray(current.attractors[index - 1]?.position || [0, 0, 0]);
     if (current.newAttractorPlacement === 'centroid' || current.newAttractorPlacement === 'random within distance') {
-      current.attractors.forEach((attractor) => position.add(new THREE.Vector3(...attractor.position)));
+      current.attractors.forEach((attractor) => position.add(new Vector3(...attractor.position)));
       position.divideScalar(Math.max(1, current.attractors.length));
     }
     if (current.newAttractorPlacement === 'random') position.set((Math.random() - 0.5) * current.boundHalfExtent * 2, (Math.random() - 0.5) * current.boundHalfExtent * 2, (Math.random() - 0.5) * current.boundHalfExtent * 2);
-    if (current.newAttractorPlacement === 'random within distance') position.add(new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize().multiplyScalar(Math.cbrt(Math.random()) * current.newAttractorRandomDist));
+    if (current.newAttractorPlacement === 'random within distance') position.add(new Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize().multiplyScalar(Math.cbrt(Math.random()) * current.newAttractorRandomDist));
     onChange({ attractors: [...current.attractors, { position: position.toArray(), rotation: [0, 0, 0], name: `Attractor ${index}`, magnitude: 1 }] }, 'sys:addAttractor');
   };
 
