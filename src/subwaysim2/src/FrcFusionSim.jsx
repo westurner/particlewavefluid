@@ -31,6 +31,8 @@ const INITIAL_CONFIGURATION = {
   showChargeFlow: true,
   gasFlowSpeed: 1,
   chargeFlowSpeed: 1,
+  heliumFlowSpeed: 1,
+  neutronFlowSpeed: 1,
   inputParticleSpeed: 1,
   showInputParticles: true,
   showDTInput: true,
@@ -38,8 +40,11 @@ const INITIAL_CONFIGURATION = {
   showArgonInput: false,
   showInputAnnotations: true,
   showInputAttributes: true,
+  showPlasmaAnnotations: true,
+  showPlasmaAttributes: true,
   showDeviceAnnotations: true,
   showDeviceAttributes: true,
+  showAnnotations: true,
   showCoils: true,
   showFieldVolume: true,
   showAxis: true,
@@ -51,6 +56,22 @@ const INITIAL_CONFIGURATION = {
   deviceYaw: 0,
   deviceRoll: 0
 };
+const FRC_PANEL_LAYOUT = {
+  breakpoint: 700,
+  width: 350,
+  right: 28
+};
+
+function cameraFrameOffset(camera, cameraPosition, target, viewport, parametersVisible) {
+  if (!parametersVisible || viewport.width <= FRC_PANEL_LAYOUT.breakpoint) return new Vector3();
+  const shiftPixels = FRC_PANEL_LAYOUT.width / 2;
+  const distance = cameraPosition.distanceTo(target);
+  const horizontalSpan = 2 * distance * Math.tan(MathUtils.degToRad(camera.fov) / 2)
+    * viewport.width / viewport.height;
+  const forward = target.clone().sub(cameraPosition).normalize();
+  const right = forward.cross(new Vector3(0, 1, 0)).normalize();
+  return right.multiplyScalar(shiftPixels * horizontalSpan / viewport.width);
+}
 
 const OUTPUT_COMPONENTS = {
   nitrogen: {
@@ -344,7 +365,7 @@ function DeviceAnnotations({ model, scale, outputSpread, harnessHeight, harnessC
   return (
     <group name="device-annotations">
       {showEnergyHarness && (
-        <Html position={[0, radius + Number(harnessHeight) + 0.45, 0]} center distanceFactor={8} className="frc-device-label">
+        <Html position={[0, radius + Number(harnessHeight) + 0.45, 0]} center distanceFactor={8} zIndexRange={[1, 0]} className="frc-device-label">
           <div style={{ '--frc-input-color': '#ffd990' }}>
             {showNames && <strong>Energy capture harness</strong>}
             {showAttributes && <span>{harnessCollectorCount} collector rings / conversion bus</span>}
@@ -352,7 +373,7 @@ function DeviceAnnotations({ model, scale, outputSpread, harnessHeight, harnessC
         </Html>
       )}
       {showOutputManifold && outputAnnotations.filter((output) => output.visible).map((output) => (
-        <Html key={output.id} position={output.position} center distanceFactor={8} className="frc-device-label">
+        <Html key={output.id} position={output.position} center distanceFactor={8} zIndexRange={[1, 0]} className="frc-device-label">
           <div style={{ '--frc-input-color': output.color }}>
             {showNames && <strong>{OUTPUT_COMPONENTS[output.id].label}</strong>}
             {showAttributes && <span>{OUTPUT_COMPONENTS[output.id].detail} / {output.value}</span>}
@@ -363,11 +384,11 @@ function DeviceAnnotations({ model, scale, outputSpread, harnessHeight, harnessC
   );
 }
 
-function FlowParticles({ model, scale, showGasFlow, showChargeFlow, gasFlowSpeed = 1, chargeFlowSpeed = 1, showCabling }) {
+function FlowParticles({ model, scale, outputSpread, showGasFlow, showChargeFlow, showHeliumOutput, showNeutronOutput, showOutputManifold, gasFlowSpeed = 1, chargeFlowSpeed = 1, heliumFlowSpeed = 1, neutronFlowSpeed = 1, showCabling, showEnergyHarness, showNames, showAttributes }) {
   const pointsRef = useRef(null);
-  const particleVisibility = getFlowParticleVisibility({ showCabling, showGasFlow, showChargeFlow });
-  const gasMaterial = useMemo(() => new ShaderMaterial({
-    uniforms: { uColor: { value: new Color(FLOW_PARTICLE_STREAMS.gas.color) } },
+  const particleVisibility = getFlowParticleVisibility({ showCabling, showGasFlow, showChargeFlow, showOutputManifold, showHeliumOutput, showNeutronOutput });
+  const materials = useMemo(() => Object.fromEntries(Object.entries(FLOW_PARTICLE_STREAMS).map(([streamId, stream]) => [streamId, new ShaderMaterial({
+    uniforms: { uColor: { value: new Color(stream.color) } },
     vertexShader: `
       void main() {
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
@@ -388,67 +409,63 @@ function FlowParticles({ model, scale, showGasFlow, showChargeFlow, gasFlowSpeed
     transparent: true,
     depthWrite: false,
     blending: AdditiveBlending
-  }), []);
-  const chargeMaterial = useMemo(() => new ShaderMaterial({
-    uniforms: { uColor: { value: new Color(FLOW_PARTICLE_STREAMS.charge.color) } },
-    vertexShader: gasMaterial.vertexShader,
-    fragmentShader: gasMaterial.fragmentShader,
-    transparent: true,
-    depthWrite: false,
-    blending: AdditiveBlending
-  }), [gasMaterial.fragmentShader, gasMaterial.vertexShader]);
+  })])), []);
   const paths = useMemo(() => {
-    const flowPathPoints = createFlowPathPoints({ wallHalfLength: model.wallHalfLength, wallRadius: model.wallRadius, scale });
-    return {
-      nitrogenPath: new CatmullRomCurve3(flowPathPoints.nitrogenPath.map((point) => new Vector3(...point))),
-      chargePath: new CatmullRomCurve3(flowPathPoints.chargePath.map((point) => new Vector3(...point)))
-    };
-  }, [model.wallHalfLength, model.wallRadius, scale]);
-  const gasGeometry = useMemo(() => {
-    const nextGeometry = new BufferGeometry();
-    nextGeometry.setAttribute('position', new BufferAttribute(new Float32Array(32 * 3), 3));
-    return nextGeometry;
-  }, []);
-  const chargeGeometry = useMemo(() => {
-    const nextGeometry = new BufferGeometry();
-    nextGeometry.setAttribute('position', new BufferAttribute(new Float32Array(32 * 3), 3));
-    return nextGeometry;
-  }, []);
+    const flowPathPoints = createFlowPathPoints({ wallHalfLength: model.wallHalfLength, wallRadius: model.wallRadius, scale, outputSpread });
+    return Object.fromEntries(Object.entries(flowPathPoints).map(([pathKey, points]) => [
+      pathKey,
+      new CatmullRomCurve3(points.map((point) => new Vector3(...point)))
+    ]));
+  }, [model.wallHalfLength, model.wallRadius, outputSpread, scale]);
+  const geometries = useMemo(() => Object.fromEntries(Object.keys(FLOW_PARTICLE_STREAMS).map((streamId) => {
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new BufferAttribute(new Float32Array(32 * 3), 3));
+    return [streamId, geometry];
+  })), []);
+  const speeds = { gas: gasFlowSpeed, charge: chargeFlowSpeed, helium: heliumFlowSpeed, neutrons: neutronFlowSpeed };
 
   useEffect(() => () => {
-    gasGeometry.dispose();
-    chargeGeometry.dispose();
-    gasMaterial.dispose();
-    chargeMaterial.dispose();
-  }, [chargeGeometry, chargeMaterial, gasGeometry, gasMaterial]);
+    Object.values(geometries).forEach((geometry) => geometry.dispose());
+    Object.values(materials).forEach((material) => material.dispose());
+  }, [geometries, materials]);
 
   useFrame(({ clock }) => {
     if (!pointsRef.current) return;
-    const gasPositions = gasGeometry.attributes.position.array;
-    const chargePositions = chargeGeometry.attributes.position.array;
-    const gasCycle = clock.elapsedTime;
-    const chargeCycle = clock.elapsedTime;
-    for (let index = 0; index < 32; index += 1) {
-      const gasProgress = advanceFlowProgress(index / 32, FLOW_PARTICLE_STREAMS.gas.speed * gasFlowSpeed, gasCycle);
-      const chargeProgress = advanceFlowProgress(index / 32, FLOW_PARTICLE_STREAMS.charge.speed * chargeFlowSpeed, chargeCycle);
-      const gasPoint = paths.nitrogenPath.getPointAt(gasProgress);
-      const chargePoint = paths.chargePath.getPointAt(chargeProgress);
-      const gasOffset = index * 3;
-      gasPositions[gasOffset] = gasPoint.x;
-      gasPositions[gasOffset + 1] = gasPoint.y;
-      gasPositions[gasOffset + 2] = gasPoint.z;
-      chargePositions[gasOffset] = chargePoint.x;
-      chargePositions[gasOffset + 1] = chargePoint.y;
-      chargePositions[gasOffset + 2] = chargePoint.z;
-    }
-    gasGeometry.attributes.position.needsUpdate = true;
-    chargeGeometry.attributes.position.needsUpdate = true;
+    Object.entries(FLOW_PARTICLE_STREAMS).forEach(([streamId, stream]) => {
+      const positions = geometries[streamId].attributes.position.array;
+      const path = paths[stream.pathKey];
+      for (let index = 0; index < 32; index += 1) {
+        const progress = advanceFlowProgress(index / 32, stream.speed * speeds[streamId], clock.elapsedTime);
+        const point = path.getPointAt(progress);
+        const offset = index * 3;
+        positions[offset] = point.x;
+        positions[offset + 1] = point.y;
+        positions[offset + 2] = point.z;
+      }
+      geometries[streamId].attributes.position.needsUpdate = true;
+    });
   });
 
   return (
     <group ref={pointsRef} name="flow-particles" visible={showCabling}>
-      <points name="gas-flow-particles" geometry={gasGeometry} material={gasMaterial} visible={particleVisibility.gas} frustumCulled={false} />
-      <points name="charge-flow-particles" geometry={chargeGeometry} material={chargeMaterial} visible={particleVisibility.charge} frustumCulled={false} />
+      {Object.entries(FLOW_PARTICLE_STREAMS).map(([streamId, stream]) => (
+        <points
+          key={streamId}
+          name={`${streamId}-flow-particles`}
+          geometry={geometries[streamId]}
+          material={materials[streamId]}
+          visible={particleVisibility[streamId]}
+          frustumCulled={false}
+        />
+      ))}
+      {showEnergyHarness && particleVisibility.charge && (showNames || showAttributes) && (
+        <Html position={[model.wallHalfLength * scale * 0.2, model.wallRadius * scale + 1.4, 0]} center distanceFactor={8} zIndexRange={[1, 0]} className="frc-device-label">
+          <div style={{ '--frc-input-color': FLOW_PARTICLE_STREAMS.charge.color }}>
+            {showNames && <strong>Charged particle stream</strong>}
+            {showAttributes && <span>external red stream / harness capture path</span>}
+          </div>
+        </Html>
+      )}
     </group>
   );
 }
@@ -528,6 +545,19 @@ function InputParticles({ model, scale, activeInput, showInputParticles, showDTI
   );
 }
 
+function PlasmaAnnotations({ model, scale, showNames, showAttributes }) {
+  if (!showNames && !showAttributes) return null;
+  const radius = model.plasmaRadius * scale;
+  return (
+    <Html position={[0, -radius - 0.85, radius * 0.45]} center distanceFactor={8} zIndexRange={[1, 0]} className="frc-device-label">
+      <div style={{ '--frc-input-color': '#ffd18a' }}>
+        {showNames && <strong>Plasma</strong>}
+        {showAttributes && <span>beta {(model.beta * 100).toFixed(1)}% / {model.axialField.toFixed(2)} T reversal / {model.plasmaCurrentMA.toFixed(2)} MA / {model.plasmaVolume.toFixed(1)} m3</span>}
+      </div>
+    </Html>
+  );
+}
+
 function InputAnnotations({ model, scale, activeInput, showNames, showAttributes }) {
   if (!showNames && !showAttributes) return null;
   const halfLength = model.plasmaHalfLength * scale;
@@ -540,7 +570,7 @@ function InputAnnotations({ model, scale, activeInput, showNames, showAttributes
   return Object.entries(INPUT_PARTICLE_STREAMS).filter(([input]) => input === activeInput).map(([input, stream]) => {
     const inputModel = FRC_INPUTS[input];
     return (
-      <Html key={input} position={annotationPositions[input]} center distanceFactor={8} className="frc-input-label">
+      <Html key={input} position={annotationPositions[input]} center distanceFactor={8} zIndexRange={[1, 0]} className="frc-input-label">
         <div style={{ '--frc-input-color': stream.color }}>
           {showNames && <strong>{stream.label}</strong>}
           {showAttributes && <span>{stream.channel} / {inputModel.description}</span>}
@@ -669,11 +699,44 @@ function PlasmaParticles({ configuration, model, onGpuError }) {
   return <points geometry={geometry} material={material} rotation={[0, MathUtils.degToRad(configuration.fieldTilt ?? 0), 0]} visible={configuration.showPlasma} frustumCulled={false} />;
 }
 
-function ReactorScene({ configuration, onGpuError }) {
+function ReactorControls({ controlsRef }) {
+  return <OrbitControls ref={controlsRef} makeDefault enableDamping dampingFactor={0.08} minDistance={9} maxDistance={38} target={[0, 0, 0]} />;
+}
+
+function ReactorCameraFrame({ controlsRef, parametersVisible }) {
+  const { camera, size } = useThree();
+  const targetRef = useRef(new Vector3(0, 0, 0));
+  const frameOffsetRef = useRef(new Vector3());
+  const desiredFrameOffsetRef = useRef(new Vector3());
+
+  useEffect(() => {
+    const basePosition = camera.position.clone().sub(frameOffsetRef.current);
+    const baseTarget = targetRef.current.clone();
+    desiredFrameOffsetRef.current.copy(cameraFrameOffset(camera, basePosition, baseTarget, size, parametersVisible));
+  }, [camera, parametersVisible, size]);
+
+  useFrame((_, delta) => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+    const blend = 1 - Math.exp(-delta * 5.5);
+    const basePosition = camera.position.clone().sub(frameOffsetRef.current);
+    const baseTarget = controls.target.clone().sub(frameOffsetRef.current);
+    targetRef.current.copy(baseTarget);
+    const desiredOffset = cameraFrameOffset(camera, basePosition, baseTarget, size, parametersVisible);
+    desiredFrameOffsetRef.current.copy(desiredOffset);
+    frameOffsetRef.current.lerp(desiredFrameOffsetRef.current, blend);
+    controls.target.copy(baseTarget).add(frameOffsetRef.current);
+    camera.position.copy(basePosition).add(frameOffsetRef.current);
+  });
+}
+
+function ReactorScene({ configuration, onGpuError, parametersVisible }) {
   const deviceGroupRef = useRef();
+  const controlsRef = useRef();
   const model = useMemo(() => calculateFrcModel(configuration), [configuration]);
   const scale = configuration.vesselScale;
   const visualizationVisibility = getFrcVisualizationVisibility(configuration);
+  const annotationsEnabled = configuration.showAnnotations !== false;
   const deviceRotation = [
     MathUtils.degToRad(configuration.devicePitch ?? configuration.deviceRotationX ?? 0),
     MathUtils.degToRad(configuration.deviceYaw ?? configuration.deviceRotationY ?? 0),
@@ -696,16 +759,33 @@ function ReactorScene({ configuration, onGpuError }) {
       <group ref={deviceGroupRef}>
         <ReactorVessel model={model} scale={scale} opacity={configuration.vesselOpacity} showCoils={configuration.showCoils} />
         <PlasmaParticles configuration={configuration} model={model} onGpuError={onGpuError} />
+        {annotationsEnabled && (
+          <PlasmaAnnotations
+            model={model}
+            scale={scale}
+            showNames={configuration.showPlasmaAnnotations !== false}
+            showAttributes={configuration.showPlasmaAttributes !== false}
+          />
+        )}
         <EnergyHarness model={model} scale={scale} visible={(configuration.showCabling ?? true) && (configuration.showEnergyHarness ?? true)} harnessHeight={configuration.harnessHeight} harnessCollectorCount={configuration.harnessCollectorCount} />
         <OutputManifold model={model} scale={scale} visible={(configuration.showCabling ?? true) && (configuration.showOutputManifold ?? true)} outputSpread={configuration.outputSpread} outputTubeRadius={configuration.outputTubeRadius} showNitrogenOutput={(configuration.showNitrogenOutput ?? true) && visualizationVisibility.output.nitrogen} showHeliumOutput={(configuration.showHeliumOutput ?? true) && visualizationVisibility.output.helium} showNeutronOutput={(configuration.showNeutronOutput ?? true) && visualizationVisibility.output.neutrons} />
         <FlowParticles
           model={model}
           scale={scale}
+          outputSpread={configuration.outputSpread}
           showGasFlow={configuration.showGasFlow ?? true}
           showChargeFlow={configuration.showChargeFlow ?? true}
+          showHeliumOutput={(configuration.showHeliumOutput ?? true) && visualizationVisibility.output.helium}
+          showNeutronOutput={(configuration.showNeutronOutput ?? true) && visualizationVisibility.output.neutrons}
+          showOutputManifold={(configuration.showOutputManifold ?? true)}
           gasFlowSpeed={configuration.gasFlowSpeed ?? 1}
           chargeFlowSpeed={configuration.chargeFlowSpeed ?? 1}
+          heliumFlowSpeed={configuration.heliumFlowSpeed ?? 1}
+          neutronFlowSpeed={configuration.neutronFlowSpeed ?? 1}
           showCabling={configuration.showCabling ?? true}
+          showEnergyHarness={(configuration.showEnergyHarness ?? true)}
+          showNames={annotationsEnabled && configuration.showDeviceAnnotations !== false}
+          showAttributes={annotationsEnabled && configuration.showDeviceAttributes !== false}
         />
         <group rotation={[0, MathUtils.degToRad(configuration.fieldTilt ?? 0), 0]}>
           <InputParticles
@@ -719,7 +799,7 @@ function ReactorScene({ configuration, onGpuError }) {
             inputParticleSpeed={configuration.inputParticleSpeed ?? 1}
             showCabling={configuration.showCabling ?? true}
           />
-          {(configuration.showInputAnnotations !== false || configuration.showInputAttributes !== false) && (
+          {annotationsEnabled && (configuration.showInputAnnotations !== false || configuration.showInputAttributes !== false) && (
             <InputAnnotations model={model} scale={scale} activeInput={model.input} showNames={configuration.showInputAnnotations !== false} showAttributes={configuration.showInputAttributes !== false} />
           )}
         </group>
@@ -730,8 +810,8 @@ function ReactorScene({ configuration, onGpuError }) {
             outputSpread={configuration.outputSpread}
             harnessHeight={configuration.harnessHeight}
             harnessCollectorCount={configuration.harnessCollectorCount}
-            showNames={configuration.showDeviceAnnotations !== false}
-            showAttributes={configuration.showDeviceAttributes !== false}
+            showNames={annotationsEnabled && configuration.showDeviceAnnotations !== false}
+            showAttributes={annotationsEnabled && configuration.showDeviceAttributes !== false}
             showEnergyHarness={(configuration.showCabling ?? true) && (configuration.showEnergyHarness ?? true)}
             showOutputManifold={(configuration.showCabling ?? true) && (configuration.showOutputManifold ?? true)}
             showNitrogenOutput={configuration.showNitrogenOutput !== false && visualizationVisibility.output.nitrogen}
@@ -743,7 +823,8 @@ function ReactorScene({ configuration, onGpuError }) {
         {configuration.showAxis && <FieldAxis model={model} scale={scale} tilt={configuration.fieldTilt} />}
       </group>
       <gridHelper args={[36, 18, '#2b5b5a', '#153434']} position={[0, -5.2, 0]} />
-      <OrbitControls makeDefault enableDamping dampingFactor={0.08} minDistance={9} maxDistance={38} target={[0, 0, 0]} />
+      <ReactorControls controlsRef={controlsRef} />
+      <ReactorCameraFrame controlsRef={controlsRef} parametersVisible={parametersVisible} />
     </>
   );
 }
@@ -784,6 +865,7 @@ function ToggleInput({ label, checked, onChange, swatch, disabled = false }) {
 function FrcPanel({ configuration, model, gpuError, onChange, onHide }) {
   const visualizationVisibility = getFrcVisualizationVisibility(configuration);
   const activeInput = model.input;
+  const annotationsEnabled = configuration.showAnnotations !== false;
   return (
     <aside className="frc-panel">
       <div className="frc-panel-topline"><span className="frc-panel-kicker"><i /> DEVICE + PLASMA / PHASE 02</span><button type="button" className="frc-hide-button" onClick={onHide}>Hide params</button></div>
@@ -839,6 +921,8 @@ function FrcPanel({ configuration, model, gpuError, onChange, onHide }) {
         <span className="frc-section-label">FLOW PARAMETERS</span>
         <RangeInput label="Nitrogen gas speed" value={configuration.gasFlowSpeed} min={0} max={2} step={0.05} suffix=" x" onChange={(value) => onChange({ gasFlowSpeed: value })} />
         <RangeInput label="Charge flow speed" value={configuration.chargeFlowSpeed} min={0} max={2} step={0.05} suffix=" x" onChange={(value) => onChange({ chargeFlowSpeed: value })} />
+        <RangeInput label="Helium output speed" value={configuration.heliumFlowSpeed} min={0} max={2} step={0.05} suffix=" x" onChange={(value) => onChange({ heliumFlowSpeed: value })} />
+        <RangeInput label="Neutron output speed" value={configuration.neutronFlowSpeed} min={0} max={2} step={0.05} suffix=" x" onChange={(value) => onChange({ neutronFlowSpeed: value })} />
         <RangeInput label="Input particle speed" value={configuration.inputParticleSpeed} min={0} max={2} step={0.05} suffix=" x" onChange={(value) => onChange({ inputParticleSpeed: value })} />
         <ToggleInput label="Nitrogen gas flow" swatch={FLOW_PARTICLE_STREAMS.gas.color} checked={configuration.showGasFlow ?? true} onChange={(value) => onChange({ showGasFlow: value })} />
         <ToggleInput label="Charge flow" swatch={FLOW_PARTICLE_STREAMS.charge.color} checked={configuration.showChargeFlow ?? true} onChange={(value) => onChange({ showChargeFlow: value })} />
@@ -863,10 +947,13 @@ function FrcPanel({ configuration, model, gpuError, onChange, onHide }) {
       </div>
       <div className="frc-control-group">
         <span className="frc-section-label">ANNOTATIONS</span>
-        <ToggleInput label="Input names" checked={configuration.showInputAnnotations !== false} onChange={(value) => onChange({ showInputAnnotations: value })} />
-        <ToggleInput label="Input attributes" checked={configuration.showInputAttributes !== false} onChange={(value) => onChange({ showInputAttributes: value })} />
-        <ToggleInput label="Device annotations" checked={configuration.showDeviceAnnotations !== false} onChange={(value) => onChange({ showDeviceAnnotations: value })} />
-        <ToggleInput label="Device attributes" checked={configuration.showDeviceAttributes !== false} onChange={(value) => onChange({ showDeviceAttributes: value })} />
+        <ToggleInput label="Turn off all annotations" checked={!annotationsEnabled} onChange={(value) => onChange({ showAnnotations: !value })} />
+        <ToggleInput label="Plasma annotation" checked={annotationsEnabled && configuration.showPlasmaAnnotations !== false} disabled={!annotationsEnabled} onChange={(value) => onChange({ showPlasmaAnnotations: value })} />
+        <ToggleInput label="Plasma metrics" checked={annotationsEnabled && configuration.showPlasmaAttributes !== false} disabled={!annotationsEnabled} onChange={(value) => onChange({ showPlasmaAttributes: value })} />
+        <ToggleInput label="Input names" checked={annotationsEnabled && configuration.showInputAnnotations !== false} disabled={!annotationsEnabled} onChange={(value) => onChange({ showInputAnnotations: value })} />
+        <ToggleInput label="Input attributes" checked={annotationsEnabled && configuration.showInputAttributes !== false} disabled={!annotationsEnabled} onChange={(value) => onChange({ showInputAttributes: value })} />
+        <ToggleInput label="Device annotations" checked={annotationsEnabled && configuration.showDeviceAnnotations !== false} disabled={!annotationsEnabled} onChange={(value) => onChange({ showDeviceAnnotations: value })} />
+        <ToggleInput label="Device attributes" checked={annotationsEnabled && configuration.showDeviceAttributes !== false} disabled={!annotationsEnabled} onChange={(value) => onChange({ showDeviceAttributes: value })} />
       </div>
       <div className="frc-control-group">
         <span className="frc-section-label">ORIENTATION</span>
@@ -910,9 +997,9 @@ export default function FrcFusionSim({ onBack }) {
 
   return (
     <main className="frc-app">
-      <div className="frc-scene"><Canvas camera={{ position: [0, 0, 22], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><ReactorScene configuration={configuration} onGpuError={setGpuError} /></Canvas></div>
+      <div className="frc-scene"><Canvas camera={{ position: [0, 0, 22], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><ReactorScene configuration={configuration} onGpuError={setGpuError} parametersVisible={parametersVisible} /></Canvas></div>
       <header className="frc-topbar"><div className="frc-brand"><span className="frc-mark">FRC</span><span><b>FUSION DEVICE LAB</b><em>Field-reversed configuration / phase 02</em></span></div><div className="frc-top-meta"><span>PHYSICAL MODEL</span><span>GPGPU TRANSPORT ACTIVE</span></div><button type="button" className="frc-back-button" onClick={onBack}>Lab menu</button></header>
-      <section className="frc-title"><p>Transparent reactor study</p><h1>Shape the vessel.<br />Read the field.</h1><span>GPU plasma transport is active inside the device. Kinetic solver work follows in phase 03.</span></section>
+      <section className="frc-title"><p>Transparent reactor study</p><h1>Shape the vessel.<br />Read the field.</h1><span>GPU plasma transport is active inside the device. Kinetic solver dynamics work follows in phase 03.</span></section>
       <nav className="frc-view-toolbar"><button type="button" onClick={() => setParametersVisible((visible) => !visible)}>{parametersVisible ? 'Hide params' : 'Show params'}</button><span>ORBIT / DEVICE SCALE 1:{configuration.vesselScale.toFixed(2)}</span></nav>
       {parametersVisible && <FrcPanel configuration={configuration} model={model} gpuError={gpuError} onChange={updateConfiguration} onHide={() => setParametersVisible(false)} />}
       <div className="frc-footer"><span>GEOMETRY / COILS / SEPARATRIX</span><span>BETA {Math.round(model.beta * 100)}% / CONFINEMENT {Math.round(model.confinement * 100)}%</span></div>

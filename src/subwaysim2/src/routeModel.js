@@ -34,21 +34,28 @@ export function surfaceParticleSeedY(
   return streetY + (maxY - streetY) * heightFraction;
 }
 
+export const STATION_FLOOR_Y = -2.5;
+
 export const STAIR_ROUTE = {
-  landingStartX: 9.5,
+  landingStartX: 9.4,
   startX: 11,
   lowerFlightEndX: 19.5,
   upperFlightStartX: 22.5,
   endX: 32,
-  baseY: -3.05,
-  landingY: 3,
-  riseY: 13.05,
+  topLandingEndX: 33.6,
+  baseY: STATION_FLOOR_Y,
+  landingY: 3.35,
+  riseY: 12.5,
   z: -2.5,
   width: 2.8,
   tunnelHeight: 3.2,
-  stepCount: 75,
-  maxRiserHeight: 0.175,
-  minTreadDepth: 0.28
+  stepCount: 64,
+  lowerStepCount: 30,
+  upperStepCount: 34,
+  maxRiserHeight: 0.19685,
+  minTreadDepth: 0.2794,
+  nosingDepth: 0.035,
+  landingDepth: 1.6
 };
 
 export const TURNSTILE_ROUTE = {
@@ -113,7 +120,7 @@ export function measureShaftEndpoints(positionData, velocityData, particleCount,
 
 export const STREET_VOLUME = {
   minX: -15.5,
-  maxX: 33,
+  maxX: 34,
   minY: 10,
   maxY: 13,
   minZ: -4.8,
@@ -387,7 +394,7 @@ export function isSurfaceOpening(x, z) {
     Math.abs(x - shaftX) <= 0.75 && Math.abs(z - SHAFT_ROUTE.z) <= 0.75
   ));
   const stairOpening = x >= STAIR_ROUTE.endX - 1.4
-    && x <= STAIR_ROUTE.endX + STAIR_ROUTE.width / 2
+    && x <= STAIR_ROUTE.topLandingEndX
     && Math.abs(z - STAIR_ROUTE.z) <= STAIR_ROUTE.width / 2;
   return shaftOpening || stairOpening;
 }

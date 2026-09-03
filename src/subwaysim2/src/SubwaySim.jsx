@@ -13,6 +13,7 @@ import {
   SHAFT_POSITIONS,
   SHAFT_LABELS,
   SHAFT_ROUTE,
+  STATION_FLOOR_Y,
   STAIR_ROUTE,
   STREET_LAYOUT,
   STREET_VOLUME,
@@ -223,6 +224,7 @@ const positionShader = `
       * step(positionData.y, stairTunnelCeiling);
     float stairExit = step(${glslFloat(STAIR_ROUTE.endX - 1.4)}, stairX)
       * (1.0 - smoothstep(0.0, ${glslFloat(STAIR_ROUTE.width / 2)}, stairDistance))
+      * step(stairX, ${glslFloat(STAIR_ROUTE.topLandingEndX)})
       * step(stairSurfaceY, positionData.y);
     float surfaceOpening = max(step(0.05, shaftOpening), stairExit);
     if (positionData.w > 1.5 && surfaceOpening < 0.5) positionData.y = max(positionData.y, uSurfaceFloorY);
@@ -1378,16 +1380,19 @@ function StationArchitecture({ landingY, surfaceY }) {
   const trackLength = TRACK_ROUTE.maxX - TRACK_ROUTE.minX;
   const trackCenterX = (TRACK_ROUTE.minX + TRACK_ROUTE.maxX) / 2;
   const tunnelCenterY = TRACK_ROUTE.bedY + TRACK_ROUTE.tunnelHeight / 2;
-  const stairStepCount = STAIR_ROUTE.stepCount;
-  const stairStepRun = (STAIR_ROUTE.endX - STAIR_ROUTE.startX) / stairStepCount;
+  const stairFlights = [
+    { startX: STAIR_ROUTE.startX, endX: STAIR_ROUTE.lowerFlightEndX, startY: STAIR_ROUTE.baseY, endY: landingY, count: STAIR_ROUTE.lowerStepCount },
+    { startX: STAIR_ROUTE.upperFlightStartX, endX: STAIR_ROUTE.endX, startY: landingY, endY: surfaceY, count: STAIR_ROUTE.upperStepCount }
+  ];
   const landingLength = STAIR_ROUTE.startX - STAIR_ROUTE.landingStartX;
+  const topLandingLength = STAIR_ROUTE.topLandingEndX - STAIR_ROUTE.endX;
   return (
     <group>
-      <mesh position={[0, -3.25, -2.5]} receiveShadow>
+      <mesh position={[0, STATION_FLOOR_Y - 0.75, -2.5]} receiveShadow>
         <boxGeometry args={[22, 1.5, 4]} />
         {concreteMaterial}
       </mesh>
-      <mesh position={[0, -2.48, -0.6]}>
+      <mesh position={[0, STATION_FLOOR_Y + 0.02, -0.6]}>
         <boxGeometry args={[22, 0.05, 0.3]} />
         <meshBasicMaterial color="#e5bd42" />
       </mesh>
@@ -1409,14 +1414,26 @@ function StationArchitecture({ landingY, surfaceY }) {
         <boxGeometry args={[landingLength, 0.2, STAIR_ROUTE.width]} />
         {concreteMaterial}
       </mesh>
-      {Array.from({ length: stairStepCount }, (_, stepIndex) => {
-        const stepX = STAIR_ROUTE.startX + (stepIndex + 0.5) * stairStepRun;
-        return (
-        <mesh key={stepIndex} position={[stepX, stairSurfaceY(stepX, STAIR_ROUTE.baseY, landingY, surfaceY) - 0.1, STAIR_ROUTE.z]}>
-          <boxGeometry args={[stairStepRun + 0.04, 0.2, STAIR_ROUTE.width]} />
-          {concreteMaterial}
-        </mesh>
-        );
+      <mesh position={[(STAIR_ROUTE.lowerFlightEndX + STAIR_ROUTE.upperFlightStartX) / 2, landingY - 0.1, STAIR_ROUTE.z]}>
+        <boxGeometry args={[STAIR_ROUTE.upperFlightStartX - STAIR_ROUTE.lowerFlightEndX, 0.2, STAIR_ROUTE.width]} />
+        {concreteMaterial}
+      </mesh>
+      <mesh position={[STAIR_ROUTE.endX + topLandingLength / 2, surfaceY - 0.1, STAIR_ROUTE.z]}>
+        <boxGeometry args={[topLandingLength, 0.2, STAIR_ROUTE.width]} />
+        {concreteMaterial}
+      </mesh>
+      {stairFlights.flatMap((flight) => {
+        const stepRun = (flight.endX - flight.startX) / flight.count;
+        return Array.from({ length: flight.count }, (_, stepIndex) => {
+          const stepX = flight.startX + (stepIndex + 0.5) * stepRun;
+          const stepY = stairSurfaceY(stepX, STAIR_ROUTE.baseY, landingY, surfaceY);
+          return (
+            <mesh key={`${flight.startX}:${stepIndex}`} position={[stepX, stepY - 0.1, STAIR_ROUTE.z]}>
+              <boxGeometry args={[stepRun + STAIR_ROUTE.nosingDepth, 0.2, STAIR_ROUTE.width]} />
+              {concreteMaterial}
+            </mesh>
+          );
+        });
       })}
       {[-8, -4, 0, 4].map((columnX) => (
         <mesh key={columnX} position={[columnX, 0.5, -0.6]}>
@@ -1442,6 +1459,7 @@ function CameraController({ viewMode, parametersVisible, onManualChange }) {
   const destinationRef = useRef(new Vector3(...CAMERA_VIEWS.find((view) => view.id === 'ortho1').position));
   const targetRef = useRef(new Vector3(...CAMERA_TARGET));
   const frameOffsetRef = useRef(new Vector3());
+  const desiredFrameOffsetRef = useRef(new Vector3());
   const manualInteractionRef = useRef(false);
   const onManualChangeRef = useRef(onManualChange);
   onManualChangeRef.current = onManualChange;
@@ -1453,17 +1471,26 @@ function CameraController({ viewMode, parametersVisible, onManualChange }) {
     if (!view?.position) basePosition.sub(frameOffsetRef.current);
     const baseTarget = new Vector3(...CAMERA_TARGET);
     const nextOffset = cameraFrameOffset(camera, basePosition, baseTarget, size, parametersVisible);
-    if (!view?.position) camera.position.add(nextOffset).sub(frameOffsetRef.current);
-    frameOffsetRef.current.copy(nextOffset);
-    destinationRef.current.copy(basePosition).add(nextOffset);
+    desiredFrameOffsetRef.current.copy(nextOffset);
+    destinationRef.current.copy(basePosition);
     targetRef.current.copy(baseTarget);
   }, [camera, parametersVisible, size, viewMode]);
 
   useFrame((_, delta) => {
-    if (!controlsRef.current || manualInteractionRef.current || !viewMode) return;
+    if (!controlsRef.current) return;
     const blend = 1 - Math.exp(-delta * 5.5);
-    if (viewMode !== 'orbital') camera.position.lerp(destinationRef.current, blend);
-    controlsRef.current.target.lerp(targetRef.current, blend);
+    const basePosition = camera.position.clone().sub(frameOffsetRef.current);
+    if (!manualInteractionRef.current && viewMode) {
+      if (viewMode !== 'orbital') basePosition.lerp(destinationRef.current, blend);
+      controlsRef.current.target.lerp(targetRef.current, blend);
+    }
+    const frameReference = !manualInteractionRef.current && viewMode && viewMode !== 'orbital'
+      ? destinationRef.current
+      : basePosition;
+    const desiredFrameOffset = cameraFrameOffset(camera, frameReference, targetRef.current, size, parametersVisible);
+    desiredFrameOffsetRef.current.copy(desiredFrameOffset);
+    frameOffsetRef.current.lerp(desiredFrameOffsetRef.current, blend);
+    camera.position.copy(basePosition).add(frameOffsetRef.current);
   });
 
   const handleManualChange = () => {

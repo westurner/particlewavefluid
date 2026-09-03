@@ -7,9 +7,21 @@ export const FLOW_PARTICLE_STREAMS = {
   },
   charge: {
     label: 'Charge flow',
-    color: '#ff8c2f',
+    color: '#ff4d43',
     pathKey: 'chargePath',
     speed: 0.1375
+  },
+  helium: {
+    label: 'Helium alpha product',
+    color: '#82e0c0',
+    pathKey: 'heliumPath',
+    speed: 0.12
+  },
+  neutrons: {
+    label: 'Neutron flux',
+    color: '#f3ad63',
+    pathKey: 'neutronPath',
+    speed: 0.095
   }
 };
 
@@ -37,22 +49,25 @@ export const INPUT_PARTICLE_STREAMS = {
   }
 };
 
-export function createFlowPathPoints({ wallHalfLength, wallRadius, scale = 1 }) {
+export function createFlowPathPoints({ wallHalfLength, wallRadius, scale = 1, outputSpread = 1.8 }) {
   const halfLength = wallHalfLength * scale;
   const radius = wallRadius * scale;
+  const outputPath = (outputY) => [
+    [halfLength * 0.92, 0, radius * 0.82],
+    [halfLength + 0.7, outputY * 0.3, radius + 0.45],
+    [halfLength + 1.45, outputY, radius + 0.85],
+    [halfLength + 2.35, outputY, radius + 0.85]
+  ];
   return {
-    nitrogenPath: [
-      [halfLength * 0.92, 0, radius * 0.82],
-      [halfLength + 0.7, 0.54, radius + 0.45],
-      [halfLength + 1.45, 1.8, radius + 0.85],
-      [halfLength + 2.35, 1.8, radius + 0.85]
-    ],
+    nitrogenPath: outputPath(Number(outputSpread)),
     chargePath: [
       [-halfLength * 0.58, radius + 0.35, 0],
       [-halfLength * 0.18, radius + 1.15, 0],
       [halfLength * 0.46, radius + 1.35, 0],
       [halfLength * 1.18, radius + 1.15, 0]
-    ]
+    ],
+    heliumPath: outputPath(0),
+    neutronPath: outputPath(-Number(outputSpread))
   };
 }
 
@@ -84,9 +99,11 @@ export function advanceFlowProgress(progress, speed, elapsedSeconds) {
   return (progress + speed * elapsedSeconds) % 1;
 }
 
-export function getFlowParticleVisibility({ showCabling = true, showGasFlow = true, showChargeFlow = true } = {}) {
+export function getFlowParticleVisibility({ showCabling = true, showGasFlow = true, showChargeFlow = true, showOutputManifold = true, showHeliumOutput = true, showNeutronOutput = true } = {}) {
   return {
     gas: showCabling && showGasFlow,
-    charge: showCabling && showChargeFlow
+    charge: showCabling && showChargeFlow,
+    helium: showCabling && showOutputManifold && showHeliumOutput,
+    neutrons: showCabling && showOutputManifold && showNeutronOutput
   };
 }

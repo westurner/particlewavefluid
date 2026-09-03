@@ -89,6 +89,14 @@ test('FRC reactor is parallel to the ground by default and resettable', async (t
   await page.waitForTimeout(1500);
   const defaultView = await captureReactorView(page);
 
+  await page.getByRole('button', { name: 'Hide params' }).first().click();
+  await page.waitForTimeout(1500);
+  const centeredView = await captureReactorView(page);
+  assert.ok(countChangedPixels(defaultView, centeredView) > 1000, 'hiding params should reframe the reactor away from the panel');
+  await page.getByRole('button', { name: 'Show params' }).click();
+  const restoredPanelView = await waitForMatchingReactorView(page, defaultView);
+  assert.ok(meanColorDistance(defaultView, restoredPanelView) < 5, 'showing params should restore the panel-aware reactor framing');
+
   await roll.fill('28');
   await pitch.fill('-14');
   await yaw.fill('19');
@@ -142,8 +150,18 @@ test('FRC gas and charge particles are visible in their conduit flows', async (t
   assert.equal(await nitrogenOutputToggle.isChecked(), true);
   assert.equal(await heliumOutputToggle.isChecked(), true);
   assert.equal(await neutronOutputToggle.isChecked(), true);
+  assert.equal(await page.getByRole('slider', { name: 'Helium output speed' }).inputValue(), '1');
+  assert.equal(await page.getByRole('slider', { name: 'Neutron output speed' }).inputValue(), '1');
   assert.equal(await page.locator('.frc-input-label strong').count(), 1);
-  assert.equal(await page.locator('.frc-device-label strong').count(), 4);
+  assert.equal(await page.locator('.frc-device-label strong').count(), 6);
+  const allAnnotationsToggle = page.getByRole('checkbox', { name: 'Turn off all annotations' });
+  assert.equal(await allAnnotationsToggle.isChecked(), false);
+  await allAnnotationsToggle.check();
+  assert.equal(await page.locator('.frc-device-label strong').count(), 0);
+  assert.equal(await page.locator('.frc-input-label strong').count(), 0);
+  assert.equal(await page.getByRole('checkbox', { name: 'Plasma metrics' }).isDisabled(), true);
+  await allAnnotationsToggle.uncheck();
+  assert.equal(await page.locator('.frc-device-label strong').count(), 6);
   assert.ok(await page.getByText(/Deuterium-tritium fuel/).count() > 0);
 
   await plasmaInputSelect.selectOption('DHe_3');
@@ -155,7 +173,7 @@ test('FRC gas and charge particles are visible in their conduit flows', async (t
   assert.equal(await dhe3Toggle.isDisabled(), false);
   assert.equal(await argonToggle.isDisabled(), true);
   assert.deepEqual(await page.locator('.frc-input-label strong').allTextContents(), ['DHe_3']);
-  assert.equal(await page.locator('.frc-device-label strong').count(), 4);
+  assert.equal(await page.locator('.frc-device-label strong').count(), 6);
 
   await plasmaInputSelect.selectOption('Argon');
   await waitForInputAnnotation(page, 'Argon');
@@ -167,7 +185,7 @@ test('FRC gas and charge particles are visible in their conduit flows', async (t
   assert.equal(await heliumOutputToggle.isDisabled(), true);
   assert.equal(await neutronOutputToggle.isDisabled(), true);
   assert.deepEqual(await page.locator('.frc-input-label strong').allTextContents(), ['Argon']);
-  assert.equal(await page.locator('.frc-device-label strong').count(), 2);
+  assert.equal(await page.locator('.frc-device-label strong').count(), 4);
 
   await plasmaInputSelect.selectOption('DT');
   await waitForInputAnnotation(page, 'DT');
@@ -191,10 +209,10 @@ test('FRC gas and charge particles are visible in their conduit flows', async (t
   assert.equal(await nitrogenOutputToggle.isChecked(), false);
   await nitrogenOutputToggle.check();
   await harnessToggle.uncheck();
-  assert.equal(await page.locator('.frc-device-label strong').count(), 3);
+  assert.equal(await page.locator('.frc-device-label strong').count(), 4);
   await harnessToggle.check();
   await outputManifoldToggle.uncheck();
-  assert.equal(await page.locator('.frc-device-label strong').count(), 1);
+  assert.equal(await page.locator('.frc-device-label strong').count(), 3);
   await outputManifoldToggle.check();
 
   await page.getByRole('checkbox', { name: 'Run plasma transport' }).uncheck();

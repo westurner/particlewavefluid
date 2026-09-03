@@ -12,6 +12,7 @@ import {
   SHAFT_POSITIONS,
   SHAFT_LABELS,
   SHAFT_ROUTE,
+  STATION_FLOOR_Y,
   STAIR_ROUTE,
   STREET_LAYOUT,
   STREET_VOLUME,
@@ -72,9 +73,25 @@ test('stair profile has lower and upper flights separated by a level landing', (
   assert.equal(stairSurfaceY(STAIR_ROUTE.endX), STAIR_ROUTE.baseY + STAIR_ROUTE.riseY);
   assert.equal(stairSurfaceY(STAIR_ROUTE.endX), SHAFT_ROUTE.streetY);
   assert.equal(stairSurfaceY(10), STAIR_ROUTE.baseY);
+  assert.equal(STAIR_ROUTE.baseY, STATION_FLOOR_Y);
+  assert.ok(Math.abs(STAIR_ROUTE.topLandingEndX - STAIR_ROUTE.endX - STAIR_ROUTE.landingDepth) < 1e-9);
+  assert.ok(Math.abs(STAIR_ROUTE.startX - STAIR_ROUTE.landingStartX - STAIR_ROUTE.landingDepth) < 1e-9);
   assert.ok(stairSurfaceY(15) > stairSurfaceY(STAIR_ROUTE.startX));
   assert.ok(isInsideStairTunnel(10, stairSurfaceY(10) + 0.5, STAIR_ROUTE.z));
   assert.ok(!isInsideStairTunnel(10, stairSurfaceY(10) - 0.2, STAIR_ROUTE.z));
+});
+
+test('stair flights meet ADA tread, riser, nosing, and landing dimensions', () => {
+  const lowerTreadDepth = (STAIR_ROUTE.lowerFlightEndX - STAIR_ROUTE.startX) / STAIR_ROUTE.lowerStepCount;
+  const upperTreadDepth = (STAIR_ROUTE.endX - STAIR_ROUTE.upperFlightStartX) / STAIR_ROUTE.upperStepCount;
+  const lowerRiserHeight = (STAIR_ROUTE.landingY - STAIR_ROUTE.baseY) / STAIR_ROUTE.lowerStepCount;
+  const upperRiserHeight = (STAIR_ROUTE.baseY + STAIR_ROUTE.riseY - STAIR_ROUTE.landingY) / STAIR_ROUTE.upperStepCount;
+  assert.ok(lowerTreadDepth >= STAIR_ROUTE.minTreadDepth);
+  assert.ok(upperTreadDepth >= STAIR_ROUTE.minTreadDepth);
+  assert.ok(lowerRiserHeight <= STAIR_ROUTE.maxRiserHeight);
+  assert.ok(upperRiserHeight <= STAIR_ROUTE.maxRiserHeight);
+  assert.ok(STAIR_ROUTE.nosingDepth <= 0.0381);
+  assert.ok(STAIR_ROUTE.landingDepth >= 1.524);
 });
 
 test('stair height moves the street and shaft outlet together', () => {
@@ -90,16 +107,16 @@ test('stair height moves the street and shaft outlet together', () => {
 
 test('permanent stair underfill always occludes particles at the dynamic stair surface', () => {
   const stairX = 20;
-  const lowSurfaceY = stairSurfaceY(stairX, -3.05, 2, 8.2);
-  const highSurfaceY = stairSurfaceY(stairX, -3.05, 4, 10);
-  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z + STAIR_ROUTE.width, -3.05, 2, 8.2), -4);
-  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z, -3.05, 2, 8.2), lowSurfaceY + 0.12);
-  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z, -3.05, 4, 10), highSurfaceY + 0.12);
+  const lowSurfaceY = stairSurfaceY(stairX, STATION_FLOOR_Y, 2, 8.2);
+  const highSurfaceY = stairSurfaceY(stairX, STATION_FLOOR_Y, 4, 10);
+  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z + STAIR_ROUTE.width, STATION_FLOOR_Y, 2, 8.2), -4);
+  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z, STATION_FLOOR_Y, 2, 8.2), lowSurfaceY + 0.12);
+  assert.equal(constrainStairUnderfillPositionY(stairX, -4, STAIR_ROUTE.z, STATION_FLOOR_Y, 4, 10), highSurfaceY + 0.12);
   assert.ok(highSurfaceY > lowSurfaceY);
 });
 
 test('turnstile pedestals occlude while fare lanes remain open', () => {
-  const floorY = -2.8;
+  const floorY = STATION_FLOOR_Y + 0.3;
   assert.equal(
     constrainTurnstilePositionX(TURNSTILE_ROUTE.x, floorY, TURNSTILE_ROUTE.pedestalZ[1], 1),
     TURNSTILE_ROUTE.x - TURNSTILE_ROUTE.halfDepth

@@ -7,12 +7,36 @@ import { createGpuParticleField, createSimulationUvs } from './simulations/gpuPa
 const MAX_ATTRACTORS = 20;
 const PARTICLE_COUNT = 2 ** 18;
 const PRESET_STORAGE_KEY = 'sqgsim-attractor-presets';
+const ATTRACTOR_PANEL_LAYOUT = { breakpoint: 700, width: 350, right: 28 };
+const ATTRACTOR_CAMERA_TARGET = [0, 0, 0];
+const ATTRACTOR_CAMERA_VIEWS = [
+  { id: 'front', label: 'Front', position: [0, 0, 24] },
+  { id: 'back', label: 'Back', position: [0, 0, -24] },
+  { id: 'left', label: 'Left', position: [-24, 0, 0] },
+  { id: 'right', label: 'Right', position: [24, 0, 0] },
+  { id: 'ortho1', label: 'Ortho 1', position: [14, 14, 20] },
+  { id: 'ortho2', label: 'Ortho 2', position: [-14, 12, -20] },
+  { id: 'orbital', label: 'Orbital tracking', position: null }
+];
 
 const INITIAL_ATTRACTORS = [
   { position: [-1, 0, 0], rotation: [0, 0, 0], name: 'Attractor 0', magnitude: 1 },
   { position: [1, 0, -0.5], rotation: [0, 0, 0], name: 'Attractor 1', magnitude: 1 },
   { position: [0, 0.5, 1], rotation: [-0.51, 0.41, -1.35], name: 'Attractor 2', magnitude: 1 }
 ];
+
+function cameraFrameOffset(camera, cameraPosition, target, viewport, parametersVisible) {
+  if (!parametersVisible || viewport.width <= ATTRACTOR_PANEL_LAYOUT.breakpoint) return new Vector3();
+
+  const panelFootprint = ATTRACTOR_PANEL_LAYOUT.width + ATTRACTOR_PANEL_LAYOUT.right;
+  const shiftPixels = panelFootprint / 2;
+  const distance = cameraPosition.distanceTo(target);
+  const horizontalSpan = 2 * distance * Math.tan((camera.fov * Math.PI) / 360)
+    * viewport.width / viewport.height;
+  const forward = target.clone().sub(cameraPosition).normalize();
+  const right = forward.cross(new Vector3(0, 1, 0)).normalize();
+  return right.multiplyScalar(shiftPixels * horizontalSpan / viewport.width);
+}
 
 const NINE_BODY_POSITIONS = [
   [0, 0, 0], [-0.364457, -0.221686, -0.080653], [-0.111425, -0.657243, -0.288691],
@@ -388,42 +412,84 @@ function AttractorHandle({ attractor, index, configuration, onChange }) {
   );
 }
 
-function AttractorCamera({ configuration, onCameraChange, playing }) {
-  const { camera } = useThree();
+function AttractorCamera({ configuration, onCameraChange, playing, paramsVisible, viewMode, onManualChange }) {
+  const { camera, gl, size } = useThree();
   const controlsRef = useRef();
   const configurationRef = useRef(configuration);
+  const destinationRef = useRef(new Vector3(...ATTRACTOR_CAMERA_VIEWS.find((view) => view.id === 'ortho1').position));
+  const targetRef = useRef(new Vector3(...ATTRACTOR_CAMERA_TARGET));
+  const frameOffsetRef = useRef(new Vector3());
+  const manualInteractionRef = useRef(false);
+  const onManualChangeRef = useRef(onManualChange);
   configurationRef.current = configuration;
+  onManualChangeRef.current = onManualChange;
   useEffect(() => {
-    const nextPosition = new Vector3(configuration.cameraPosX, configuration.cameraPosY, configuration.cameraPosZ);
-    const target = new Vector3(configuration.cameraTargetX, configuration.cameraTargetY, configuration.cameraTargetZ);
-    if (nextPosition.distanceTo(target) < 0.25) nextPosition.set(target.x, target.y, target.z + 0.25);
-    camera.position.copy(nextPosition);
+    const view = ATTRACTOR_CAMERA_VIEWS.find((candidate) => candidate.id === viewMode);
+    if (viewMode) manualInteractionRef.current = false;
+    const basePosition = new Vector3(...(view?.position ?? camera.position.toArray()));
+    if (!view?.position) basePosition.sub(frameOffsetRef.current);
+    const target = new Vector3(...(view?.target ?? [configuration.cameraTargetX, configuration.cameraTargetY, configuration.cameraTargetZ]));
+    if (basePosition.distanceTo(target) < 0.25) basePosition.set(target.x, target.y, target.z + 0.25);
     camera.zoom = configuration.cameraZoomEnabled ? configuration.cameraZoom : 1;
     camera.fov = configuration.cameraFov;
     camera.near = configuration.cameraNear;
     camera.far = configuration.cameraFar;
     camera.updateProjectionMatrix();
-    if (controlsRef.current) {
-      controlsRef.current.target.set(configuration.cameraTargetX, configuration.cameraTargetY, configuration.cameraTargetZ);
-      controlsRef.current.update();
-    }
-  }, [camera, configuration.cameraFar, configuration.cameraFov, configuration.cameraNear, configuration.cameraPosX, configuration.cameraPosY, configuration.cameraPosZ, configuration.cameraTargetX, configuration.cameraTargetY, configuration.cameraTargetZ, configuration.cameraZoom, configuration.cameraZoomEnabled]);
+    destinationRef.current.copy(basePosition);
+    targetRef.current.copy(target);
+  }, [camera, configuration.cameraFar, configuration.cameraFov, configuration.cameraNear, configuration.cameraPosX, configuration.cameraPosY, configuration.cameraPosZ, configuration.cameraTargetX, configuration.cameraTargetY, configuration.cameraTargetZ, configuration.cameraZoom, configuration.cameraZoomEnabled, size, viewMode]);
   useFrame((_, delta) => {
     const current = configurationRef.current;
-    if (current.cameraOrbitOn || (playing && current.replayCameraTrack === 'orbit')) {
-      const angle = delta * current.replayCameraOrbitSpeed;
-      const offset = camera.position.clone().sub(controlsRef.current?.target || new Vector3());
-      offset.applyEuler(new Euler(angle * current.replayCameraOrbitX, angle * current.replayCameraOrbitY, angle * current.replayCameraOrbitZ));
-      camera.position.copy(controlsRef.current?.target || new Vector3()).add(offset);
-      controlsRef.current?.update();
+    const controls = controlsRef.current;
+    if (!controls) return;
+    const basePosition = camera.position.clone().sub(frameOffsetRef.current);
+    const blend = 1 - Math.exp(-delta * 5.5);
+    if (!manualInteractionRef.current && viewMode) {
+      if (viewMode !== 'orbital') basePosition.lerp(destinationRef.current, blend);
+      controls.target.lerp(targetRef.current, blend);
     }
+    const target = controls.target;
+    if (!manualInteractionRef.current && viewMode === 'orbital') {
+      const angle = delta * current.replayCameraOrbitSpeed;
+      const offset = basePosition.clone().sub(target);
+      offset.applyEuler(new Euler(angle * current.replayCameraOrbitX, angle * current.replayCameraOrbitY, angle * current.replayCameraOrbitZ));
+      basePosition.copy(target).add(offset);
+    }
+    const frameReference = !manualInteractionRef.current && viewMode && viewMode !== 'orbital'
+      ? destinationRef.current
+      : basePosition;
+    const nextFrameOffset = cameraFrameOffset(camera, frameReference, targetRef.current, size, paramsVisible);
+    frameOffsetRef.current.lerp(nextFrameOffset, blend);
+    camera.position.copy(basePosition).add(frameOffsetRef.current);
+    controls.update();
   });
+  const handleManualChange = () => {
+    manualInteractionRef.current = true;
+    onManualChangeRef.current();
+  };
+  useEffect(() => {
+    const handlePointerDown = () => {
+      manualInteractionRef.current = true;
+      onManualChangeRef.current();
+    };
+    const handleWheel = () => {
+      manualInteractionRef.current = true;
+      onManualChangeRef.current();
+    };
+    gl.domElement.addEventListener('pointerdown', handlePointerDown, { capture: true, passive: true });
+    gl.domElement.addEventListener('wheel', handleWheel, { capture: true, passive: true });
+    return () => {
+      gl.domElement.removeEventListener('pointerdown', handlePointerDown, { capture: true });
+      gl.domElement.removeEventListener('wheel', handleWheel, { capture: true });
+    };
+  }, [gl]);
   const recordCamera = () => {
     if (!controlsRef.current) return;
+    const basePosition = camera.position.clone().sub(frameOffsetRef.current);
     onCameraChange({
-      cameraPosX: camera.position.x,
-      cameraPosY: camera.position.y,
-      cameraPosZ: camera.position.z,
+      cameraPosX: basePosition.x,
+      cameraPosY: basePosition.y,
+      cameraPosZ: basePosition.z,
       cameraTargetX: controlsRef.current.target.x,
       cameraTargetY: controlsRef.current.target.y,
       cameraTargetZ: controlsRef.current.target.z,
@@ -433,10 +499,24 @@ function AttractorCamera({ configuration, onCameraChange, playing }) {
       cameraFar: camera.far
     });
   };
-  return <OrbitControls ref={controlsRef} makeDefault enableDamping enableZoom={configuration.cameraZoomEnabled} dampingFactor={0.08} minDistance={0.25} maxDistance={50} onEnd={recordCamera} />;
+  return <OrbitControls ref={controlsRef} makeDefault enableDamping enableZoom={configuration.cameraZoomEnabled} dampingFactor={0.08} minDistance={0.25} maxDistance={50} onStart={handleManualChange} onEnd={recordCamera} />;
 }
 
-function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing, onCameraChange }) {
+function AttractorViewToolbar({ viewMode, onViewChange }) {
+  return (
+    <nav className="attractor-view-toolbar" aria-label="Camera views">
+      <div className="attractor-view-modes" role="group" aria-label="Select camera perspective">
+        {ATTRACTOR_CAMERA_VIEWS.map((view) => (
+          <button key={view.id} type="button" className={viewMode === view.id ? 'active' : ''} aria-pressed={viewMode === view.id} onClick={() => onViewChange(view.id)}>
+            {view.label}
+          </button>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing, onCameraChange, paramsVisible, viewMode, onManualChange }) {
   return (
     <>
       <color attach="background" args={['#050810']} />
@@ -449,7 +529,7 @@ function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing,
       {configuration.attractors.map((attractor, index) => (
         <AttractorHandle key={`${index}:${attractor.name}`} attractor={attractor} index={index} configuration={configuration} onChange={onAttractorChange} />
       ))}
-      <AttractorCamera configuration={configuration} onCameraChange={onCameraChange} playing={playing} />
+      <AttractorCamera configuration={configuration} onCameraChange={onCameraChange} playing={playing} paramsVisible={paramsVisible} viewMode={viewMode} onManualChange={onManualChange} />
     </>
   );
 }
@@ -582,6 +662,7 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
   const [gpuError, setGpuError] = useState('');
   const [modal, setModal] = useState(null);
   const [paramsVisible, setParamsVisible] = useState(true);
+  const [viewMode, setViewMode] = useState('ortho1');
   const [recording, setRecording] = useState(true);
   const [playing, setPlaying] = useState(false);
   const [playbackTime, setPlaybackTime] = useState(0);
@@ -750,8 +831,9 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
   const reportTitle = variant === 'blackhole' ? 'Black hole particles' : 'Attractor particles';
   return (
     <main className={`attractor-app ${variant === 'blackhole' ? 'blackhole-app' : ''}`}>
-      <div className="attractor-scene"><Canvas camera={{ position: [3, 5, 8], fov: 25, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AttractorWorld configuration={configuration} onAttractorChange={onAttractorChange} onGpuError={setGpuError} playing={playing} onCameraChange={(change) => onChange(change, 'sys:camera')} /></Canvas></div>
+      <div className="attractor-scene"><Canvas camera={{ position: [3, 5, 8], fov: 25, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AttractorWorld configuration={configuration} onAttractorChange={onAttractorChange} onGpuError={setGpuError} playing={playing} onCameraChange={(change) => onChange(change, 'sys:camera')} paramsVisible={paramsVisible} viewMode={viewMode} onManualChange={() => setViewMode(null)} /></Canvas></div>
       <header className="attractor-topbar"><div><span className="sqg-mark">SQG</span><span><b>SQGSIM</b><em>{variant === 'blackhole' ? 'Black-hole sandbox' : 'Particle dynamics lab'}</em></span></div><div className="attractor-top-actions"><span className="attractor-top-meta">WEBGL / GPGPU / {reportTitle.toUpperCase()}</span><button type="button" className="attractor-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button></div></header>
+      <AttractorViewToolbar viewMode={viewMode} onViewChange={setViewMode} />
       <AttractorPanel configuration={configuration} presets={presets} currentPreset={currentPreset} jsonText={jsonText} setJsonText={setJsonText} onChange={onChange} onApplyPreset={onApplyPreset} onSavePreset={onSavePreset} onReset={onReset} onExport={(type) => setModal({ title: type === 'all' ? 'All presets' : type === 'saved' ? 'Saved presets' : 'Current parameters', value: type === 'current' ? configuration : presets })} onLoad={onLoad} onDeletePresets={onDeletePresets} journal={journal} playing={playing} playbackTime={playbackTime} onPlaybackTime={(value) => { setPlaybackTime(value); applyStateAt(value); }} onTogglePlayback={() => setPlaying((value) => !value)} onStop={() => { setPlaying(false); setPlaybackTime(0); applyStateAt(0); }} recording={recording} onRecording={setRecording} onAddAttractor={onAddAttractor} onRemoveAttractor={onRemoveAttractor} onBack={onBack} paramsVisible={paramsVisible} />
       <div className="attractor-title"><span>ACTIVE FIELD / {variant === 'blackhole' ? 'SQGBLACKHOLESIM' : 'SIMPLEATTRACTORSIM'}</span><h1>{variant === 'blackhole' ? 'Superfluid Quantum Gravity' : 'Simple Particle Attractor System'}</h1><p>{variant === 'blackhole' ? 'A copied attractor rig reserved for the next experiment.' : 'Tune attractor mass, spin, and geometry within a field of particles.'}</p>{gpuError && <strong className="attractor-error">GPU offline: {gpuError}</strong>}</div>
       {modal && <AttractorModal title={modal.title} value={modal.value} onClose={() => setModal(null)} />}
