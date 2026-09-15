@@ -118,6 +118,20 @@ export function measureShaftEndpoints(positionData, velocityData, particleCount,
   });
 }
 
+export function temperatureChartRange(values, minimumSpan = 4) {
+  const finiteValues = values.filter(Number.isFinite);
+  if (finiteValues.length === 0) return [60, 110];
+  const observedMinimum = Math.min(...finiteValues);
+  const observedMaximum = Math.max(...finiteValues);
+  const center = (observedMinimum + observedMaximum) / 2;
+  const span = Math.max(minimumSpan, observedMaximum - observedMinimum);
+  const padding = Math.max(0.5, span * 0.1);
+  return [
+    Math.floor(center - span / 2 - padding),
+    Math.ceil(center + span / 2 + padding)
+  ];
+}
+
 export const STREET_VOLUME = {
   minX: -15.5,
   maxX: 34,
@@ -613,6 +627,7 @@ export function airflowControlResponse(control, position, settings) {
       Math.abs(x - shaftX) < Math.abs(x - nearest) ? shaftX : nearest
     ), SHAFT_POSITIONS[0]);
     const shaftControl = shaftControlAtX(x, settings.shaftControls);
+    const shaftControlMagnitude = Math.abs(shaftControl);
     const shaftOutlet = (1 - smoothstep(0.55, 1.4, Math.abs(x - shaftTargetX)))
       * (1 - smoothstep(0.45, 1.25, Math.abs(z - SHAFT_ROUTE.z)))
       * band(SHAFT_ROUTE.outletY, STREET_VOLUME.maxY, y);
@@ -621,10 +636,12 @@ export function airflowControlResponse(control, position, settings) {
     const ceilingReturn = smoothstep(FLUID_BOUNDS.maxY - 1.5, FLUID_BOUNDS.maxY - 0.2, y);
     response.y = floorReturn * 0.9
       + Math.abs(settings.surfaceCrosswind) * (
-        shaftOutlet * shaftControl * 1.8 + (surfaceMixTargetY - y) * SURFACE_MIXING.strength * surfaceWindBand
+        shaftOutlet * shaftControl * 1.8
+        + (surfaceMixTargetY - y) * SURFACE_MIXING.strength * surfaceWindBand
+          * (1 - shaftOutlet * shaftControlMagnitude)
       )
       - ceilingReturn * 4;
-    response.z = settings.surfaceCrosswind * surfaceWindBand * 1.2 * (1 - shaftOutlet * shaftControl * 0.82);
+    response.z = settings.surfaceCrosswind * surfaceWindBand * 1.2 * (1 - shaftOutlet * shaftControlMagnitude * 0.82);
   }
   if (control === 'ceilingFlow') {
     response.x = settings.ceilingFans * ceilingBand * 1.4;
@@ -648,16 +665,17 @@ export function airflowControlResponse(control, position, settings) {
       Math.abs(x - shaftX) < Math.abs(x - nearest) ? shaftX : nearest
     ), SHAFT_POSITIONS[0]);
     const shaftControl = shaftControlAtX(x, settings.shaftControls);
+    const shaftControlMagnitude = Math.abs(shaftControl);
     const shaftColumn = (1 - smoothstep(0.9, 1.8, Math.abs(x - shaftTargetX)))
         * (1 - smoothstep(0.0, 0.9, Math.abs(z - SHAFT_ROUTE.z)))
       * smoothstep(0.4, SHAFT_ROUTE.throatY, y)
       * (1 - smoothstep(STREET_VOLUME.minY, STREET_VOLUME.minY + 0.6, y));
     const poweredVelocity = settings.shaftFans ? settings.shaftFanVelocity : 0;
     const crosswindDraw = Math.abs(settings.surfaceCrosswind || 0) * 0.3;
-    response.x = (shaftTargetX - x) * shaftColumn * shaftControl * 3.6;
+    response.x = (shaftTargetX - x) * shaftColumn * shaftControlMagnitude * 3.6;
     response.y = shaftColumn * shaftControl * (settings.stackEffect * 3.4 + poweredVelocity + crosswindDraw);
-    response.z = (SHAFT_ROUTE.z - z) * shaftColumn * shaftControl * 4.4;
-    response.cooling = shaftColumn * shaftControl * settings.stackEffect * 0.35;
+    response.z = (SHAFT_ROUTE.z - z) * shaftColumn * shaftControlMagnitude * 4.4;
+    response.cooling = shaftColumn * shaftControlMagnitude * settings.stackEffect * 0.35;
   }
   if (control === 'sceneOcclusion') {
     if (!settings.windOcclusion) return response;

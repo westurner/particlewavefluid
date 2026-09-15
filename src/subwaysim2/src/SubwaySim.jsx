@@ -31,6 +31,7 @@ import {
   stairStreetPortalX,
   surfaceParticleSeedFraction,
   surfaceParticleSeedY,
+  temperatureChartRange,
   thermalResilienceReport,
   trainStateAtTime,
   verticalLayoutFromSurfaceY
@@ -383,6 +384,7 @@ const velocityShader = `
     float surfaceShaftControl = surfaceShaftSouth > surfaceShaftCenter && surfaceShaftSouth > surfaceShaftNorth
       ? uShaftControls.z
       : (surfaceShaftNorth > surfaceShaftCenter ? uShaftControls.x : uShaftControls.y);
+    float surfaceShaftControlMagnitude = abs(surfaceShaftControl);
     float surfaceFloorReturn = surfaceWindBand * (
       1.0 - smoothstep(
         uSurfaceFloorY,
@@ -394,9 +396,10 @@ const velocityShader = `
     acceleration.y += surfaceFloorReturn * (0.9 + max(0.0, -particleVelocity.y) * 6.0);
     acceleration.y += abs(uSurfaceCrosswind) * surfaceShaftOutlet * surfaceShaftControl * 1.8;
     acceleration.y += surfaceParticle * abs(uSurfaceCrosswind)
-      * (surfaceMixTargetY - particlePosition.y) * ${glslFloat(SURFACE_MIXING.strength)} * surfaceWindBand;
+      * (surfaceMixTargetY - particlePosition.y) * ${glslFloat(SURFACE_MIXING.strength)} * surfaceWindBand
+      * (1.0 - surfaceShaftOutlet * surfaceShaftControlMagnitude);
     acceleration.y -= surfaceCeilingReturn * (4.0 + max(0.0, particleVelocity.y) * 6.0);
-    acceleration.z += (uSurfaceCrosswind - particleVelocity.z) * surfaceWindBand * 1.2 * (1.0 - surfaceShaftOutlet * surfaceShaftControl * 0.82);
+    acceleration.z += (uSurfaceCrosswind - particleVelocity.z) * surfaceWindBand * 1.2 * (1.0 - surfaceShaftOutlet * surfaceShaftControlMagnitude * 0.82);
 
     float stairX = particlePosition.x;
     float lowerStairProgress = clamp((stairX - ${glslFloat(STAIR_ROUTE.startX)}) / ${glslFloat(STAIR_ROUTE.lowerFlightEndX - STAIR_ROUTE.startX)}, 0.0, 1.0);
@@ -449,8 +452,9 @@ const velocityShader = `
     float shaftControl = shaftSouth > shaftCenter && shaftSouth > shaftNorth
       ? uShaftControls.z
       : (shaftNorth > shaftCenter ? uShaftControls.x : uShaftControls.y);
-    shaftHorizontalCapture *= shaftControl;
-    shaftVerticalColumn *= shaftControl;
+    float shaftControlMagnitude = abs(shaftControl);
+    shaftHorizontalCapture *= shaftControlMagnitude;
+    shaftVerticalColumn *= shaftControlMagnitude;
     float floodBand = 1.0 - smoothstep(0.0, 2.4, abs(particlePosition.z + 4.15));
     float fanBand = max(
       (1.0 - smoothstep(${glslFloat(AIRFLOW_PARAMS.fanRadius * 0.6)}, ${glslFloat(AIRFLOW_PARAMS.fanRadius)}, abs(particlePosition.x + 6.0))),
@@ -482,7 +486,7 @@ const velocityShader = `
       float poweredShaftLift = uShaftFans ? uShaftFanVelocity : 0.0;
       float crosswindDraw = abs(uSurfaceCrosswind) * 0.3;
       acceleration.x += (shaftTargetX - particlePosition.x) * shaftVerticalColumn * 3.6;
-      acceleration.y += shaftVerticalColumn * (uShaftExchange * 2.4 + uStackEffect * 3.4 + poweredShaftLift + crosswindDraw) * (0.35 + thermalIntensity * 1.8);
+      acceleration.y += shaftVerticalColumn * sign(shaftControl) * (uShaftExchange * 2.4 + uStackEffect * 3.4 + poweredShaftLift + crosswindDraw) * (0.35 + thermalIntensity * 1.8);
       acceleration.z += (${glslFloat(SHAFT_ROUTE.z)} - particlePosition.z) * shaftVerticalColumn * 4.4;
       acceleration.y -= fanBand * uDownFans * 1.8;
       acceleration.x += ceilingBand * uCeilingFans * 1.4 * (1.0 - shaftVerticalColumn);
@@ -1586,9 +1590,18 @@ function VentEndpointChart({ history, metric, label, unit }) {
     .filter(Number.isFinite);
   const maximumMagnitude = metric === 'flow'
     ? Math.max(1, ...values.map(Math.abs))
-    : 50;
-  const minimum = metric === 'flow' ? -maximumMagnitude : 60;
-  const maximum = metric === 'flow' ? maximumMagnitude : 110;
+    : null;
+  const [minimum, maximum] = metric === 'flow'
+    ? [-maximumMagnitude, maximumMagnitude]
+    : temperatureChartRange(values);
+  const scaleLabel = metric === 'temperature'
+    ? `${minimum}–${maximum} ${unit}`
+    : unit;
+  const formatAxisValue = (value) => {
+    if (metric === 'flow') return value === 0 ? '0' : value.toFixed(1);
+    return `${Number.isInteger(value) ? value : value.toFixed(1)}°`;
+  };
+  const axisValues = [maximum, (minimum + maximum) / 2, minimum];
   const pointsFor = (endpoint) => history.map((sample, index) => {
     const value = sample?.[endpoint]?.[metric];
     if (!Number.isFinite(value)) return null;
@@ -1598,12 +1611,19 @@ function VentEndpointChart({ history, metric, label, unit }) {
   }).filter(Boolean).join(' ');
   return (
     <div className="vent-chart">
-      <div className="vent-chart-heading"><span>{label}</span><span>{unit}</span></div>
-      <svg viewBox="0 0 220 44" preserveAspectRatio="none" aria-label={`${label} history`}>
-        <line x1="0" y1="22" x2="220" y2="22" className="vent-chart-grid" />
-        <polyline points={pointsFor('intake')} className="vent-chart-line intake" />
-        <polyline points={pointsFor('outlet')} className="vent-chart-line outlet" />
-      </svg>
+      <div className="vent-chart-heading"><span>{label}</span><span>{scaleLabel}</span></div>
+      <div className="vent-chart-body">
+        <div className="vent-chart-y-axis" aria-hidden="true">
+          {axisValues.map((value) => <span key={value}>{formatAxisValue(value)}</span>)}
+        </div>
+        <svg viewBox="0 0 220 44" preserveAspectRatio="none" aria-label={`${label} history`}>
+          <line x1="0" y1="2" x2="220" y2="2" className="vent-chart-grid" />
+          <line x1="0" y1="22" x2="220" y2="22" className="vent-chart-grid" />
+          <line x1="0" y1="42" x2="220" y2="42" className="vent-chart-grid" />
+          <polyline points={pointsFor('intake')} className="vent-chart-line intake" />
+          <polyline points={pointsFor('outlet')} className="vent-chart-line outlet" />
+        </svg>
+      </div>
     </div>
   );
 }
@@ -1632,11 +1652,11 @@ function VentFlowCharts({ settings, telemetry, onSettingsChange, showDescription
               <ControlSlider
                 label={`${SHAFT_LABELS[index]} shaft (${shaftX > 0 ? '+' : ''}${shaftX} m)`}
                 value={settings.shaftControls[index]}
-                min={0}
+                min={-1}
                 max={1}
                 step={0.05}
                 suffix=""
-                description="Scales capture, stack lift, powered fan flow, and outlet suction for this shaft."
+                description="Sets signed ventilation speed for this shaft; negative values reverse vertical flow."
                 showDescription={showDescriptions}
                 onChange={(value) => updateShaftControl(index, value)}
               />

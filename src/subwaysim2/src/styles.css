@@ -64,6 +64,8 @@ button, input { font: inherit; }
 .vent-endpoint small { color: #77928a; font: 8px 'DM Mono', monospace; }
 .vent-chart { background: rgba(3, 13, 15, 0.5); border-block: 1px solid rgba(172, 208, 194, 0.1); }
 .vent-chart-heading { display: flex; justify-content: space-between; padding: 5px 6px 0; color: #77928a; font: 8px 'DM Mono', monospace; text-transform: uppercase; }
+.vent-chart-body { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: stretch; margin-top: 3px; }
+.vent-chart-y-axis { display: flex; flex-direction: column; justify-content: space-between; height: 44px; padding: 1px 4px 1px 6px; color: #607b73; font: 7px 'DM Mono', monospace; line-height: 1; text-align: right; }
 .vent-chart svg { display: block; width: 100%; height: 44px; }
 .vent-chart-grid { stroke: rgba(172, 208, 194, 0.1); stroke-dasharray: 2 4; }
 .vent-chart-line { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }

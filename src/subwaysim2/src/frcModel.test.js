@@ -97,6 +97,33 @@ test('electric conversion efficiency responds to fuel and operating conditions',
   assert.equal(argon.electricPowerMW, 0);
 });
 
+test('Argon input preserves the calculated plasma readouts and field reversal', () => {
+  const model = calculateFrcModel({ input: 'Argon' });
+
+  assert.equal(model.input, 'Argon');
+  assert.ok(Math.abs(model.beta - 0.029627730489180604) < 1e-12);
+  assert.equal((model.beta * 100).toFixed(1), '3.0');
+  assert.equal(model.reversedField, true);
+  assert.ok(model.axialField < 0);
+  assert.equal(model.axialField.toFixed(2), '-1.18');
+  assert.ok(Math.abs(model.plasmaCurrentMA - 1.8054640139073466) < 1e-12);
+  assert.equal(model.plasmaCurrentMA.toFixed(2), '1.81');
+  assert.ok(Math.abs(model.plasmaVolume - 67.11042724588017) < 1e-12);
+  assert.equal(model.plasmaVolume.toFixed(1), '67.1');
+  assert.ok(model.plasmaRadius > 0);
+  assert.ok(model.plasmaHalfLength > 0);
+  assert.ok(model.plasmaPressureKPa > 0);
+  assert.ok(model.magneticPressureKPa > model.plasmaPressureKPa);
+  assert.ok(model.plasmaFrequencyHz > 0);
+  assert.ok(model.plasmaPeriodSeconds > 0);
+  assert.ok(model.nitrogenOutputSLM > 0);
+  assert.equal(model.fusionPowerMW, 0);
+  assert.equal(model.capturedPowerMW, 0);
+  assert.equal(model.electricPowerMW, 0);
+  assert.equal(model.heliumOutputGPerHour, 0);
+  assert.equal(model.neutronProductionRate, 0);
+});
+
 test('neutron and helium output increase with hotter denser plasma', () => {
   const baseline = calculateFrcModel({ density: 1, ionTemperature: 1 });
   const energized = calculateFrcModel({ density: 2, ionTemperature: 3 });

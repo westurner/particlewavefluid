@@ -36,6 +36,7 @@ import {
   stairStreetPortalX,
   clerestoryOpeningStrength,
   stairSurfaceY,
+  temperatureChartRange,
   roofGapEndpoints,
   roofCeilingAt,
   roofPanelSegments,
@@ -176,6 +177,30 @@ test('individual shaft controls select the nearest ventilation shaft', () => {
   assert.ok(airflowControlResponse('shaftStack', [SHAFT_POSITIONS[2], 5, SHAFT_ROUTE.z], isolatedSettings).y > 0);
 });
 
+test('negative shaft speed reverses vertical flow while retaining inward capture', () => {
+  const reverseSettings = { ...settings, shaftControls: [-1, 1, 1] };
+  const halfReverseSettings = { ...settings, shaftControls: [-0.5, 1, 1] };
+  const shaftX = SHAFT_POSITIONS[0];
+  const shaftResponse = airflowControlResponse('shaftStack', [shaftX + 0.5, 5, SHAFT_ROUTE.z + 0.25], reverseSettings);
+  const halfShaftResponse = airflowControlResponse(
+    'shaftStack',
+    [shaftX + 0.5, 5, SHAFT_ROUTE.z + 0.25],
+    halfReverseSettings
+  );
+  const outletResponse = airflowControlResponse(
+    'surfaceCrosswind',
+    [shaftX, STREET_VOLUME.minY + 0.5, SHAFT_ROUTE.z],
+    reverseSettings
+  );
+  assert.ok(shaftResponse.y < 0);
+  assert.ok(shaftResponse.x < 0);
+  assert.ok(shaftResponse.z < 0);
+  assert.ok(outletResponse.y < 0);
+  assert.ok(Math.sign(outletResponse.z) === Math.sign(settings.surfaceCrosswind));
+  assert.ok(Math.abs(halfShaftResponse.y - shaftResponse.y * 0.5) < 1e-9);
+  assert.ok(Math.abs(halfShaftResponse.x - shaftResponse.x * 0.5) < 1e-9);
+});
+
 test('shaft endpoint telemetry measures flow and temperature at both ends', () => {
   const positions = new Float32Array([
     SHAFT_POSITIONS[0], SHAFT_ROUTE.throatY, SHAFT_ROUTE.z, 1,
@@ -202,6 +227,12 @@ test('shaft endpoint telemetry measures flow and temperature at both ends', () =
   assert.equal(telemetry[0].outlet.count, 2);
   assert.deepEqual(telemetry[2].intake, { flow: null, temperature: null, count: 0 });
   assert.deepEqual(telemetry[2].outlet, { flow: null, temperature: null, count: 0 });
+});
+
+test('temperature chart range follows observed endpoint temperatures with padding', () => {
+  assert.deepEqual(temperatureChartRange([]), [60, 110]);
+  assert.deepEqual(temperatureChartRange([60, 60.4, 61.2]), [58, 64]);
+  assert.deepEqual(temperatureChartRange([72, Number.NaN, 92]), [70, 94]);
 });
 
 test('street volume remains inside the expanded fluid bounds', () => {
