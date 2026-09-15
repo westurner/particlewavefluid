@@ -177,7 +177,7 @@ function createConfiguration(variant = 'simple') {
     replayCameraOrbitY: 0,
     replayCameraOrbitZ: 0,
     cameraOrbitOn: true,
-    cameraZoomEnabled: false,
+    cameraZoomEnabled: true,
     cameraPosX: 3,
     cameraPosY: 5,
     cameraPosZ: 8,
@@ -832,7 +832,7 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
   return (
     <main className={`attractor-app ${variant === 'blackhole' ? 'blackhole-app' : ''}`}>
       <div className="attractor-scene"><Canvas camera={{ position: [3, 5, 8], fov: 25, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AttractorWorld configuration={configuration} onAttractorChange={onAttractorChange} onGpuError={setGpuError} playing={playing} onCameraChange={(change) => onChange(change, 'sys:camera')} paramsVisible={paramsVisible} viewMode={viewMode} onManualChange={() => setViewMode(null)} /></Canvas></div>
-      <header className="attractor-topbar"><div><span className="sqg-mark">SQG</span><span><b>SQGSIM</b><em>{variant === 'blackhole' ? 'Black-hole sandbox' : 'Particle dynamics lab'}</em></span></div><div className="attractor-top-actions"><span className="attractor-top-meta">WEBGL / GPGPU / {reportTitle.toUpperCase()}</span><button type="button" className="attractor-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button></div></header>
+      <header className="attractor-topbar"><div><span className="sqg-mark">PAS</span><span><em>{variant === 'blackhole' ? 'Black-hole sandbox' : 'Particle dynamics lab'}</em></span></div><div className="attractor-top-actions"><span className="attractor-top-meta">WEBGL / GPGPU / {reportTitle.toUpperCase()}</span><button type="button" className="attractor-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button></div></header>
       <AttractorViewToolbar viewMode={viewMode} onViewChange={setViewMode} />
       <AttractorPanel configuration={configuration} presets={presets} currentPreset={currentPreset} jsonText={jsonText} setJsonText={setJsonText} onChange={onChange} onApplyPreset={onApplyPreset} onSavePreset={onSavePreset} onReset={onReset} onExport={(type) => setModal({ title: type === 'all' ? 'All presets' : type === 'saved' ? 'Saved presets' : 'Current parameters', value: type === 'current' ? configuration : presets })} onLoad={onLoad} onDeletePresets={onDeletePresets} journal={journal} playing={playing} playbackTime={playbackTime} onPlaybackTime={(value) => { setPlaybackTime(value); applyStateAt(value); }} onTogglePlayback={() => setPlaying((value) => !value)} onStop={() => { setPlaying(false); setPlaybackTime(0); applyStateAt(0); }} recording={recording} onRecording={setRecording} onAddAttractor={onAddAttractor} onRemoveAttractor={onRemoveAttractor} onBack={onBack} paramsVisible={paramsVisible} />
       <div className="attractor-title"><span>ACTIVE FIELD / {variant === 'blackhole' ? 'SQGBLACKHOLESIM' : 'SIMPLEATTRACTORSIM'}</span><h1>{variant === 'blackhole' ? 'Superfluid Quantum Gravity' : 'Simple Particle Attractor System'}</h1><p>{variant === 'blackhole' ? 'A copied attractor rig reserved for the next experiment.' : 'Tune attractor mass, spin, and geometry within a field of particles.'}</p>{gpuError && <strong className="attractor-error">GPU offline: {gpuError}</strong>}</div>

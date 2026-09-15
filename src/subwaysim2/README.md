@@ -4,12 +4,13 @@ A React, Three.js, React Three Fiber, and Drei particle-simulation loader. The G
 
 ## Simulation menu
 
-The first screen loads one of four fields:
+The first screen loads one of five fields:
 
 - **subwaysim2:** the subway airflow and thermal-dispersion experiment with GPU SPH-style transport, train heat, ventilation, stair, street, and flood-gallery controls.
 - **simpleattractorsim:** a React/R3F reimplementation of `three.js/examples/webgpu_tsl_compute_attractors_particles.html`. It keeps the source example's inverse-square attraction, spinning force, bounded particle loop, 20-attractor limit, transform helpers, presets, JSON IO, local snapshots, camera controls, and change playback.
 - **sqgblackholesim:** a separate black-hole sandbox entry point that currently starts from the simple attractor rig and its complete control surface.
 - **frcfusionsim:** a physical FRC device and GPU plasma transport field with transparent vessel and confinement coils, selectable elongated, compact, double-lobed, and oblate shapes, and theta-pinch, rotating-field, translated-toroid, and steady-state configurations. Phase 02 exposes device geometry, derived field quantities, and a bounded 4,096-particle transport field; a kinetic plasma solver is reserved for phase 03.
+- **waveinterferencesim:** an animated field for composing one or more waves with independent wavelength, amplitude, phase offset, phase rate, and standard, circular, or helical phase modes. Constructive interference and signed superposition are independent response layers that can be enabled separately or together. Visualization controls include particle count, size, opacity, shape, vector derivative order, and double-sided rendering. Each wave can be duplicated or removed with confirmation. The Wave states library teaches single traveling waves, cancellation, constructive addition, standing waves, quadrature, circular and counter-rotating waves, helical pairs, and a mixed field. Users can save named states locally; each saved state retains all eight wave slots, the active slot count, and the interference layer toggles.
 
 The subway mode remains the detailed fluid framework. `src/simulations/gpuParticleRuntime.js` owns the reusable GPU computation setup and simulation UV allocation used by both the subway and attractor fields.
 

@@ -1,19 +1,20 @@
 import { lazy, Suspense, useState } from 'react';
 
-const SubwaySim = lazy(() => import('./SubwaySim.jsx').then(({ SubwaySim: component }) => ({ default: component })));
+const WaveInterferenceSim = lazy(() => import('./WaveInterferenceSim.jsx'));
 const SimpleAttractorSim = lazy(() => import('./SimpleAttractorSim.jsx').then(({ SimpleAttractorSim: component }) => ({ default: component })));
 const SqgBlackHoleSim = lazy(() => import('./SqgBlackHoleSim.jsx'));
 const FrcFusionSim = lazy(() => import('./FrcFusionSim.jsx'));
+const SubwaySim = lazy(() => import('./SubwaySim.jsx').then(({ SubwaySim: component }) => ({ default: component })));
 
 const SIMULATION_MODES = [
   {
-    id: 'subwaysim2',
+    id: 'waveinterferencesim',
     index: '01',
-    name: 'subwaysim2',
-    label: 'Transit thermodynamics',
-    description: 'A GPU airflow chamber where trains, shafts, stairs, and thermal sources shape a living station field.',
-    detail: 'FLUID / SPH / INFRASTRUCTURE',
-    accent: 'teal'
+    name: 'waveinterferencesim',
+    label: 'Wave interference',
+    description: 'Compose one or more animated waves with independent wavelength, amplitude, phase modes, and phase parameters.',
+    detail: 'WAVES / PHASE / SUPERPOSITION',
+    accent: 'violet'
   },
   {
     id: 'simpleattractorsim',
@@ -41,6 +42,15 @@ const SIMULATION_MODES = [
     description: 'A transparent field-reversed configuration foundation with selectable vessel geometries and physical device configurations.',
     detail: 'DEVICE / HIGH-BETA / PHASE 01',
     accent: 'orange'
+  },
+  {
+    id: 'subwaysim2',
+    index: '05',
+    name: 'subwaysim2',
+    label: 'Transit thermodynamics',
+    description: 'A GPU airflow chamber where trains, shafts, stairs, and thermal sources shape a living station field.',
+    detail: 'FLUID / SPH / INFRASTRUCTURE',
+    accent: 'teal'
   }
 ];
 
@@ -52,16 +62,17 @@ function SimulationLoader() {
   const [selectedSimulation, setSelectedSimulation] = useState(null);
   const onBack = () => setSelectedSimulation(null);
   let simulation = null;
-  if (selectedSimulation === 'subwaysim2') simulation = <SubwaySim onBack={onBack} />;
+  if (selectedSimulation === 'waveinterferencesim') simulation = <WaveInterferenceSim onBack={onBack} />;
   if (selectedSimulation === 'simpleattractorsim') simulation = <SimpleAttractorSim onBack={onBack} />;
   if (selectedSimulation === 'sqgblackholesim') simulation = <SqgBlackHoleSim onBack={onBack} />;
   if (selectedSimulation === 'frcfusionsim') simulation = <FrcFusionSim onBack={onBack} />;
+  if (selectedSimulation === 'subwaysim2') simulation = <SubwaySim onBack={onBack} />;
   if (simulation) return <Suspense fallback={<LoadingScreen />}>{simulation}</Suspense>;
 
   return (
     <main className="sqg-loader">
       <header className="sqg-loader-header">
-        <div className="sqg-loader-brand"><span className="sqg-loader-mark">SQG</span><span><b>SQGSIM</b><em>Particle systems / field experiments</em></span></div>
+        <div className="sqg-loader-brand"><span className="sqg-loader-mark">PAS</span><span><b>PARTICLESWAVESFLUIDS</b><em>Particle system field experiments</em></span></div>
         <span className="sqg-loader-meta">00 / SIM LOADER</span>
       </header>
       <section className="sqg-loader-intro">
