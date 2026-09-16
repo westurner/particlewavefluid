@@ -117,6 +117,9 @@ test('polarization maps scalar, transverse, and longitudinal displacement vector
   assert.deepEqual(calculateWaveDisplacement([{ ...baseWave, polarization: 'Scalar' }], 0, 1, 0), { x: 0, y: 1, z: 0 });
   assert.deepEqual(calculateWaveDisplacement([{ ...baseWave, polarization: 'Longitudinal' }], 0, 1, 0), { x: 0, y: 0, z: 1 });
   assert.deepEqual(calculateWaveDisplacement([{ ...baseWave, polarization: 'Transverse' }], 0, 1, 0), { x: 0, y: 1, z: 0 });
+  const circular = { ...baseWave, phaseMode: 'Circular-Left', polarization: 'Electromagnetic' };
+  const electromagnetic = calculateWaveDisplacement([circular], 0, 0, 0);
+  assert.ok(Math.hypot(electromagnetic.x, electromagnetic.y, electromagnetic.z) > 0);
 });
 
 test('electromagnetic polarization is transverse and derives B from k cross E', () => {

@@ -60,6 +60,19 @@ test('wave interference renders visible particles after mode changes', async (t)
   assert.equal(await vectorControls.nth(0).locator('input').nth(0).inputValue(), '2');
   assert.equal(await vectorControls.nth(1).locator('input').nth(2).inputValue(), '0.5');
   assert.equal(await vectorControls.nth(2).locator('input').nth(1).inputValue(), '0.5');
+  const polarization = firstWaveEditor.getByLabel('Polarization');
+  await polarization.selectOption('EM-Tensor-Gaussian');
+  const beamWaist = firstWaveEditor.getByLabel('Beam waist');
+  assert.equal(await beamWaist.inputValue(), '6');
+  await beamWaist.fill('3');
+  assert.equal(await beamWaist.inputValue(), '3');
+  const orbitControls = page.getByLabel('Orbit controls visible');
+  assert.equal(await orbitControls.isChecked(), true);
+  await orbitControls.uncheck();
+  assert.equal(await orbitControls.isChecked(), false);
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-orbit-controls'), 'false');
+  await orbitControls.check();
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-orbit-controls'), 'true');
   await page.waitForTimeout(150);
 
   const doubleSidedField = page.getByLabel('Double-sided field');

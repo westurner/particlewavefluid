@@ -403,15 +403,17 @@ export function combineWaves(waves, x, z, time, interferenceModes = DEFAULT_INTE
 
 export function calculateWaveDisplacement(waves, x, z, time, interferenceModes = DEFAULT_INTERFERENCE_MODES, y = 0) {
   const activeModes = normalizeInterferenceModes(interferenceModes);
+  const responseLayerCount = Number(activeModes.constructive) + Number(activeModes.superposition);
   return waves.slice(0, MAX_WAVES).reduce((total, wave) => {
     const contribution = waveInterferenceContribution(wave, x, z, time, activeModes, y);
-    if (contribution === 0) return total;
     if (wave.polarization === 'Electromagnetic' || wave.polarization === 'EM-Tensor-Gaussian') {
+      if (wave.enabled === false || responseLayerCount === 0) return total;
       const field = calculateElectromagneticField(wave, x, z, time, y);
-      const fieldScale = wave.polarization === 'EM-Tensor-Gaussian' ? field.tensorGaussian : 1;
+      const fieldScale = (wave.polarization === 'EM-Tensor-Gaussian' ? field.tensorGaussian : 1) * responseLayerCount;
       const electromagneticDisplacement = scaleVector(field.electric, fieldScale);
       return addVectors(total, electromagneticDisplacement);
     }
+    if (contribution === 0) return total;
     const frame = calculateWaveFrame(wave, x, y, z);
     if (wave.polarization === 'Longitudinal') {
       return {
@@ -433,11 +435,12 @@ export function calculateWaveDisplacement(waves, x, z, time, interferenceModes =
 
 export function calculateWaveTensorGaussian(waves, x, z, time, interferenceModes = DEFAULT_INTERFERENCE_MODES, y = 0) {
   const activeModes = normalizeInterferenceModes(interferenceModes);
+  const responseLayerCount = Number(activeModes.constructive) + Number(activeModes.superposition);
+  if (responseLayerCount === 0) return 0;
   return Math.min(1, waves.slice(0, MAX_WAVES).reduce((total, wave) => {
     if (wave.enabled === false || wave.polarization !== 'EM-Tensor-Gaussian') return total;
-    const contribution = Math.abs(waveInterferenceContribution(wave, x, z, time, activeModes, y));
     const field = calculateElectromagneticField(wave, x, z, time, y);
-    return total + field.tensorGaussian * Math.max(contribution, 0.25);
+    return total + field.tensorGaussian * responseLayerCount;
   }, 0));
 }
 
