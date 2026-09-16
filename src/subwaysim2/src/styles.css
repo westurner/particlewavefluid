@@ -327,6 +327,13 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: #f0a23a
 .wave-range-control input[type='range'] { width: 100%; accent-color: #e4a458; }
 .wave-select { display: grid; grid-template-columns: 1fr 1.25fr; align-items: center; gap: 10px; margin-top: 13px; color: #abc0c2; font-size: 10px; }
 .wave-select select { min-width: 0; padding: 6px; border: 1px solid rgba(125, 202, 207, 0.25); border-radius: 0; color: #e5f0e9; background: #112231; font: 9px 'DM Mono', monospace; }
+.wave-vector-control { display: grid; gap: 7px; margin-top: 14px; padding-top: 11px; border-top: 1px solid rgba(125, 202, 207, 0.12); }
+.wave-vector-label { color: #abc0c2; font-size: 10px; }
+.wave-vector-axes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.wave-vector-axes label { display: grid; gap: 5px; color: #7f9ca1; font: 8px 'DM Mono', monospace; }
+.wave-vector-axes label > span { display: flex; justify-content: space-between; }
+.wave-vector-axes strong { color: #dcebe4; font-weight: 400; }
+.wave-vector-axes input[type='range'] { width: 100%; }
 .wave-description { margin: 11px 0 0; color: #7f9ca1; font-size: 9px; line-height: 1.4; }
 .wave-actions { display: flex; gap: 7px; margin-top: 15px; }
 .wave-actions button { flex: 1; padding: 7px 8px; }

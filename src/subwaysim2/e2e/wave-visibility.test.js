@@ -28,13 +28,39 @@ test('wave interference renders visible particles after mode changes', async (t)
   await page.addInitScript(() => localStorage.clear());
 
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-  await page.getByRole('button', { name: /05 \/ LOAD FIELD/ }).click();
+  await page.getByRole('button', { name: /01 \/ LOAD FIELD/ }).click();
   await page.locator('.wave-panel').waitFor();
   await page.waitForTimeout(600);
 
   const sceneClip = { x: 0, y: 140, width: 1120, height: 560 };
   const initialPixels = countParticlePixels(await page.screenshot({ clip: sceneClip }));
   assert.ok(initialPixels > 500, `expected visible wave particles, found ${initialPixels} colored pixels`);
+
+  const sourcePreset = page.getByLabel('Source preset');
+  await sourcePreset.selectOption('continuous-wave-laser-helical-pair');
+  assert.equal(await sourcePreset.inputValue(), 'continuous-wave-laser-helical-pair');
+  assert.equal(await page.locator('.wave-editor').count(), 3);
+  await page.getByLabel('Named state').selectOption({ label: 'Mixed phase field' });
+  assert.equal(await page.locator('.wave-editor').count(), 6);
+  const occlusionMap = page.getByLabel('Occlusion map');
+  await occlusionMap.selectOption('pinhole');
+  assert.equal(await occlusionMap.inputValue(), 'pinhole');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-occlusion-preset'), 'pinhole');
+  await occlusionMap.selectOption('none');
+
+  const firstWaveEditor = page.locator('.wave-editor').first();
+  const vectorControls = firstWaveEditor.locator('.wave-vector-control');
+  assert.equal(await vectorControls.count(), 3);
+  assert.equal(await vectorControls.nth(0).locator('input').count(), 3);
+  assert.equal(await vectorControls.nth(1).locator('input').count(), 3);
+  assert.equal(await vectorControls.nth(2).locator('input').count(), 3);
+  await vectorControls.nth(0).locator('input').nth(0).fill('2');
+  await vectorControls.nth(1).locator('input').nth(2).fill('0.5');
+  await vectorControls.nth(2).locator('input').nth(1).fill('0.5');
+  assert.equal(await vectorControls.nth(0).locator('input').nth(0).inputValue(), '2');
+  assert.equal(await vectorControls.nth(1).locator('input').nth(2).inputValue(), '0.5');
+  assert.equal(await vectorControls.nth(2).locator('input').nth(1).inputValue(), '0.5');
+  await page.waitForTimeout(150);
 
   const doubleSidedField = page.getByLabel('Double-sided field');
   assert.equal(await doubleSidedField.isChecked(), true);

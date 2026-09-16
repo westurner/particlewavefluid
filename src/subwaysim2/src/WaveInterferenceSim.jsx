@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DoubleSide, FrontSide, ShaderMaterial } from 'three';
-import { calculateWaveDerivative, cloneWaveState, combineWaves, DEFAULT_WAVE_STATES, INTERFERENCE_MODES, MAX_WAVES, PHASE_MODES, readSavedWaveStates, writeSavedWaveStates } from './waveModel.js';
+import { calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacement, cloneWaveState, combineWaves, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, INTERFERENCE_MODES, MAX_WAVES, OCCLUSION_PRESETS, PHASE_MODES, POLARIZATION_MODES, readSavedWaveStates, SIGNAL_SOURCE_PRESETS, writeSavedWaveStates } from './waveModel.js';
 
 const FIELD_SIZE = 18;
 const DEFAULT_PARTICLE_COUNT = 4096;
@@ -16,10 +16,13 @@ const WAVE_VERTEX_SHADER = `
   attribute float aVectorAngle;
   varying vec3 vColor;
   varying float vVectorAngle;
+  attribute float aOcclusion;
+  varying float vOcclusion;
 
   void main() {
     vColor = color;
     vVectorAngle = aVectorAngle;
+    vOcclusion = aOcclusion;
     vec4 modelPosition = modelViewMatrix * vec4(position, 1.0);
     gl_PointSize = uParticleSize * 800.0 / max(-modelPosition.z, 1.0);
     gl_Position = projectionMatrix * modelPosition;
@@ -31,8 +34,10 @@ const WAVE_FRAGMENT_SHADER = `
   uniform int uShape;
   varying vec3 vColor;
   varying float vVectorAngle;
+  varying float vOcclusion;
 
   void main() {
+    if (vOcclusion < 0.01) discard;
     vec2 point = gl_PointCoord - 0.5;
     float cosine = cos(vVectorAngle);
     float sine = sin(vVectorAngle);
@@ -67,10 +72,12 @@ function createFieldGeometry(particleCount) {
   geometry.setAttribute('position', new BufferAttribute(positions, 3));
   geometry.setAttribute('color', new BufferAttribute(colors, 3));
   geometry.setAttribute('aVectorAngle', new BufferAttribute(new Float32Array(particleCount), 1));
+  geometry.setAttribute('aOcclusion', new BufferAttribute(new Float32Array(particleCount).fill(1), 1));
+  geometry.userData.basePositions = positions.slice();
   return geometry;
 }
 
-function WaveField({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder }) {
+function WaveField({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, occlusionPreset }) {
   const geometry = useMemo(() => createFieldGeometry(particleCount), [particleCount]);
   const material = useMemo(() => new ShaderMaterial({
     uniforms: {
@@ -104,18 +111,25 @@ function WaveField({ waves, waveCount, interferenceModes, running, particleCount
   useFrame((_, delta) => {
     if (running) timeRef.current += Math.min(delta, 0.05);
     const positions = geometry.attributes.position.array;
+    const basePositions = geometry.userData.basePositions;
     const colors = geometry.attributes.color.array;
     const vectorAngles = geometry.attributes.aVectorAngle.array;
+    const occlusions = geometry.attributes.aOcclusion.array;
     const activeWaves = waves.slice(0, waveCount);
     for (let index = 0; index < particleCount; index += 1) {
-      const x = positions[index * 3];
-      const z = positions[index * 3 + 2];
-      const height = combineWaves(activeWaves, x, z, timeRef.current, interferenceModes);
+      const x = basePositions[index * 3];
+      const z = basePositions[index * 3 + 2];
+      const transmission = calculateOcclusionTransmission(occlusionPreset, x, z);
+      const height = combineWaves(activeWaves, x, z, timeRef.current, interferenceModes) * transmission;
+      const displacement = calculateWaveDisplacement(activeWaves, x, z, timeRef.current, interferenceModes);
       const derivative = particleShape === 'vector'
         ? calculateWaveDerivative(activeWaves, x, z, timeRef.current, particleDerivativeOrder, interferenceModes)
         : 0;
       const normalized = Math.min(1, Math.abs(height) / Math.max(1, activeWaves.reduce((sum, wave) => sum + Math.abs(wave.amplitude), 0)));
-      positions[index * 3 + 1] = height * 0.9;
+      positions[index * 3] = x + displacement.x * transmission * 0.9;
+      positions[index * 3 + 1] = basePositions[index * 3 + 1] + displacement.y * transmission * 0.9;
+      positions[index * 3 + 2] = z + displacement.z * transmission * 0.9;
+      occlusions[index] = transmission;
       vectorAngles[index] = Math.atan(derivative * 0.35);
       const hue = height >= 0 ? 0.12 - normalized * 0.06 : 0.52 + normalized * 0.08;
       color.setHSL(hue, 0.72, 0.42 + normalized * 0.18);
@@ -126,19 +140,20 @@ function WaveField({ waves, waveCount, interferenceModes, running, particleCount
     geometry.attributes.position.needsUpdate = true;
     geometry.attributes.color.needsUpdate = true;
     geometry.attributes.aVectorAngle.needsUpdate = true;
+    geometry.attributes.aOcclusion.needsUpdate = true;
   });
 
   return <points geometry={geometry} material={material} frustumCulled={false} />;
 }
 
-function WaveScene({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder }) {
+function WaveScene({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, occlusionPreset }) {
   return (
     <>
       <color attach="background" args={['#080d17']} />
       <fog attach="fog" args={['#080d17', 17, 34]} />
       <ambientLight intensity={0.7} color="#b5d8d1" />
       <gridHelper args={[FIELD_SIZE, 18, '#294555', '#142631']} position={[0, -1.35, 0]} />
-      <WaveField waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} />
+      <WaveField waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} occlusionPreset={occlusionPreset} />
       <OrbitControls enableDamping dampingFactor={0.08} minDistance={7} maxDistance={32} target={[0, 0, 0]} />
     </>
   );
@@ -154,8 +169,26 @@ function RangeControl({ label, value, min, max, step, onChange, suffix = '' }) {
   );
 }
 
+function VectorControl({ label, value, min, max, step, onChange }) {
+  const precision = step < 0.1 ? 2 : step < 1 ? 1 : 0;
+  return (
+    <div className="wave-vector-control">
+      <span className="wave-vector-label">{label}</span>
+      <div className="wave-vector-axes">
+        {['x', 'y', 'z'].map((axis) => (
+          <label key={axis}>
+            <span>{axis.toUpperCase()}<strong>{Number(value?.[axis] ?? 0).toFixed(precision)}</strong></span>
+            <input type="range" min={min} max={max} step={step} value={value?.[axis] ?? 0} onChange={(event) => onChange(axis, Number(event.target.value))} />
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate, canRemove }) {
   const update = (field, value) => onChange(index, { ...wave, [field]: value });
+  const updateVector = (field, axis, value, fallback) => update(field, { ...(wave[field] || fallback), [axis]: value });
   return (
     <details className="wave-editor" open={index < 3}>
       <summary><span className="wave-swatch" style={{ backgroundColor: WAVE_COLORS[index] }} />Wave {index + 1}<strong>{wave.enabled ? 'ON' : 'OFF'} / {wave.phaseMode}</strong></summary>
@@ -165,14 +198,19 @@ function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate
       </div>
       <RangeControl label="Wavelength" value={wave.wavelength} min={1} max={12} step={0.1} suffix=" u" onChange={(value) => update('wavelength', value)} />
       <RangeControl label="Amplitude" value={wave.amplitude} min={0} max={1.5} step={0.01} onChange={(value) => update('amplitude', value)} />
+      <RangeControl label="Decay rate" value={wave.decayRate ?? 0} min={0} max={1} step={0.01} suffix=" /u" onChange={(value) => update('decayRate', value)} />
       <RangeControl label="Phase offset" value={wave.phaseOffset} min={-Math.PI} max={Math.PI} step={0.01} suffix=" rad" onChange={(value) => update('phaseOffset', value)} />
       <RangeControl label="Phase rate" value={wave.phaseRate} min={-2} max={2} step={0.01} suffix=" /s" onChange={(value) => update('phaseRate', value)} />
       <label className="wave-select"><span>Phase mode</span><select value={wave.phaseMode} onChange={(event) => update('phaseMode', event.target.value)}>{PHASE_MODES.map((mode) => <option key={mode} value={mode}>{mode}</option>)}</select></label>
+      <label className="wave-select"><span>Polarization</span><select value={wave.polarization ?? 'Scalar'} onChange={(event) => update('polarization', event.target.value)}>{POLARIZATION_MODES.map((mode) => <option key={mode} value={mode}>{mode}</option>)}</select></label>
+      <VectorControl label="Signal origin" value={wave.origin} min={-9} max={9} step={0.1} onChange={(axis, value) => updateVector('origin', axis, value, DEFAULT_SIGNAL_ORIGIN)} />
+      <VectorControl label="Signal direction" value={wave.direction} min={-1} max={1} step={0.05} onChange={(axis, value) => updateVector('direction', axis, value, DEFAULT_SIGNAL_DIRECTION)} />
+      <VectorControl label="Signal rotation (XYZ)" value={wave.rotation} min={-3.15} max={3.15} step={0.05} onChange={(axis, value) => updateVector('rotation', axis, value, DEFAULT_SIGNAL_ROTATION)} />
     </details>
   );
 }
 
-function WavePanel({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, stateOptions, selectedState, stateDescription, stateName, stateMessage, onStateChange, onStateName, onSaveState, onChange, onWaveCountChange, onInterferenceChange, onRunning, onReset, onDuplicate, onRemove, onDoubleSided, onParticleCount, onParticleSize, onParticleOpacity, onParticleShape, onParticleDerivativeOrder, onBack }) {
+function WavePanel({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, sourcePreset, occlusionPreset, stateOptions, selectedState, stateDescription, stateName, stateMessage, onSourcePreset, onOcclusionPreset, onStateChange, onStateName, onSaveState, onChange, onWaveCountChange, onInterferenceChange, onRunning, onReset, onDuplicate, onRemove, onDoubleSided, onParticleCount, onParticleSize, onParticleOpacity, onParticleShape, onParticleDerivativeOrder, onBack }) {
   const enabledCount = waves.slice(0, waveCount).filter((wave) => wave.enabled).length;
   const activeModeLabels = Object.entries(INTERFERENCE_MODES).filter(([mode]) => interferenceModes[mode]).map(([, details]) => details.label);
   return (
@@ -187,6 +225,11 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
         {stateDescription && <p className="wave-description wave-state-description">{stateDescription}</p>}
         <div className="wave-state-save"><input value={stateName} onChange={(event) => onStateName(event.target.value)} placeholder="Name this wave state" aria-label="Name this wave state" /><button type="button" onClick={onSaveState} disabled={!stateName.trim()}>Save state</button></div>
         {stateMessage && <p className="wave-state-message" role="status">{stateMessage}</p>}
+      </section>
+      <section className="wave-control-section wave-state-section">
+        <span className="wave-section-label">SIGNAL SOURCE PRESETS</span>
+        <label className="wave-select wave-state-select"><span>Source preset</span><select value={sourcePreset} onChange={(event) => onSourcePreset(event.target.value)}><option value="">Current field</option>{SIGNAL_SOURCE_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select></label>
+        {sourcePreset && <p className="wave-description wave-state-description">{SIGNAL_SOURCE_PRESETS.find((preset) => preset.id === sourcePreset)?.description}</p>}
       </section>
       <section className="wave-control-section">
         <span className="wave-section-label">FIELD RESPONSE</span>
@@ -208,6 +251,11 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
         {particleShape === 'vector' && <><RangeControl label="Vector derivative n" value={particleDerivativeOrder} min={0} max={4} step={1} onChange={onParticleDerivativeOrder} /><p className="wave-description">Vector direction follows the n-th spatial derivative of particle motion.</p></>}
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={doubleSided} onChange={(event) => onDoubleSided(event.target.checked)} /><span>Double-sided field</span></label>
       </section>
+      <section className="wave-control-section wave-state-section">
+        <span className="wave-section-label">OCCLUSION MAP PRESETS</span>
+        <label className="wave-select wave-state-select"><span>Occlusion map</span><select value={occlusionPreset} onChange={(event) => onOcclusionPreset(event.target.value)}>{OCCLUSION_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select></label>
+        <p className="wave-description wave-state-description">{OCCLUSION_PRESETS.find((preset) => preset.id === occlusionPreset)?.description}</p>
+      </section>
     </aside>
   );
 }
@@ -217,6 +265,8 @@ export default function WaveInterferenceSim({ onBack }) {
   const [waves, setWaves] = useState(() => cloneWaveState(initialState).waves);
   const [waveCount, setWaveCount] = useState(initialState.waveCount);
   const [interferenceModes, setInterferenceModes] = useState(initialState.interferenceModes);
+  const [sourcePreset, setSourcePreset] = useState('');
+  const [occlusionPreset, setOcclusionPreset] = useState('none');
   const [particleCount, setParticleCount] = useState(DEFAULT_PARTICLE_COUNT);
   const [savedStates, setSavedStates] = useState(() => readSavedWaveStates());
   const [selectedState, setSelectedState] = useState(initialState.name);
@@ -231,6 +281,7 @@ export default function WaveInterferenceSim({ onBack }) {
   const [particleDerivativeOrder, setParticleDerivativeOrder] = useState(1);
 
   const markStateModified = () => {
+    setSourcePreset('');
     setStateModified(true);
     setStateMessage('Current field has unsaved changes.');
   };
@@ -261,6 +312,19 @@ export default function WaveInterferenceSim({ onBack }) {
     setWaveCount(next.waveCount);
     setInterferenceModes(next.interferenceModes);
   };
+  const onSourcePreset = (id) => {
+    if (!id) {
+      setSourcePreset('');
+      return;
+    }
+    const next = SIGNAL_SOURCE_PRESETS.find((preset) => preset.id === id);
+    if (!next) return;
+    applyState(next);
+    setSourcePreset(id);
+    setSelectedState('');
+    setStateModified(false);
+    setStateMessage(`Loaded ${next.name}.`);
+  };
   const stateOptions = [...DEFAULT_WAVE_STATES, ...Object.values(savedStates)];
   const selectedStateValue = stateModified ? '' : selectedState;
   const selectedStateDetails = stateOptions.find((state) => state.name === selectedState);
@@ -268,6 +332,7 @@ export default function WaveInterferenceSim({ onBack }) {
     const next = stateOptions.find((state) => state.name === name);
     if (!next) return;
     applyState(next);
+    setSourcePreset('');
     setSelectedState(name);
     setStateModified(false);
     setStateMessage(`Loaded ${name}.`);
@@ -294,6 +359,7 @@ export default function WaveInterferenceSim({ onBack }) {
   };
   const reset = () => {
     applyState(initialState);
+    setSourcePreset('');
     setSelectedState(initialState.name);
     setStateModified(false);
     setStateMessage(`Loaded ${initialState.name}.`);
@@ -303,14 +369,15 @@ export default function WaveInterferenceSim({ onBack }) {
     setParticleOpacity(0.9);
     setParticleShape('circle');
     setParticleDerivativeOrder(1);
+    setOcclusionPreset('none');
   };
 
   return (
     <main className="wave-app">
-      <div className="wave-scene" data-particle-count={particleCount}><Canvas camera={{ position: [11, 8, 12], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><WaveScene waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} /></Canvas></div>
+      <div className="wave-scene" data-particle-count={particleCount} data-occlusion-preset={occlusionPreset}><Canvas camera={{ position: [11, 8, 12], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><WaveScene waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} occlusionPreset={occlusionPreset} /></Canvas></div>
       <header className="wave-topbar"><div className="wave-brand"><span className="wave-mark">WAV</span><span><b>WAVE FIELD LAB</b><em>Phase geometry / interference study</em></span></div><div className="wave-top-meta"><span>WEBGL / FIELD SYNTHESIS</span><button type="button" className="wave-run-toggle" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></div></header>
       <section className="wave-title"><p>Animated phase experiment</p><h1>Shape the interference.</h1><span>Independent wavelength, amplitude, phase mode, and phase parameters for every active wave.</span></section>
-      <WavePanel waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} stateOptions={stateOptions} selectedState={selectedStateValue} stateDescription={stateModified ? '' : selectedStateDetails?.description} stateName={stateName} stateMessage={stateMessage} onStateChange={onStateChange} onStateName={setStateName} onSaveState={onSaveState} onChange={updateWave} onWaveCountChange={updateWaveCount} onInterferenceChange={(mode, value) => { setInterferenceModes((current) => ({ ...current, [mode]: value })); markStateModified(); }} onRunning={() => setRunning((value) => !value)} onReset={reset} onDuplicate={duplicateWave} onRemove={removeWave} onDoubleSided={setDoubleSided} onParticleCount={setParticleCount} onParticleSize={setParticleSize} onParticleOpacity={setParticleOpacity} onParticleShape={setParticleShape} onParticleDerivativeOrder={setParticleDerivativeOrder} onBack={onBack} />
+      <WavePanel waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} sourcePreset={sourcePreset} occlusionPreset={occlusionPreset} stateOptions={stateOptions} selectedState={selectedStateValue} stateDescription={stateModified ? '' : selectedStateDetails?.description} stateName={stateName} stateMessage={stateMessage} onSourcePreset={onSourcePreset} onOcclusionPreset={setOcclusionPreset} onStateChange={onStateChange} onStateName={setStateName} onSaveState={onSaveState} onChange={updateWave} onWaveCountChange={updateWaveCount} onInterferenceChange={(mode, value) => { setInterferenceModes((current) => ({ ...current, [mode]: value })); markStateModified(); }} onRunning={() => setRunning((value) => !value)} onReset={reset} onDuplicate={duplicateWave} onRemove={removeWave} onDoubleSided={setDoubleSided} onParticleCount={setParticleCount} onParticleSize={setParticleSize} onParticleOpacity={setParticleOpacity} onParticleShape={setParticleShape} onParticleDerivativeOrder={setParticleDerivativeOrder} onBack={onBack} />
       <footer className="wave-footer"><span>n WAVES / {Object.entries(INTERFERENCE_MODES).filter(([mode]) => interferenceModes[mode]).map(([, details]) => details.label.toUpperCase()).join(' + ') || 'NO INTERFERENCE'}</span><span>DRAG TO ORBIT / SCROLL TO ZOOM</span></footer>
     </main>
   );

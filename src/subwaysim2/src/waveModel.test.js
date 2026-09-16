@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateWaveDerivative, calculateWaveSample, cloneWaveState, combineWaves, DEFAULT_WAVE_COUNT, DEFAULT_WAVE_STATES, DEFAULT_WAVES, INTERFERENCE_MODES, MAX_WAVES, PHASE_MODES } from './waveModel.js';
+import { calculateElectromagneticField, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveEnvelope, calculateWaveSample, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_COUNT, DEFAULT_WAVE_STATES, DEFAULT_WAVES, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, OCCLUSION_PRESETS, PHASE_MODES, POLARIZATION_MODES, SIGNAL_SOURCE_PRESETS } from './waveModel.js';
 
 test('wave configuration exposes eight phase modes and eight defaults', () => {
   assert.equal(MAX_WAVES, 8);
@@ -69,4 +69,105 @@ test('wave motion derivative follows the selected order', () => {
   assert.equal(calculateWaveDerivative([wave], 1, 0, 0, 0), combineWaves([wave], 1, 0, 0));
   assert.ok(Number.isFinite(calculateWaveDerivative([wave], 1, 0, 0, 1)));
   assert.ok(Number.isFinite(calculateWaveDerivative([wave], 1, 0, 0, 4)));
+});
+
+test('wave states normalize origin and direction defaults', () => {
+  const state = cloneWaveState({ name: 'legacy', waveCount: 1, waves: [{}] });
+  assert.deepEqual(state.waves[0].origin, DEFAULT_SIGNAL_ORIGIN);
+  assert.deepEqual(state.waves[0].direction, DEFAULT_SIGNAL_DIRECTION);
+  assert.deepEqual(state.waves[0].rotation, DEFAULT_SIGNAL_ROTATION);
+  assert.equal(state.waves[0].decayRate, 0);
+  assert.equal(state.waves[0].polarization, 'Scalar');
+});
+
+test('wave phase follows the configured origin and direction', () => {
+  const wave = { wavelength: 4, phaseMode: 'Standard', phaseOffset: 0, phaseRate: 0, origin: { x: 2, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 } };
+  assert.equal(calculateWaveSample(wave, 3, 0, 0), calculateWaveSample({ ...wave, origin: { x: 0, y: 0, z: 0 } }, 1, 0, 0));
+
+  const zDirected = { ...wave, origin: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: 1 } };
+  assert.equal(calculateWaveSample(zDirected, 0, 1, 0), 1);
+  assert.equal(calculateWaveSample(zDirected, 1, 0, 0), 0);
+});
+
+test('helical phase winds once around its directed propagation axis', () => {
+  const wave = { wavelength: 8, phaseMode: 'Helical-Left', phaseOffset: 0, phaseRate: 0, origin: { x: 0, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 } };
+  assert.equal(HELICAL_TOPOLOGICAL_CHARGE, 1);
+  assert.ok(Math.abs(calculateWaveSample(wave, 0, 0, 0, 1)) < 1e-12);
+  assert.ok(Math.abs(calculateWaveSample(wave, 0, 1, 0, 0) - 1) < 1e-12);
+  assert.ok(Math.abs(calculateWaveSample(wave, 0, 0, 0, -1)) < 1e-12);
+  assert.ok(Math.abs(calculateWaveSample(wave, 0, -1, 0, 0) + 1) < 1e-12);
+});
+
+test('signal rotation rotates the complete directed frame', () => {
+  const wave = { wavelength: 4, phaseMode: 'Standard', phaseOffset: 0, phaseRate: 0, rotation: { x: 0, y: 0, z: Math.PI / 2 } };
+  assert.ok(Math.abs(calculateWaveSample(wave, 1, 0, 0)) < 1e-12);
+  assert.ok(Math.abs(calculateWaveSample(wave, 0, 0, 0, 1) - 1) < 1e-12);
+});
+
+test('decay attenuates a wave only downstream of its origin', () => {
+  const wave = { wavelength: 4, phaseMode: 'Standard', phaseOffset: 0, phaseRate: 0, decayRate: Math.log(2) };
+  assert.ok(Math.abs(calculateWaveSample(wave, 1, 0, 0) - 0.5) < 1e-12);
+  assert.ok(Math.abs(calculateWaveSample(wave, -1, 0, 0) + 1) < 1e-12);
+  assert.equal(calculateWaveEnvelope({ decayRate: -1 }, 4), 1);
+});
+
+test('polarization maps scalar, transverse, and longitudinal displacement vectors', () => {
+  assert.deepEqual(POLARIZATION_MODES, ['Scalar', 'Transverse', 'Longitudinal', 'Electromagnetic', 'EM-Tensor-Gaussian']);
+  const baseWave = { wavelength: 4, amplitude: 1, phaseMode: 'Standard', phaseOffset: 0, phaseRate: 0, direction: { x: 0, y: 0, z: 1 } };
+  assert.deepEqual(calculateWaveDisplacement([{ ...baseWave, polarization: 'Scalar' }], 0, 1, 0), { x: 0, y: 1, z: 0 });
+  assert.deepEqual(calculateWaveDisplacement([{ ...baseWave, polarization: 'Longitudinal' }], 0, 1, 0), { x: 0, y: 0, z: 1 });
+  assert.deepEqual(calculateWaveDisplacement([{ ...baseWave, polarization: 'Transverse' }], 0, 1, 0), { x: 0, y: 1, z: 0 });
+});
+
+test('electromagnetic polarization is transverse and derives B from k cross E', () => {
+  const wave = { wavelength: 4, amplitude: 1, phaseMode: 'Circular-Left', phaseOffset: 0, phaseRate: 0, direction: { x: 0, y: 0, z: 1 } };
+  const field = calculateElectromagneticField(wave, 0, 0, 0);
+  const dotWithDirection = field.electric.z;
+  const magneticMagnitude = Math.hypot(field.magnetic.x, field.magnetic.y, field.magnetic.z);
+  const electricMagnitude = Math.hypot(field.electric.x, field.electric.y, field.electric.z);
+  assert.ok(Math.abs(dotWithDirection) < 1e-12);
+  assert.ok(Math.abs(magneticMagnitude - electricMagnitude) < 1e-12);
+  assert.ok(Math.abs(field.tensor.reduce((sum, value) => sum + value * value, 0) - 1) < 1e-12);
+});
+
+test('tensor Gaussian splatters are strongest on-axis and vanish toward the beam edge', () => {
+  const wave = { wavelength: 4, amplitude: 1, phaseMode: 'Standard', phaseOffset: Math.PI / 2, phaseRate: 0, beamWaist: 2, polarization: 'EM-Tensor-Gaussian' };
+  const center = calculateWaveTensorGaussian([wave], 0, 0, 0);
+  const edge = calculateWaveTensorGaussian([wave], 0, 6, 0);
+  assert.ok(center > edge);
+  assert.ok(center > 0);
+  assert.ok(edge < 0.02);
+});
+
+test('signal source presets provide coherent laser configurations', () => {
+  assert.deepEqual(SIGNAL_SOURCE_PRESETS.map((preset) => preset.name), [
+    'Continuous-wave laser',
+    'Continuous-wave laser w/ Helical-L and Helical-R'
+  ]);
+  const [laser, helicalLaser] = SIGNAL_SOURCE_PRESETS;
+  assert.equal(laser.waveCount, 1);
+  assert.equal(helicalLaser.waveCount, 3);
+  assert.deepEqual(helicalLaser.waves.slice(0, 3).map((wave) => wave.phaseMode), ['Standard', 'Helical-Left', 'Helical-Right']);
+  for (const preset of SIGNAL_SOURCE_PRESETS) {
+    assert.equal(preset.waves.length, MAX_WAVES);
+    assert.ok(preset.waves.every((wave) => wave.origin && wave.direction));
+  }
+});
+
+test('occlusion presets expose aperture, fractal, room, and obstacle masks', () => {
+  assert.deepEqual(OCCLUSION_PRESETS.map((preset) => preset.id), [
+    'none', 'pinhole', 'single-slit', 'double-slit', 'sierpinski-carpet', 'unilluminable-room', 'boulder'
+  ]);
+  assert.equal(calculateOcclusionTransmission('none', 4, 8), 1);
+  assert.equal(calculateOcclusionTransmission('pinhole', 2, 0), 1);
+  assert.equal(calculateOcclusionTransmission('pinhole', 2, 2), 0);
+  assert.equal(calculateOcclusionTransmission('single-slit', 2, 1), 1);
+  assert.equal(calculateOcclusionTransmission('double-slit', 2, 2.1), 1);
+  assert.equal(calculateOcclusionTransmission('double-slit', 2, 0), 0);
+  assert.equal(calculateOcclusionTransmission('sierpinski-carpet', 1, -8), 1);
+  assert.equal(calculateOcclusionTransmission('sierpinski-carpet', 1.5, 0), 0);
+  assert.equal(calculateOcclusionTransmission('unilluminable-room', 4, 0), 0);
+  assert.equal(calculateOcclusionTransmission('unilluminable-room', 4, 6), 1);
+  assert.equal(calculateOcclusionTransmission('boulder', 2.8, 0), 0);
+  assert.equal(calculateOcclusionTransmission('boulder', 6, 3), 1);
 });
