@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateElectromagneticField, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveEnvelope, calculateWaveSample, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_COUNT, DEFAULT_WAVE_STATES, DEFAULT_WAVES, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, OCCLUSION_PRESETS, PHASE_MODES, POLARIZATION_MODES, SIGNAL_SOURCE_PRESETS } from './waveModel.js';
+import { calculateElectromagneticField, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveEnvelope, calculateWaveFrame, calculateWaveSample, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_COUNT, DEFAULT_WAVE_STATES, DEFAULT_WAVES, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, OCCLUSION_PRESETS, PHASE_MODES, POLARIZATION_MODES, SIGNAL_SOURCE_PRESETS } from './waveModel.js';
 
 test('wave configuration exposes eight phase modes and eight defaults', () => {
   assert.equal(MAX_WAVES, 8);
@@ -87,6 +87,20 @@ test('wave phase follows the configured origin and direction', () => {
   const zDirected = { ...wave, origin: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: 1 } };
   assert.equal(calculateWaveSample(zDirected, 0, 1, 0), 1);
   assert.equal(calculateWaveSample(zDirected, 1, 0, 0), 0);
+});
+
+test('signal source frame exposes propagation direction for source vectors', () => {
+  const frame = calculateWaveFrame({
+    origin: { x: -8, y: 1, z: 2 },
+    direction: { x: 0, y: 1, z: 1 },
+    rotation: { x: 0, y: 0, z: 0 }
+  });
+  const length = Math.hypot(frame.direction.x, frame.direction.y, frame.direction.z);
+  assert.deepEqual(frame.origin, { x: -8, y: 1, z: 2 });
+  assert.ok(Math.abs(length - 1) < 1e-12);
+  assert.ok(Math.abs(frame.direction.x) < 1e-12);
+  assert.ok(Math.abs(frame.direction.y - Math.SQRT1_2) < 1e-12);
+  assert.ok(Math.abs(frame.direction.z - Math.SQRT1_2) < 1e-12);
 });
 
 test('helical phase winds once around its directed propagation axis', () => {
