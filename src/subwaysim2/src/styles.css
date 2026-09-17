@@ -298,14 +298,16 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: #f0a23a
 .wave-brand em { margin-top: 4px; color: #8aa9b1; font-size: 9px; letter-spacing: 0.04em; }
 .wave-mark { display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid #e4a458; color: #e4a458; font: 10px 'DM Mono', monospace; letter-spacing: 0.04em; }
 .wave-top-meta { display: flex; align-items: center; gap: 20px; color: #8aa9b1; font: 9px 'DM Mono', monospace; letter-spacing: 0.1em; }
-.wave-run-toggle, .wave-hide-button, .wave-actions button { border: 1px solid rgba(121, 204, 204, 0.38); color: #a9e6db; background: rgba(30, 73, 80, 0.3); font: 9px 'DM Mono', monospace; cursor: pointer; }
+.wave-run-toggle, .wave-params-toggle, .wave-hide-button, .wave-actions button { border: 1px solid rgba(121, 204, 204, 0.38); color: #a9e6db; background: rgba(30, 73, 80, 0.3); font: 9px 'DM Mono', monospace; cursor: pointer; }
 .wave-run-toggle { padding: 7px 10px; }
-.wave-run-toggle:hover, .wave-hide-button:hover, .wave-actions button:hover { border-color: #79d0c5; background: rgba(55, 116, 119, 0.35); }
+.wave-params-toggle { padding: 7px 10px; }
+.wave-run-toggle:hover, .wave-params-toggle:hover, .wave-hide-button:hover, .wave-actions button:hover { border-color: #79d0c5; background: rgba(55, 116, 119, 0.35); }
 .wave-title { bottom: 45px; left: 28px; max-width: 510px; pointer-events: none; }
 .wave-title p { margin: 0 0 12px; color: #e4a458; font: 10px 'DM Mono', monospace; letter-spacing: 0.12em; text-transform: uppercase; }
 .wave-title h1 { margin: 0; color: #f1f4e9; font-size: clamp(34px, 4vw, 57px); font-weight: 500; line-height: 0.98; }
 .wave-title span { display: block; max-width: 390px; margin-top: 15px; color: #9ab5b8; font-size: 12px; line-height: 1.45; }
 .wave-panel { top: 90px; right: 28px; bottom: 22px; width: 360px; overflow-y: auto; padding: 19px; border: 1px solid rgba(125, 202, 207, 0.25); background: rgba(8, 19, 30, 0.78); box-shadow: 0 22px 60px rgba(0, 0, 0, 0.38); backdrop-filter: blur(16px); scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track); scrollbar-width: thin; }
+.wave-panel.is-hidden { display: none; }
 .wave-panel::-webkit-scrollbar { width: 9px; }
 .wave-panel::-webkit-scrollbar-track { background: var(--scrollbar-track); }
 .wave-panel::-webkit-scrollbar-thumb { border: 2px solid var(--scrollbar-track); background: var(--scrollbar-thumb); }

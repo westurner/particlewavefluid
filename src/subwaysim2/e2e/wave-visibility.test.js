@@ -119,6 +119,14 @@ test('wave interference renders visible particles after mode changes', async (t)
   assert.equal(await page.locator('.wave-scene').getAttribute('data-source-vectors'), 'false');
   await sourceVectors.check();
   assert.equal(await page.locator('.wave-scene').getAttribute('data-source-vectors'), 'true');
+  const paramsToggle = page.getByRole('button', { name: 'Hide params', exact: true });
+  assert.equal(await paramsToggle.getAttribute('aria-pressed'), 'true');
+  await paramsToggle.click();
+  assert.equal(await page.locator('.wave-panel').isVisible(), false);
+  const showParams = page.getByRole('button', { name: 'Show params', exact: true });
+  assert.equal(await showParams.getAttribute('aria-pressed'), 'false');
+  await showParams.click();
+  assert.equal(await page.locator('.wave-panel').isVisible(), true);
   await page.waitForTimeout(150);
 
   const doubleSidedField = page.getByLabel('Double-sided field');
@@ -176,6 +184,9 @@ test('wave visualization moves with orbit drag and wheel zoom', async (t) => {
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: /01 \/ LOAD FIELD/ }).click();
   await page.locator('.wave-panel').waitFor();
+  await page.getByRole('button', { name: 'Hide params', exact: true }).click();
+  assert.equal(await page.locator('.wave-panel').isVisible(), false);
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-orbit-controls'), 'true');
   await page.locator('.wave-run-toggle').click();
   const canvas = page.locator('.wave-scene canvas');
   await canvas.waitFor();
