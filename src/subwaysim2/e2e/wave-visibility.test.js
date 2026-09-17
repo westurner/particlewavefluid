@@ -104,7 +104,7 @@ test('wave interference renders visible particles after mode changes', async (t)
   await beamWaist.focus();
   await beamWaist.press('ArrowRight');
   assert.equal(await beamWaist.inputValue(), '3.1');
-  const orbitControls = page.getByLabel('Orbit controls visible');
+  const orbitControls = page.getByLabel('Allow moving camera');
   assert.equal(await orbitControls.isChecked(), true);
   await orbitControls.uncheck();
   assert.equal(await orbitControls.isChecked(), false);
@@ -266,5 +266,63 @@ test('source direction edits point vectors and remain inspectable with orbit con
   await page.waitForTimeout(200);
   const afterZoom = await canvas.screenshot();
   assert.ok(countChangedPixels(afterOrbit, afterZoom) > 1000, 'wheel zoom should change the edited source visualization');
+  assert.deepEqual(pageErrors, [], `wave simulator reported page errors: ${pageErrors.join('; ')}`);
+});
+
+test('source orbit control edits origin direction and rotation with pointer input', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => localStorage.clear());
+
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /01 \/ LOAD FIELD/ }).click();
+  await page.locator('.wave-panel').waitFor();
+  await page.getByLabel('Source preset').selectOption('continuous-wave-laser');
+  const editor = page.locator('.wave-editor').first();
+  const orbit = editor.locator('[aria-label="Wave 1 source orbit controls"]');
+  const placement = editor.getByLabel('Wave 1 parameter placement');
+  for (const option of ['auto', 'above', 'below', 'outward', 'inward']) {
+    await placement.selectOption(option);
+    assert.match(await editor.locator('.wave-editor-workbench').getAttribute('class'), new RegExp(`placement-${option}`));
+  }
+  await placement.selectOption('auto');
+  const pad = orbit.locator('.wave-source-orbit-pad');
+  await pad.scrollIntoViewIfNeeded();
+  const padBox = await pad.boundingBox();
+  assert.ok(padBox, 'source orbit pad should have a visible bounding box');
+  const center = { x: padBox.x + padBox.width * 0.5, y: padBox.y + padBox.height * 0.5 };
+  assert.match(await page.evaluate(({ x, y }) => String(document.elementFromPoint(x, y)?.className || ''), center), /wave-source-orbit-pad|wave-source-orbit-crosshair/);
+  const sourceFrame = async () => JSON.parse(await page.locator('.wave-scene').getAttribute('data-source-frame'));
+
+  assert.equal(await orbit.getAttribute('data-source-orbit-mode'), 'direction');
+  const initialDirection = (await sourceFrame()).direction;
+  await page.mouse.move(center.x, center.y);
+  await page.mouse.down({ button: 'left' });
+  await page.mouse.move(padBox.x + padBox.width * 0.75, center.y, { steps: 5 });
+  await page.mouse.up({ button: 'left' });
+  const direction = (await sourceFrame()).direction;
+  assert.ok(Math.abs(direction.z - initialDirection.z) > 0.5, `direction drag should change propagation direction: ${JSON.stringify(initialDirection)} -> ${JSON.stringify(direction)}`);
+
+  await orbit.getByRole('button', { name: 'Origin', exact: true }).click();
+  const originBefore = (await sourceFrame()).origin;
+  await page.mouse.move(center.x, center.y);
+  await page.mouse.down({ button: 'left' });
+  await page.mouse.move(padBox.x + padBox.width * 0.8, padBox.y + padBox.height * 0.2, { steps: 5 });
+  await page.mouse.up({ button: 'left' });
+  const originAfter = (await sourceFrame()).origin;
+  assert.ok(Math.abs(originAfter.x - originBefore.x) > 1, 'origin drag should change source X');
+  assert.ok(Math.abs(originAfter.z - originBefore.z) > 1, 'origin drag should change source Z');
+
+  await orbit.getByRole('button', { name: 'Rotation', exact: true }).click();
+  const rotationInputs = editor.locator('.wave-vector-control').nth(2).locator('input');
+  const rotationBefore = await rotationInputs.nth(0).inputValue();
+  await page.mouse.move(center.x, center.y);
+  await page.mouse.down({ button: 'left' });
+  await page.mouse.move(padBox.x + padBox.width * 0.65, padBox.y + padBox.height * 0.3, { steps: 5 });
+  await page.mouse.up({ button: 'left' });
+  assert.notEqual(await rotationInputs.nth(0).inputValue(), rotationBefore, 'rotation drag should change rotation X');
   assert.deepEqual(pageErrors, [], `wave simulator reported page errors: ${pageErrors.join('; ')}`);
 });

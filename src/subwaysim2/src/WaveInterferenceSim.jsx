@@ -218,7 +218,93 @@ function VectorControl({ label, value, min, max, step, onChange }) {
   );
 }
 
+const SOURCE_ORBIT_MODES = [
+  { id: 'origin', label: 'Origin' },
+  { id: 'direction', label: 'Direction' },
+  { id: 'rotation', label: 'Rotation' }
+];
+
+const PARAMETER_PLACEMENTS = [
+  { id: 'auto', label: 'Radial auto' },
+  { id: 'above', label: 'Above' },
+  { id: 'below', label: 'Below' },
+  { id: 'outward', label: 'Radial outward' },
+  { id: 'inward', label: 'Radial inward' }
+];
+
+function clamp(value, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function sourceOrbitValue(mode, wave) {
+  if (mode === 'origin') {
+    return {
+      x: clamp((Number(wave.origin?.x) + 9) / 18, 0, 1),
+      y: clamp((Number(wave.origin?.z) + 9) / 18, 0, 1)
+    };
+  }
+  if (mode === 'direction') {
+    const direction = wave.direction || DEFAULT_SIGNAL_DIRECTION;
+    const azimuth = Math.atan2(Number(direction.z) || 0, Number(direction.x) || 1);
+    const elevation = Math.atan2(Number(direction.y) || 0, Math.hypot(Number(direction.x) || 0, Number(direction.z) || 0));
+    return { x: (azimuth + Math.PI) / (Math.PI * 2), y: 0.5 - elevation / Math.PI };
+  }
+  return {
+    x: clamp((Number(wave.rotation?.y) + Math.PI) / (Math.PI * 2), 0, 1),
+    y: clamp(0.5 - (Number(wave.rotation?.x) || 0) / (Math.PI * 2), 0, 1)
+  };
+}
+
+function SourceOrbitControl({ wave, index, onChange }) {
+  const [mode, setMode] = useState('direction');
+  const padRef = useRef(null);
+  const draggingRef = useRef(false);
+  const updateFromPointer = (event) => {
+    const bounds = padRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+    const horizontal = clamp((event.clientX - bounds.left) / bounds.width, 0, 1);
+    const vertical = clamp((event.clientY - bounds.top) / bounds.height, 0, 1);
+    if (mode === 'origin') {
+      onChange('origin', { ...(wave.origin || DEFAULT_SIGNAL_ORIGIN), x: horizontal * 18 - 9, z: vertical * 18 - 9 });
+      return;
+    }
+    if (mode === 'direction') {
+      const azimuth = horizontal * Math.PI * 2 - Math.PI;
+      const elevation = (0.5 - vertical) * Math.PI;
+      const cosine = Math.cos(elevation);
+      onChange('direction', { x: cosine * Math.cos(azimuth), y: Math.sin(elevation), z: cosine * Math.sin(azimuth) });
+      return;
+    }
+    onChange('rotation', { ...(wave.rotation || DEFAULT_SIGNAL_ROTATION), x: (0.5 - vertical) * Math.PI * 2, y: (horizontal - 0.5) * Math.PI * 2 });
+  };
+  const handlePointerDown = (event) => {
+    draggingRef.current = true;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updateFromPointer(event);
+  };
+  const handlePointerMove = (event) => {
+    if (draggingRef.current) updateFromPointer(event);
+  };
+  const value = sourceOrbitValue(mode, wave);
+  return (
+    <div className="wave-source-orbit" data-source-orbit-mode={mode} aria-label={`Wave ${index + 1} source orbit controls`}>
+      <div className="wave-source-orbit-heading"><span>Source orbit</span><strong>{mode}</strong></div>
+      <div className="wave-source-orbit-modes" role="group" aria-label={`Wave ${index + 1} source orbit mode`}>
+        {SOURCE_ORBIT_MODES.map((option) => <button key={option.id} type="button" className={mode === option.id ? 'active' : ''} aria-pressed={mode === option.id} onClick={() => setMode(option.id)}>{option.label}</button>)}
+      </div>
+      <div ref={padRef} className="wave-source-orbit-pad" role="application" aria-label={`${mode} source orbit pad`} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={(event) => { draggingRef.current = false; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={() => { draggingRef.current = false; }}>
+        <span className="wave-source-orbit-crosshair" />
+        <span className="wave-source-orbit-handle" style={{ left: `${value.x * 100}%`, top: `${value.y * 100}%` }} />
+      </div>
+      {mode === 'origin' && <RangeControl label="Origin Y" value={wave.origin?.y ?? 0} min={-9} max={9} step={0.1} onChange={(next) => onChange('origin', { ...(wave.origin || DEFAULT_SIGNAL_ORIGIN), y: next })} />}
+      {mode === 'rotation' && <RangeControl label="Rotation Z" value={wave.rotation?.z ?? 0} min={-3.15} max={3.15} step={0.05} suffix=" rad" onChange={(next) => onChange('rotation', { ...(wave.rotation || DEFAULT_SIGNAL_ROTATION), z: next })} />}
+      <p className="wave-description">Drag the pad with a mouse or touch to edit this wave's {mode}.</p>
+    </div>
+  );
+}
+
 function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate, canRemove }) {
+  const [parameterPlacement, setParameterPlacement] = useState('auto');
   const update = (field, value) => onChange(index, { ...wave, [field]: value });
   const updateVector = (field, axis, value, fallback) => update(field, { ...(wave[field] || fallback), [axis]: value });
   return (
@@ -228,17 +314,23 @@ function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate
         <label className="wave-toggle"><input type="checkbox" checked={wave.enabled} onChange={(event) => update('enabled', event.target.checked)} /><span>{wave.enabled ? 'Enabled' : 'Disabled'}</span></label>
         <div className="wave-editor-buttons"><button type="button" onClick={() => onDuplicate(index)} disabled={!canDuplicate}>Duplicate</button><button type="button" className="wave-remove-button" onClick={() => onRemove(index)} disabled={!canRemove}>Remove</button></div>
       </div>
-      <RangeControl label="Wavelength" value={wave.wavelength} min={1} max={12} step={0.1} suffix=" u" onChange={(value) => update('wavelength', value)} />
-      <RangeControl label="Amplitude" value={wave.amplitude} min={0} max={1.5} step={0.01} onChange={(value) => update('amplitude', value)} />
-      <RangeControl label="Decay rate" value={wave.decayRate ?? 0} min={0} max={1} step={0.01} suffix=" /u" onChange={(value) => update('decayRate', value)} />
-      <RangeControl label="Phase offset" value={wave.phaseOffset} min={-Math.PI} max={Math.PI} step={0.01} suffix=" rad" onChange={(value) => update('phaseOffset', value)} />
-      <RangeControl label="Phase rate" value={wave.phaseRate} min={-2} max={2} step={0.01} suffix=" /s" onChange={(value) => update('phaseRate', value)} />
-      <label className="wave-select"><span>Phase mode</span><select value={wave.phaseMode} onChange={(event) => update('phaseMode', event.target.value)}>{PHASE_MODES.map((mode) => <option key={mode} value={mode}>{mode}</option>)}</select></label>
-      <label className="wave-select"><span>Polarization</span><select value={wave.polarization ?? 'Scalar'} onChange={(event) => update('polarization', event.target.value)}>{POLARIZATION_MODES.map((mode) => <option key={mode} value={mode}>{mode}</option>)}</select></label>
-      {(['Electromagnetic', 'EM-Tensor-Gaussian'].includes(wave.polarization)) && <RangeControl label="Beam waist" value={wave.beamWaist ?? DEFAULT_BEAM_WAIST} min={0.5} max={9} step={0.1} suffix=" u" onChange={(value) => update('beamWaist', value)} />}
-      <VectorControl label="Signal origin" value={wave.origin} min={-9} max={9} step={0.1} onChange={(axis, value) => updateVector('origin', axis, value, DEFAULT_SIGNAL_ORIGIN)} />
-      <VectorControl label="Signal direction" value={wave.direction} min={-1} max={1} step={0.05} onChange={(axis, value) => updateVector('direction', axis, value, DEFAULT_SIGNAL_DIRECTION)} />
-      <VectorControl label="Signal rotation (XYZ)" value={wave.rotation} min={-3.15} max={3.15} step={0.05} onChange={(axis, value) => updateVector('rotation', axis, value, DEFAULT_SIGNAL_ROTATION)} />
+      <label className="wave-select wave-parameter-placement"><span>Parameter placement</span><select aria-label={`Wave ${index + 1} parameter placement`} value={parameterPlacement} onChange={(event) => setParameterPlacement(event.target.value)}>{PARAMETER_PLACEMENTS.map((placement) => <option key={placement.id} value={placement.id}>{placement.label}</option>)}</select></label>
+      <div className={`wave-editor-workbench placement-${parameterPlacement}`}>
+        <SourceOrbitControl wave={wave} index={index} onChange={update} />
+        <div className="wave-parameter-dock">
+          <RangeControl label="Wavelength" value={wave.wavelength} min={1} max={12} step={0.1} suffix=" u" onChange={(value) => update('wavelength', value)} />
+          <RangeControl label="Amplitude" value={wave.amplitude} min={0} max={1.5} step={0.01} onChange={(value) => update('amplitude', value)} />
+          <RangeControl label="Decay rate" value={wave.decayRate ?? 0} min={0} max={1} step={0.01} suffix=" /u" onChange={(value) => update('decayRate', value)} />
+          <RangeControl label="Phase offset" value={wave.phaseOffset} min={-Math.PI} max={Math.PI} step={0.01} suffix=" rad" onChange={(value) => update('phaseOffset', value)} />
+          <RangeControl label="Phase rate" value={wave.phaseRate} min={-2} max={2} step={0.01} suffix=" /s" onChange={(value) => update('phaseRate', value)} />
+          <label className="wave-select"><span>Phase mode</span><select value={wave.phaseMode} onChange={(event) => update('phaseMode', event.target.value)}>{PHASE_MODES.map((mode) => <option key={mode} value={mode}>{mode}</option>)}</select></label>
+          <label className="wave-select"><span>Polarization</span><select value={wave.polarization ?? 'Scalar'} onChange={(event) => update('polarization', event.target.value)}>{POLARIZATION_MODES.map((mode) => <option key={mode} value={mode}>{mode}</option>)}</select></label>
+          {(['Electromagnetic', 'EM-Tensor-Gaussian'].includes(wave.polarization)) && <RangeControl label="Beam waist" value={wave.beamWaist ?? DEFAULT_BEAM_WAIST} min={0.5} max={9} step={0.1} suffix=" u" onChange={(value) => update('beamWaist', value)} />}
+          <VectorControl label="Signal origin" value={wave.origin} min={-9} max={9} step={0.1} onChange={(axis, value) => updateVector('origin', axis, value, DEFAULT_SIGNAL_ORIGIN)} />
+          <VectorControl label="Signal direction" value={wave.direction} min={-1} max={1} step={0.05} onChange={(axis, value) => updateVector('direction', axis, value, DEFAULT_SIGNAL_DIRECTION)} />
+          <VectorControl label="Signal rotation (XYZ)" value={wave.rotation} min={-3.15} max={3.15} step={0.05} onChange={(axis, value) => updateVector('rotation', axis, value, DEFAULT_SIGNAL_ROTATION)} />
+        </div>
+      </div>
     </details>
   );
 }
@@ -283,7 +375,7 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
         <label className="wave-select"><span>Particle shape</span><select value={particleShape} onChange={(event) => onParticleShape(event.target.value)}>{PARTICLE_SHAPES.map((shape) => <option key={shape} value={shape}>{shape}</option>)}</select></label>
         {particleShape === 'vector' && <><RangeControl label="Vector derivative n" value={particleDerivativeOrder} min={0} max={4} step={1} onChange={onParticleDerivativeOrder} /><p className="wave-description">Vector direction follows the n-th spatial derivative of particle motion.</p></>}
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={doubleSided} onChange={(event) => onDoubleSided(event.target.checked)} /><span>Double-sided field</span></label>
-        <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={orbitControlsVisible} onChange={(event) => onOrbitControls(event.target.checked)} /><span>Orbit controls visible</span></label>
+        <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={orbitControlsVisible} onChange={(event) => onOrbitControls(event.target.checked)} /><span>Allow moving camera</span></label>
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={sourceVectorsVisible} onChange={(event) => onSourceVectors(event.target.checked)} /><span>Source vectors visible</span></label>
       </section>
       <section className="wave-control-section wave-state-section">
