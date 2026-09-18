@@ -77,3 +77,12 @@ The development route is `/index.html` because the earlier HTML experiments are 
 - Keep shader strings close to the component that owns their uniforms.
 - Do not silently remove the legacy HTML experiments or change the simulation constants without recording the reason.
 - Validate with `npm run build` after changes. For visual changes, also load `/index.html` in a browser and confirm that the canvas renders, the train toggle moves the train, and sliders affect uniforms without console errors.
+
+## Workspace editing and validation
+
+- This workspace is sync-mounted. Long JSX/CSS lines may wrap in tool output even when they are single physical lines, and a patch command can report success without the mounted file containing the edit.
+- Use the `apply_patch` tool for edits. Avoid shell redirection, `sed -i`, and standard terminal `patch` for source changes.
+- After every edit, reread the exact changed region with `read_file` or `grep_search`; do not trust a patch result alone. If the edit is absent, reapply a smaller hunk with short surrounding context.
+- New untracked files can be written to an editor overlay that is invisible to the sync-mounted terminal. Verify new files with both a file-tool read and a terminal `ls`/`grep`; if they disagree, recreate the file in the mounted filesystem and validate from there.
+- Run the narrowest relevant executable check immediately after the first substantive edit. Finish with `npm test`, `npm run build`, `npm run test:e2e`, `get_errors`, and `git diff --check` when the environment supports them.
+- E2E tests do not start Vite automatically. Start the project with `npm --prefix /absolute/path/to/subwaysim2 run dev`, record the port it reports, and run the tests with `BASE_URL=http://localhost:<port>/`.

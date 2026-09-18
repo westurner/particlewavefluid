@@ -7,9 +7,10 @@ import { PNG } from 'pngjs';
 const baseUrl = process.env.BASE_URL ?? 'http://localhost:5173/';
 const screenshotPath = new URL('../test-results/frc-flow-particles.png', import.meta.url).pathname;
 const parallelScreenshotPath = new URL('../test-results/frc-reactor-parallel.png', import.meta.url).pathname;
+const plasmaColorsScreenshotPath = new URL('../test-results/frc-plasma-colors.png', import.meta.url).pathname;
 
 async function captureScreenshot(page) {
-  return PNG.sync.read(await page.screenshot());
+  return PNG.sync.read(await page.screenshot({ clip: { x: 0, y: 0, width: 699, height: 700 } }));
 }
 
 async function captureReactorView(page) {
@@ -41,11 +42,26 @@ function meanColorDistance(first, second) {
   return totalDistance / (first.width * first.height);
 }
 
+function countPinkPixels(buffer) {
+  const image = PNG.sync.read(buffer);
+  let count = 0;
+  for (let index = 0; index < image.data.length; index += 4) {
+    const red = image.data[index];
+    const green = image.data[index + 1];
+    const blue = image.data[index + 2];
+    if (red > 150 && blue > 80 && red > green * 1.35 && blue > green * 1.05) count += 1;
+  }
+  return count;
+}
+
 async function waitForMatchingReactorView(page, expectedView) {
-  const deadline = Date.now() + 10000;
+  const startedAt = Date.now();
+  const deadline = startedAt + 3000;
   let currentView = await captureReactorView(page);
   while (Date.now() < deadline) {
-    if (meanColorDistance(expectedView, currentView) < 5) return currentView;
+    if (meanColorDistance(expectedView, currentView) < 5) {
+      return currentView;
+    }
     await page.waitForTimeout(100);
     currentView = await captureReactorView(page);
   }
@@ -56,25 +72,44 @@ async function waitForInputAnnotation(page, label) {
   await page.waitForFunction((expectedLabel) => document.querySelector('.frc-input-label strong')?.textContent === expectedLabel, label);
 }
 
+async function uncheckFrcControls(page, names) {
+  await page.evaluate((expectedNames) => {
+    for (const name of expectedNames) {
+      const label = [...document.querySelectorAll('.frc-toggle-row')].find((candidate) => candidate.textContent.includes(name));
+      const input = label?.querySelector('input');
+      if (input?.checked) input.click();
+    }
+  }, names);
+  await page.waitForFunction((expectedNames) => expectedNames.every((name) => {
+    const label = [...document.querySelectorAll('.frc-toggle-row')].find((candidate) => candidate.textContent.includes(name));
+    return label && !label.querySelector('input')?.checked;
+  }), names);
+}
+
+async function setFrcControl(page, name, checked) {
+  await page.evaluate(({ expectedName, expectedChecked }) => {
+    const label = [...document.querySelectorAll('.frc-toggle-row')].find((candidate) => candidate.textContent.includes(expectedName));
+    const input = label?.querySelector('input');
+    if (input && input.checked !== expectedChecked) input.click();
+  }, { expectedName: name, expectedChecked: checked });
+  await page.waitForFunction(({ expectedName, expectedChecked }) => {
+    const label = [...document.querySelectorAll('.frc-toggle-row')].find((candidate) => candidate.textContent.includes(expectedName));
+    return label?.querySelector('input')?.checked === expectedChecked;
+  }, { expectedName: name, expectedChecked: checked });
+  await page.waitForTimeout(50);
+}
+
 test('FRC reactor is parallel to the ground by default and resettable', async (t) => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
 
-  await page.goto(baseUrl, { waitUntil: 'networkidle' });
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: /04 \/ LOAD FIELD/ }).click();
+  await page.locator('.frc-panel').waitFor();
   await page.waitForSelector('canvas');
   await page.waitForTimeout(1200);
-  await page.getByRole('checkbox', { name: 'Run plasma transport' }).uncheck();
-  await page.getByRole('checkbox', { name: 'Plasma particles' }).uncheck();
-  await page.getByRole('checkbox', { name: 'Nitrogen gas flow' }).uncheck();
-  await page.getByRole('checkbox', { name: 'Charge flow' }).uncheck();
-  await page.getByRole('checkbox', { name: 'Input particle streams' }).uncheck();
-  await page.getByRole('checkbox', { name: 'Input names' }).uncheck();
-  await page.getByRole('checkbox', { name: 'Input attributes' }).uncheck();
-  await page.getByRole('checkbox', { name: 'Device annotations' }).uncheck();
-  await page.getByRole('checkbox', { name: 'Device attributes' }).uncheck();
-  await page.waitForTimeout(250);
+  await uncheckFrcControls(page, ['Run plasma transport', 'Plasma particles', 'Nitrogen gas flow', 'Charge flow', 'Input particle streams', 'Input names', 'Input attributes', 'Device annotations', 'Device attributes']);
 
   const roll = page.getByRole('slider', { name: 'Roll' });
   const pitch = page.getByRole('slider', { name: 'Pitch' });
@@ -112,15 +147,38 @@ test('FRC reactor is parallel to the ground by default and resettable', async (t
   await page.screenshot({ path: parallelScreenshotPath, fullPage: false });
 });
 
-test('FRC gas and charge particles are visible in their conduit flows', async (t) => {
+test('FRC plasma is visible inside the reactor and uses input-specific colors', async (t) => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
 
-  await page.goto(baseUrl, { waitUntil: 'networkidle' });
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: /04 \/ LOAD FIELD/ }).click();
+  await page.locator('.frc-panel').waitFor();
   await page.waitForSelector('canvas');
   await page.waitForTimeout(1200);
+
+  const plasmaColorInput = page.getByRole('textbox', { name: 'Plasma color' });
+  assert.equal(await plasmaColorInput.inputValue(), '#ff4fa3');
+  const pinkPixels = countPinkPixels(await page.locator('.frc-scene canvas').screenshot());
+  assert.ok(pinkPixels > 40, `expected pink plasma pixels inside the reactor, found ${pinkPixels}`);
+
+  await page.getByRole('combobox', { name: 'Plasma input' }).selectOption('Argon');
+  assert.equal(await plasmaColorInput.inputValue(), '#5ed9e8');
+  await mkdir(new URL('../test-results/', import.meta.url), { recursive: true });
+  await page.screenshot({ path: plasmaColorsScreenshotPath, fullPage: false });
+});
+
+test('FRC gas and charge particles are visible in their conduit flows', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1000, height: 700 }, deviceScaleFactor: 1 });
+
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /04 \/ LOAD FIELD/ }).click();
+  await page.locator('.frc-panel').waitFor();
+  await page.waitForSelector('canvas');
+  await page.waitForTimeout(250);
   await mkdir(new URL('../test-results/', import.meta.url), { recursive: true });
 
   const gasToggle = page.getByRole('checkbox', { name: 'Nitrogen gas flow' });
@@ -205,9 +263,9 @@ test('FRC gas and charge particles are visible in their conduit flows', async (t
   await page.getByRole('button', { name: 'Reset parallel to ground' }).click();
   assert.deepEqual(await Promise.all([roll.inputValue(), pitch.inputValue(), yaw.inputValue()]), ['0', '0', '0']);
 
-  await nitrogenOutputToggle.uncheck();
+  await setFrcControl(page, 'Nitrogen purge', false);
   assert.equal(await nitrogenOutputToggle.isChecked(), false);
-  await nitrogenOutputToggle.check();
+  await setFrcControl(page, 'Nitrogen purge', true);
   await harnessToggle.uncheck();
   assert.equal(await page.locator('.frc-device-label strong').count(), 4);
   await harnessToggle.check();
@@ -215,8 +273,7 @@ test('FRC gas and charge particles are visible in their conduit flows', async (t
   assert.equal(await page.locator('.frc-device-label strong').count(), 3);
   await outputManifoldToggle.check();
 
-  await page.getByRole('checkbox', { name: 'Run plasma transport' }).uncheck();
-  await page.getByRole('checkbox', { name: 'Plasma particles' }).uncheck();
+  await uncheckFrcControls(page, ['Run plasma transport', 'Plasma particles']);
   const bothVisible = await captureScreenshot(page);
   await page.waitForTimeout(180);
   const bothMoved = await captureScreenshot(page);
@@ -227,14 +284,14 @@ test('FRC gas and charge particles are visible in their conduit flows', async (t
   await page.screenshot({ path: screenshotPath, fullPage: false });
   await page.getByRole('button', { name: 'Show params' }).click();
 
-  await dtToggle.uncheck();
+  await setFrcControl(page, 'DT particles', false);
   await page.waitForTimeout(180);
   const dtHidden = await captureScreenshot(page);
   assert.ok(countChangedPixels(bothMoved, dtHidden) > 100, 'DT particle pixels should change when DT input is disabled');
 
   await plasmaInputSelect.selectOption('DHe_3');
   await waitForInputAnnotation(page, 'DHe_3');
-  await dhe3Toggle.uncheck();
+  await setFrcControl(page, 'DHe_3 particles', false);
   await page.waitForTimeout(180);
   const dhe3Hidden = await captureScreenshot(page);
   assert.ok(countChangedPixels(dtHidden, dhe3Hidden) > 100, 'DHe_3 selection and particle visibility should change the scene');
@@ -243,26 +300,28 @@ test('FRC gas and charge particles are visible in their conduit flows', async (t
 
   await plasmaInputSelect.selectOption('Argon');
   await waitForInputAnnotation(page, 'Argon');
-  await argonToggle.uncheck();
+  await setFrcControl(page, 'Argon particles', false);
   await page.waitForTimeout(180);
   const allInputsHidden = await captureScreenshot(page);
   assert.ok(countChangedPixels(dhe3Hidden, allInputsHidden) > 100, 'Argon selection and particle visibility should change the scene');
   assert.equal(await argonToggle.isChecked(), false);
 
-  await inputNamesToggle.uncheck();
+  await setFrcControl(page, 'Input names', false);
+  await page.waitForFunction(() => document.querySelectorAll('.frc-input-label strong').length === 0);
   assert.equal(await page.locator('.frc-input-label strong').count(), 0);
-  await inputAttributesToggle.uncheck();
+  await setFrcControl(page, 'Input attributes', false);
+  await page.waitForFunction(() => document.querySelectorAll('.frc-input-label').length === 0);
   assert.equal(await page.locator('.frc-input-label').count(), 0);
-  await inputMasterToggle.uncheck();
+  await setFrcControl(page, 'Input particle streams', false);
   assert.equal(await inputMasterToggle.isChecked(), false);
 
-  await gasToggle.uncheck();
+  await setFrcControl(page, 'Nitrogen gas flow', false);
   await page.waitForTimeout(180);
   const gasHidden = await captureScreenshot(page);
   assert.ok(countChangedPixels(bothMoved, gasHidden) > 100, 'gas particle pixels should change when gas flow is disabled');
   assert.equal(await chargeToggle.isChecked(), true);
 
-  await chargeToggle.uncheck();
+  await setFrcControl(page, 'Charge flow', false);
   await page.waitForTimeout(180);
   const bothHidden = await captureScreenshot(page);
   assert.ok(countChangedPixels(gasHidden, bothHidden) > 100, 'charge particle pixels should change when charge flow is disabled');

@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html, OrbitControls, TransformControls } from '@react-three/drei';
+import { stringify as stringifyYaml } from "yaml";
 import { AdditiveBlending, Color, DoubleSide, Euler, InstancedBufferAttribute, PlaneGeometry, ShaderMaterial, SRGBColorSpace, Vector3 } from 'three';
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
+import { HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, YamlTextArea } from './lib/ParamControls.jsx';
+import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 
 const MAX_ATTRACTORS = 20;
 const PARTICLE_COUNT = 2 ** 18;
@@ -534,8 +537,8 @@ function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing,
   );
 }
 
-function RangeControl({ label, value, min, max, step, onChange, disabled = false }) {
-  return <label className="attractor-control"><span>{label}<strong>{Number(value).toFixed(step < 0.01 ? 3 : step < 1 ? 2 : 0)}</strong></span><input type="range" min={min} max={max} step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} disabled={disabled} /></label>;
+function RangeControl({ label, value, min, max, step, onChange, disabled = false, editing = false, isDefault = true, onReset }) {
+  return <NumericParamControl className="attractor-control" label={label} value={value} min={min} max={max} step={step} editing={editing} isDefault={isDefault} onReset={onReset} onChange={onChange} />;
 }
 
 function ColorControl({ label, value, onChange }) {
@@ -556,12 +559,13 @@ function SelectControl({ label, value, options, onChange }) {
   return <label className="attractor-select"><span>{label}</span><select value={value} onChange={(event) => onChange(event.target.value)} onPointerDown={(event) => event.stopPropagation()}>{options.map((option) => <option key={option} value={option}>{option}</option>)}</select></label>;
 }
 
-function AttractorPanel({ configuration, presets, currentPreset, jsonText, setJsonText, onChange, onApplyPreset, onSavePreset, onReset, onExport, onLoad, onDeletePresets, journal, playing, playbackTime, onPlaybackTime, onTogglePlayback, onStop, recording, onRecording, onAddAttractor, onRemoveAttractor, onBack, paramsVisible }) {
+function AttractorPanel({ configuration, presets, currentPreset, jsonText, setJsonText, showParamEditLog, onShowParamEditLog, paramEditLogYaml, onChange, onApplyPreset, onSavePreset, onReset, onExport, onLoad, onDeletePresets, journal, playing, playbackTime, onPlaybackTime, onTogglePlayback, onStop, recording, onRecording, onAddAttractor, onRemoveAttractor, onBack, paramsVisible, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {} }) {
   return (
     <aside className={`attractor-panel ${paramsVisible ? '' : 'is-hidden'}`} aria-hidden={!paramsVisible} onPointerDown={(event) => event.stopPropagation()}>
+      <ParamEditingProvider editing={editing}>
       <div className="attractor-panel-header"><div><span className="attractor-eyebrow">SQGSIM / GPU COMPUTE</span><h2>Attractor particles</h2></div><button type="button" className="attractor-back" onClick={onBack}>Lab menu</button></div>
       <p className="attractor-intro">A bounded field of particles orbiting configurable gravitational and spinning attractors.</p>
-      <div className="attractor-status"><span className="status-pip" />{configuration.attractors.length} attractors / {PARTICLE_COUNT.toLocaleString()} particles</div>
+      <div className="attractor-status"><span className="status-pip" />{configuration.attractors.length} attractors / {PARTICLE_COUNT.toLocaleString()} particles</div><div className="attractor-editor-toolbar"><ParamEditingToggle checked={editing} onChange={onEditing} /><HistoryControls canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} /></div>
 
       <section className="attractor-section">
         <div className="attractor-section-heading"><span>Preset</span><div className="attractor-actions attractor-preset-actions"><button type="button" onClick={onSavePreset}>Save snapshot</button><button type="button" onClick={onReset}>Reset</button></div></div>
@@ -607,6 +611,8 @@ function AttractorPanel({ configuration, presets, currentPreset, jsonText, setJs
         <textarea className="attractor-json" value={jsonText} onChange={(event) => setJsonText(event.target.value)} aria-label="Preset JSON" />
         <div className="attractor-actions"><button type="button" onClick={onLoad}>Load JSON</button><button type="button" onClick={() => onExport('current')}>Export current</button></div>
         <div className="attractor-actions"><button type="button" onClick={() => onExport('all')}>Export all</button><button type="button" onClick={() => onExport('saved')}>Export saved</button></div>
+        <BooleanControl label="Show param edit log" value={showParamEditLog} onChange={onShowParamEditLog} />
+        {showParamEditLog && <YamlTextArea label="Parameter edit log YAML" value={paramEditLogYaml} />}
         <button type="button" className="attractor-danger" onClick={onDeletePresets}>Delete local presets</button>
         <BooleanControl label="Record simulation (slow)" value={recording} onChange={onRecording} />
         <div className="journal-controls"><button type="button" onClick={onTogglePlayback}>{playing ? 'Pause' : 'Play'}</button><button type="button" onClick={onStop}>Stop / reset</button></div>
@@ -629,6 +635,7 @@ function AttractorPanel({ configuration, presets, currentPreset, jsonText, setJs
         <RangeControl label="Near" value={configuration.cameraNear} min={0.001} max={10} step={0.001} onChange={(value) => onChange({ cameraNear: value }, 'cameraNear')} />
         <RangeControl label="Far" value={configuration.cameraFar} min={10} max={10000} step={1} onChange={(value) => onChange({ cameraFar: value }, 'cameraFar')} />
       </details>
+      </ParamEditingProvider>
     </aside>
   );
 }
@@ -653,8 +660,12 @@ function AttractorModal({ title, value, onClose }) {
 }
 
 function SimpleAttractorSim({ variant = 'simple', onBack }) {
-  const [configuration, setConfiguration] = useState(() => createConfiguration(variant));
+  const editor = useSimulationEditor(createConfiguration(variant));
+  const { value: configuration, commit, load, record, log, replace, canUndo, canRedo, undo, redo } = editor;
   const configurationRef = useRef(configuration);
+  const [editing, setEditing] = useState(false);
+  const [showParamEditLog, setShowParamEditLog] = useState(false);
+  useUndoRedoShortcuts({ undo, redo, canUndo, canRedo, isTextEditing: (target) => ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) });
   configurationRef.current = configuration;
   const [presets, setPresets] = useState(() => readSavedPresets(variant));
   const [currentPreset, setCurrentPreset] = useState('Default');
@@ -672,6 +683,7 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
   const journalStartRef = useRef(Date.now());
   const replayingRef = useRef(false);
   const presetApplyingRef = useRef(false);
+  const paramEditLogYaml = useMemo(() => stringifyYaml(log), [log]);
 
   const recordChange = (next, path, value) => {
     if (!recording || replayingRef.current || !path) return;
@@ -685,7 +697,7 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
   const applyConfiguration = (data, path = 'configuration', value = null) => {
     const next = sanitizeConfiguration(data, variant);
     configurationRef.current = next;
-    setConfiguration(next);
+    load(next, next, { type: "preset-load", name: path.startsWith("preset:") ? path.slice(7) : path });
     setJsonText(JSON.stringify(next, null, 2));
     recordChange(next, path, value);
   };
@@ -702,7 +714,7 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
       next = { ...configurationRef.current, ...patch };
     }
     configurationRef.current = next;
-    setConfiguration(next);
+    commit(next, { type: "parameter-edit", path, value: special || Object.values(patch)[0] });
     setJsonText(JSON.stringify(next, null, 2));
     recordChange(next, path, special || Object.values(patch)[0]);
     if (!presetApplyingRef.current && !currentPreset.includes('draft')) {
@@ -748,6 +760,7 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
 
   const onSavePreset = () => {
     const name = new Date().toISOString();
+    record({ type: "preset-save", name });
     const nextPresets = { ...presets, [name]: clone(configurationRef.current) };
     setPresets(nextPresets);
     setCurrentPreset(name);
@@ -761,7 +774,7 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
   const onReset = () => {
     const next = createConfiguration(variant);
     configurationRef.current = next;
-    setConfiguration(next);
+    load(next, next, { type: "preset-load", name: "Default" });
     setJsonText(JSON.stringify(next, null, 2));
     setCurrentPreset('Default');
     setPlaying(false);
@@ -793,7 +806,7 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
     replayingRef.current = true;
     const next = sanitizeConfiguration(snapshot, variant);
     configurationRef.current = next;
-    setConfiguration(next);
+    replace(next);
     setJsonText(JSON.stringify(next, null, 2));
     replayingRef.current = false;
   };
@@ -834,7 +847,7 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
       <div className="attractor-scene"><Canvas camera={{ position: [3, 5, 8], fov: 25, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AttractorWorld configuration={configuration} onAttractorChange={onAttractorChange} onGpuError={setGpuError} playing={playing} onCameraChange={(change) => onChange(change, 'sys:camera')} paramsVisible={paramsVisible} viewMode={viewMode} onManualChange={() => setViewMode(null)} /></Canvas></div>
       <header className="attractor-topbar"><div><span className="sqg-mark">PAS</span><span><em>{variant === 'blackhole' ? 'Black-hole sandbox' : 'Particle dynamics lab'}</em></span></div><div className="attractor-top-actions"><span className="attractor-top-meta">WEBGL / GPGPU / {reportTitle.toUpperCase()}</span><button type="button" className="attractor-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button></div></header>
       <AttractorViewToolbar viewMode={viewMode} onViewChange={setViewMode} />
-      <AttractorPanel configuration={configuration} presets={presets} currentPreset={currentPreset} jsonText={jsonText} setJsonText={setJsonText} onChange={onChange} onApplyPreset={onApplyPreset} onSavePreset={onSavePreset} onReset={onReset} onExport={(type) => setModal({ title: type === 'all' ? 'All presets' : type === 'saved' ? 'Saved presets' : 'Current parameters', value: type === 'current' ? configuration : presets })} onLoad={onLoad} onDeletePresets={onDeletePresets} journal={journal} playing={playing} playbackTime={playbackTime} onPlaybackTime={(value) => { setPlaybackTime(value); applyStateAt(value); }} onTogglePlayback={() => setPlaying((value) => !value)} onStop={() => { setPlaying(false); setPlaybackTime(0); applyStateAt(0); }} recording={recording} onRecording={setRecording} onAddAttractor={onAddAttractor} onRemoveAttractor={onRemoveAttractor} onBack={onBack} paramsVisible={paramsVisible} />
+      <AttractorPanel configuration={configuration} presets={presets} currentPreset={currentPreset} jsonText={jsonText} setJsonText={setJsonText} showParamEditLog={showParamEditLog} onShowParamEditLog={setShowParamEditLog} paramEditLogYaml={paramEditLogYaml} onChange={onChange} onApplyPreset={onApplyPreset} onSavePreset={onSavePreset} onReset={onReset} onExport={(type) => setModal({ title: type === 'all' ? 'All presets' : type === 'saved' ? 'Saved presets' : 'Current parameters', value: type === 'current' ? configuration : presets })} onLoad={onLoad} onDeletePresets={onDeletePresets} journal={journal} playing={playing} playbackTime={playbackTime} onPlaybackTime={(value) => { setPlaybackTime(value); applyStateAt(value); }} onTogglePlayback={() => setPlaying((value) => !value)} onStop={() => { setPlaying(false); setPlaybackTime(0); applyStateAt(0); }} recording={recording} onRecording={setRecording} onAddAttractor={onAddAttractor} onRemoveAttractor={onRemoveAttractor} onBack={onBack} paramsVisible={paramsVisible} editing={editing} onEditing={setEditing} canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} />
       <div className="attractor-title"><span>ACTIVE FIELD / {variant === 'blackhole' ? 'SQGBLACKHOLESIM' : 'SIMPLEATTRACTORSIM'}</span><h1>{variant === 'blackhole' ? 'Superfluid Quantum Gravity' : 'Simple Particle Attractor System'}</h1><p>{variant === 'blackhole' ? 'A copied attractor rig reserved for the next experiment.' : 'Tune attractor mass, spin, and geometry within a field of particles.'}</p>{gpuError && <strong className="attractor-error">GPU offline: {gpuError}</strong>}</div>
       {modal && <AttractorModal title={modal.title} value={modal.value} onClose={() => setModal(null)} />}
     </main>

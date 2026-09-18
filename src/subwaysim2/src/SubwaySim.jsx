@@ -3,6 +3,8 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { ContactShadows, OrbitControls } from '@react-three/drei';
 import { AdditiveBlending, BackSide, Color, DoubleSide, ExtrudeGeometry, InstancedBufferAttribute, MathUtils, Shape, ShapeGeometry, ShaderMaterial, SphereGeometry, Vector3 } from 'three';
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
+import { HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle } from './lib/ParamControls.jsx';
+import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 import {
   AIRFLOW_PARAMS,
   FLUID_BOUNDS,
@@ -1573,7 +1575,8 @@ function Toggle({ label, checked, onChange, description, showDescription }) {
   );
 }
 
-function ControlSlider({ label, value, min, max, step, precision, suffix, description, showDescription, onChange }) {
+function ControlSlider({ label, value, min, max, step, precision, suffix, description, showDescription, onChange, editing = false, isDefault = true, onReset }) {
+  return <NumericParamControl className="slider-control" label={label} value={Number.isFinite(value) ? value : min} min={min} max={max} step={step} suffix={suffix} editing={editing} isDefault={isDefault} onReset={onReset} description={description} showDescription={showDescription} onChange={onChange} />;
   const displayValue = Number.isFinite(value) ? value : min;
   const decimals = precision ?? (step < 0.01 ? 3 : step < 1 ? 1 : 0);
   return (
@@ -1729,7 +1732,7 @@ function ThermalResilienceReport({ report, onClose }) {
   );
 }
 
-function TelemetryPanel({ settings, onSettingsChange, telemetry, gpuError, sustainabilityScore, showDescriptions, onShowDescriptionsChange, onOpenReport, onHide }) {
+function TelemetryPanel({ settings, onSettingsChange, telemetry, gpuError, sustainabilityScore, showDescriptions, onShowDescriptionsChange, onOpenReport, onHide, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {}, onReset = () => {} }) {
   const { temperature } = telemetry;
   const [temperatureHistory, setTemperatureHistory] = useState(() => new Array(48).fill(81.5));
   useEffect(() => {
@@ -1738,7 +1741,9 @@ function TelemetryPanel({ settings, onSettingsChange, telemetry, gpuError, susta
 
   return (
     <aside className="telemetry-panel panel">
+      <ParamEditingProvider editing={editing}>
       <div className="panel-topline">
+      <div className="subway-editor-toolbar"><ParamEditingToggle checked={editing} onChange={onEditing} /><HistoryControls canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} /></div>
         <div className="panel-kicker"><span className={`status-dot ${gpuError ? 'status-error' : ''}`} />LIVE / TEST CHAMBER</div>
         <button className="panel-hide" type="button" onClick={onHide}>Hide</button>
       </div>
@@ -1812,6 +1817,7 @@ function TelemetryPanel({ settings, onSettingsChange, telemetry, gpuError, susta
           <ControlSlider label="Viscosity" value={settings.viscosity} min={0.001} max={0.05} step={0.001} suffix=" Pa·s" description="How quickly neighboring air velocities blend." showDescription={showDescriptions} onChange={(viscosity) => onSettingsChange({ viscosity })} />
         </div>
       </details>
+      </ParamEditingProvider>
     </aside>
   );
 }
@@ -1840,14 +1846,14 @@ function ViewToolbar({ viewMode, onViewChange, parametersVisible, onToggleParame
 }
 
 export function SubwaySim({ onBack }) {
-  const [settings, setSettings] = useState(INITIALS);
+  const editor = useSimulationEditor(INITIALS); const { value: settings, commit, load, canUndo, canRedo, undo, redo } = editor; const [editing, setEditing] = useState(false);
   const [showDescriptions, setShowDescriptions] = useState(false);
   const [parametersVisible, setParametersVisible] = useState(true);
   const [viewMode, setViewMode] = useState('ortho1');
   const [reportOpen, setReportOpen] = useState(false);
   const [telemetry, setTelemetry] = useState({ temperature: 81.5, shafts: [] });
   const [gpuError, setGpuError] = useState('');
-  const handleSettingsChange = (change) => setSettings((currentSettings) => ({ ...currentSettings, ...change }));
+  useUndoRedoShortcuts({ undo, redo, canUndo, canRedo, isTextEditing: (target) => ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) }); const handleSettingsChange = (change) => commit((currentSettings) => ({ ...currentSettings, ...change }));
   const resilienceReport = thermalResilienceReport(settings);
   useEffect(() => {
     if (!reportOpen) return undefined;
@@ -1874,7 +1880,7 @@ export function SubwaySim({ onBack }) {
       </header>
       {/* <section className="scene-title"><p>Airflow study</p><h1>Heat is a passenger.</h1><span>Watch the station exchange energy in real time.</span></section> */}
       <ViewToolbar viewMode={viewMode} onViewChange={setViewMode} parametersVisible={parametersVisible} onToggleParameters={() => setParametersVisible((visible) => !visible)} />
-      {parametersVisible && <TelemetryPanel settings={settings} onSettingsChange={handleSettingsChange} telemetry={telemetry} gpuError={gpuError} sustainabilityScore={resilienceReport.score} showDescriptions={showDescriptions} onShowDescriptionsChange={setShowDescriptions} onOpenReport={() => setReportOpen(true)} onHide={() => setParametersVisible(false)} />}
+      {parametersVisible && <TelemetryPanel settings={settings} onSettingsChange={handleSettingsChange} telemetry={telemetry} gpuError={gpuError} sustainabilityScore={resilienceReport.score} showDescriptions={showDescriptions} onShowDescriptionsChange={setShowDescriptions} onOpenReport={() => setReportOpen(true)} onHide={() => setParametersVisible(false)} editing={editing} onEditing={setEditing} canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} onReset={() => load(INITIALS)} />}
       <aside className="legend-panel panel">
         <div className="legend-heading"><span>Thermal dispersion</span><span className="legend-unit">NORMALIZED / 0—1</span></div>
         <div className="gradient-bar" />

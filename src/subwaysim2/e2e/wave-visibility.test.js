@@ -44,8 +44,13 @@ async function exerciseRangeSliders(container) {
     const maximum = Number(await slider.getAttribute('max'));
     const minimum = Number(await slider.getAttribute('min'));
     await slider.focus();
-    await slider.press(before < maximum ? 'ArrowRight' : 'ArrowLeft');
-    const after = Number(await slider.inputValue());
+    const endpointKey = Math.abs(before - maximum) > 0.000001 ? 'End' : 'Home';
+    await slider.press(endpointKey);
+    let after = Number(await slider.inputValue());
+    if (after === before) {
+      await slider.press(endpointKey);
+      after = Number(await slider.inputValue());
+    }
     assert.notEqual(after, before, `wave parameter slider ${index} should change value`);
     assert.ok(after >= minimum && after <= maximum, `wave parameter slider ${index} should stay within bounds`);
   }

@@ -5,6 +5,15 @@ import { AdditiveBlending, BufferAttribute, BufferGeometry, CatmullRomCurve3, Co
 import { calculateFrcModel, FRC_CONFIGURATIONS, FRC_INPUTS, FRC_SHAPES, getFrcVisualizationVisibility } from './frcModel.js';
 import { advanceFlowProgress, createFlowPathPoints, createInputParticlePathPoints, FLOW_PARTICLE_STREAMS, getFlowParticleVisibility, getInputParticleVisibility, INPUT_PARTICLE_STREAMS } from './flowParticles.js';
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
+import { ColorParamControl, HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle } from './lib/ParamControls.jsx';
+import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
+
+const DEFAULT_PLASMA_COLOR = '#ff4fa3';
+const ARGON_PLASMA_COLOR = '#5ed9e8';
+const DEFAULT_VESSEL_SHELL_COLOR = '#a9d9dd';
+const DEFAULT_VESSEL_SHELL_EMISSIVE_COLOR = '#000000';
+const DEFAULT_SEPARATRIX_VOLUME_COLOR = DEFAULT_PLASMA_COLOR;
+const DEFAULT_SEPARATRIX_VOLUME_EMISSIVE_COLOR = DEFAULT_PLASMA_COLOR;
 
 const INITIAL_CONFIGURATION = {
   shape: 'elongated',
@@ -19,6 +28,11 @@ const INITIAL_CONFIGURATION = {
   fieldTilt: 0,
   transportSpeed: 1,
   plasmaOpacity: 0.85,
+  plasmaColor: DEFAULT_PLASMA_COLOR,
+  vesselShellColor: DEFAULT_VESSEL_SHELL_COLOR,
+  vesselShellEmissiveColor: DEFAULT_VESSEL_SHELL_EMISSIVE_COLOR,
+  separatrixVolumeColor: DEFAULT_SEPARATRIX_VOLUME_COLOR,
+  separatrixVolumeEmissiveColor: DEFAULT_SEPARATRIX_VOLUME_EMISSIVE_COLOR,
   plasmaRunning: true,
   showPlasma: true,
   showCabling: true,
@@ -183,6 +197,7 @@ const plasmaVertexShader = `
 `;
 
 const plasmaFragmentShader = `
+  uniform vec3 uColor;
   varying float vEnergy;
 
   void main() {
@@ -190,14 +205,12 @@ const plasmaFragmentShader = `
     float distanceFromCenter = length(point);
     if (distanceFromCenter > 0.5) discard;
     float glow = pow(1.0 - smoothstep(0.0, 0.5, distanceFromCenter), 1.7);
-    vec3 cool = vec3(0.16, 0.78, 0.82);
-    vec3 hot = vec3(1.0, 0.68, 0.26);
-    vec3 color = mix(cool, hot, vEnergy);
+    vec3 color = mix(uColor, vec3(1.0), vEnergy * 0.42);
     gl_FragColor = vec4(color, glow * (0.35 + vEnergy * 0.65));
   }
 `;
 
-function ReactorVessel({ model, scale, opacity, showCoils }) {
+function ReactorVessel({ model, scale, opacity, surfaceColor, emissiveColor, showCoils }) {
   const vesselLength = model.wallHalfLength * 2 * scale;
   const vesselRadius = model.wallRadius * scale;
   const coilPositions = Array.from({ length: 9 }, (_, index) => (
@@ -208,7 +221,7 @@ function ReactorVessel({ model, scale, opacity, showCoils }) {
     <group>
       <mesh rotation={[0, 0, Math.PI / 2]}>
         <cylinderGeometry args={[vesselRadius, vesselRadius, vesselLength, 64, 1, true]} />
-        <meshPhysicalMaterial color="#a9d9dd" transparent opacity={opacity} roughness={0.2} metalness={0.35} side={DoubleSide} depthWrite={false} />
+        <meshPhysicalMaterial color={surfaceColor} emissive={emissiveColor} transparent opacity={opacity} roughness={0.2} metalness={0.35} side={DoubleSide} depthWrite={false} />
       </mesh>
       {[-1, 1].map((side) => (
         <mesh key={side} position={[side * vesselLength / 2, 0, 0]} rotation={[0, Math.PI / 2, 0]}>
@@ -228,19 +241,19 @@ function ReactorVessel({ model, scale, opacity, showCoils }) {
   );
 }
 
-function FieldVolume({ model, scale, tilt }) {
+function FieldVolume({ model, scale, tilt, surfaceColor, emissiveColor }) {
   const plasmaScale = [model.plasmaHalfLength * scale, model.plasmaRadius * scale, model.plasmaRadius * scale];
   const lobeShape = model.shape === 'doubleLobed';
   return (
     <group rotation={[0, MathUtils.degToRad(tilt), 0]}>
       <mesh scale={plasmaScale}>
         {lobeShape ? <capsuleGeometry args={[0.72, 1.35, 12, 32]} rotation={[0, 0, Math.PI / 2]} /> : <sphereGeometry args={[1, 48, 24]} />}
-        <meshPhysicalMaterial color="#72d8ce" emissive="#145b60" emissiveIntensity={0.55} transparent opacity={0.16} roughness={0.16} metalness={0.05} side={DoubleSide} depthWrite={false} />
+        <meshPhysicalMaterial color={surfaceColor} emissive={emissiveColor} emissiveIntensity={0.55} transparent opacity={0.16} roughness={0.16} metalness={0.05} side={DoubleSide} depthWrite={false} />
       </mesh>
       {lobeShape && [-1, 1].map((side) => (
         <mesh key={side} position={[side * model.plasmaHalfLength * 0.43 * scale, 0, 0]} scale={[model.plasmaHalfLength * 0.48 * scale, model.plasmaRadius * 0.82 * scale, model.plasmaRadius * 0.82 * scale]}>
           <sphereGeometry args={[1, 36, 20]} />
-          <meshBasicMaterial color="#8ce9d4" transparent opacity={0.13} depthWrite={false} />
+          <meshBasicMaterial color={surfaceColor} transparent opacity={0.13} depthWrite={false} />
         </mesh>
       ))}
       <mesh scale={[model.plasmaHalfLength * scale, model.plasmaRadius * 0.28 * scale, model.plasmaRadius * 0.28 * scale]}>
@@ -598,7 +611,8 @@ function PlasmaParticles({ configuration, model, onGpuError }) {
       uPositionTex: { value: null },
       uVelocityTex: { value: null },
       uPointSize: { value: 260 },
-      uOpacity: { value: configuration.plasmaOpacity }
+      uOpacity: { value: configuration.plasmaOpacity },
+      uColor: { value: new Color(configuration.plasmaColor) }
     },
     vertexShader: plasmaVertexShader,
     fragmentShader: plasmaFragmentShader,
@@ -694,6 +708,7 @@ function PlasmaParticles({ configuration, model, onGpuError }) {
     material.uniforms.uPositionTex.value = compute.getCurrentRenderTarget(positionVariable).texture;
     material.uniforms.uVelocityTex.value = compute.getCurrentRenderTarget(velocityVariable).texture;
     material.uniforms.uOpacity.value = currentConfiguration.plasmaOpacity;
+    material.uniforms.uColor.value.set(currentConfiguration.plasmaColor);
   });
 
   return <points geometry={geometry} material={material} rotation={[0, MathUtils.degToRad(configuration.fieldTilt ?? 0), 0]} visible={configuration.showPlasma} frustumCulled={false} />;
@@ -757,7 +772,7 @@ function ReactorScene({ configuration, onGpuError, parametersVisible }) {
       <directionalLight position={[4, 8, 7]} intensity={2.4} color="#ffe2b7" />
       <pointLight position={[-8, 2, 4]} intensity={8} distance={30} color="#45c7c0" />
       <group ref={deviceGroupRef}>
-        <ReactorVessel model={model} scale={scale} opacity={configuration.vesselOpacity} showCoils={configuration.showCoils} />
+        <ReactorVessel model={model} scale={scale} opacity={configuration.vesselOpacity} surfaceColor={configuration.vesselShellColor} emissiveColor={configuration.vesselShellEmissiveColor} showCoils={configuration.showCoils} />
         <PlasmaParticles configuration={configuration} model={model} onGpuError={onGpuError} />
         {annotationsEnabled && (
           <PlasmaAnnotations
@@ -819,7 +834,7 @@ function ReactorScene({ configuration, onGpuError, parametersVisible }) {
             showNeutronOutput={configuration.showNeutronOutput !== false && visualizationVisibility.output.neutrons}
           />
         )}
-        {configuration.showFieldVolume && <FieldVolume model={model} scale={scale} tilt={configuration.fieldTilt} />}
+        {configuration.showFieldVolume && <FieldVolume model={model} scale={scale} tilt={configuration.fieldTilt} surfaceColor={configuration.separatrixVolumeColor} emissiveColor={configuration.separatrixVolumeEmissiveColor} />}
         {configuration.showAxis && <FieldAxis model={model} scale={scale} tilt={configuration.fieldTilt} />}
       </group>
       <gridHelper args={[36, 18, '#2b5b5a', '#153434']} position={[0, -5.2, 0]} />
@@ -829,7 +844,7 @@ function ReactorScene({ configuration, onGpuError, parametersVisible }) {
   );
 }
 
-function RangeInput({ label, value, min, max, step, onChange, suffix = '', ticks = [] }) {
+function RangeInput({ label, value, min, max, step, onChange, suffix = '', ticks = [], editing = false, isDefault = true, onReset }) {
   const handleChange = (event) => {
     const nextValue = Number(event.target.value);
     const nearestTick = ticks.reduce((nearest, tick) => (
@@ -840,15 +855,7 @@ function RangeInput({ label, value, min, max, step, onChange, suffix = '', ticks
       : nextValue;
     onChange(snappedValue);
   };
-  return (
-    <label className="frc-range-control">
-      <span className="frc-control-label"><span>{label}</span><strong>{Number(value).toFixed(step < 0.1 ? 2 : 1)}{suffix}</strong></span>
-      <span className="frc-range-slider">
-        <input type="range" min={min} max={max} step={step} value={value} onChange={handleChange} />
-        {ticks.length > 0 && <span className="frc-range-ticks" aria-hidden="true">{ticks.map((tick) => <i key={tick} style={{ left: `${((tick - min) / (max - min)) * 100}%` }} />)}</span>}
-      </span>
-    </label>
-  );
+  return <><NumericParamControl className="frc-range-control" label={label} value={value} min={min} max={max} step={step} suffix={suffix} editing={editing} isDefault={isDefault} onReset={onReset} onChange={(value) => handleChange({ target: { value } })} />{ticks.length > 0 && <div className="frc-range-ticks" aria-hidden="true">{ticks.map((tick) => <i key={tick} />)}</div>}</>;
 }
 
 function ToggleInput({ label, checked, onChange, swatch, disabled = false }) {
@@ -862,14 +869,16 @@ function ToggleInput({ label, checked, onChange, swatch, disabled = false }) {
   );
 }
 
-function FrcPanel({ configuration, model, gpuError, onChange, onHide }) {
+function FrcPanel({ configuration, model, gpuError, onChange, onHide, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {}, onReset = () => {} }) {
   const visualizationVisibility = getFrcVisualizationVisibility(configuration);
   const activeInput = model.input;
   const annotationsEnabled = configuration.showAnnotations !== false;
   return (
     <aside className="frc-panel">
+      <ParamEditingProvider editing={editing}>
       <div className="frc-panel-topline"><span className="frc-panel-kicker"><i /> DEVICE + PLASMA / PHASE 02</span><button type="button" className="frc-hide-button" onClick={onHide}>Hide params</button></div>
       <div className="frc-status"><span>FIELD-REVERSED CONFIGURATION</span><strong>{model.reversedField ? 'STABLE AXIAL BIAS' : 'OPEN AXIAL BIAS'}</strong></div>
+      <div className="frc-editor-toolbar"><ParamEditingToggle checked={editing} onChange={onEditing} /><HistoryControls canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} /></div>
       {gpuError && <p className="frc-gpu-error">GPU OFFLINE / {gpuError}</p>}
       <div className="frc-select-grid">
         <label><span>Vessel shape</span><select value={configuration.shape} onChange={(event) => onChange({ shape: event.target.value })}>{Object.entries(FRC_SHAPES).map(([id, shape]) => <option key={id} value={id}>{shape.label}</option>)}</select></label>
@@ -910,6 +919,11 @@ function FrcPanel({ configuration, model, gpuError, onChange, onHide }) {
         <RangeInput label="Vessel scale" value={configuration.vesselScale} min={0.8} max={1.2} step={0.01} onChange={(value) => onChange({ vesselScale: value })} />
         <RangeInput label="Vessel transparency" value={configuration.vesselOpacity} min={0.06} max={0.34} step={0.01} onChange={(value) => onChange({ vesselOpacity: value })} />
         <RangeInput label="Plasma opacity" value={configuration.plasmaOpacity} min={0.15} max={1} step={0.05} onChange={(value) => onChange({ plasmaOpacity: value })} />
+        <ColorParamControl label="Plasma color" value={configuration.plasmaColor} editing={editing} isDefault={configuration.plasmaColor === (activeInput === 'Argon' ? ARGON_PLASMA_COLOR : DEFAULT_PLASMA_COLOR)} onReset={() => onChange({ plasmaColor: activeInput === 'Argon' ? ARGON_PLASMA_COLOR : DEFAULT_PLASMA_COLOR })} onChange={(value) => onChange({ plasmaColor: value })} />
+        <ColorParamControl label="Vessel shell color" value={configuration.vesselShellColor} editing={editing} isDefault={configuration.vesselShellColor === DEFAULT_VESSEL_SHELL_COLOR} onReset={() => onChange({ vesselShellColor: DEFAULT_VESSEL_SHELL_COLOR })} onChange={(value) => onChange({ vesselShellColor: value })} />
+        <ColorParamControl label="Vessel shell emissive" value={configuration.vesselShellEmissiveColor} editing={editing} isDefault={configuration.vesselShellEmissiveColor === DEFAULT_VESSEL_SHELL_EMISSIVE_COLOR} onReset={() => onChange({ vesselShellEmissiveColor: DEFAULT_VESSEL_SHELL_EMISSIVE_COLOR })} onChange={(value) => onChange({ vesselShellEmissiveColor: value })} />
+        <ColorParamControl label="Separatrix volume color" value={configuration.separatrixVolumeColor} editing={editing} isDefault={configuration.separatrixVolumeColor === DEFAULT_SEPARATRIX_VOLUME_COLOR} onReset={() => onChange({ separatrixVolumeColor: DEFAULT_SEPARATRIX_VOLUME_COLOR })} onChange={(value) => onChange({ separatrixVolumeColor: value })} />
+        <ColorParamControl label="Separatrix volume emissive" value={configuration.separatrixVolumeEmissiveColor} editing={editing} isDefault={configuration.separatrixVolumeEmissiveColor === DEFAULT_SEPARATRIX_VOLUME_EMISSIVE_COLOR} onReset={() => onChange({ separatrixVolumeEmissiveColor: DEFAULT_SEPARATRIX_VOLUME_EMISSIVE_COLOR })} onChange={(value) => onChange({ separatrixVolumeEmissiveColor: value })} />
         <ToggleInput label="Run plasma transport" checked={configuration.plasmaRunning} onChange={(value) => onChange({ plasmaRunning: value })} />
         <ToggleInput label="Plasma particles" checked={configuration.showPlasma} onChange={(value) => onChange({ showPlasma: value })} />
         <ToggleInput label="All cabling and outputs" checked={configuration.showCabling ?? true} onChange={(value) => onChange({ showCabling: value })} />
@@ -962,22 +976,28 @@ function FrcPanel({ configuration, model, gpuError, onChange, onHide }) {
         <RangeInput label="Yaw" value={configuration.deviceYaw ?? configuration.deviceRotationY ?? 0} min={-180} max={180} step={1} suffix=" deg" ticks={ORIENTATION_TICKS} onChange={(value) => onChange({ deviceYaw: value })} />
         <button type="button" className="frc-reset-button" onClick={() => onChange({ deviceRoll: 0, devicePitch: 0, deviceYaw: 0 })}>Reset parallel to ground</button>
       </div>
+      <button type="button" className="frc-reset-button" onClick={onReset}>Reset all parameters</button>
+      </ParamEditingProvider>
     </aside>
   );
 }
 
 export default function FrcFusionSim({ onBack }) {
-  const [configuration, setConfiguration] = useState(INITIAL_CONFIGURATION);
+  const editor = useSimulationEditor(INITIAL_CONFIGURATION);
+  const { value: configuration, commit, load, canUndo, canRedo, undo, redo } = editor;
+  const [editing, setEditing] = useState(false);
   const [parametersVisible, setParametersVisible] = useState(true);
   const [gpuError, setGpuError] = useState('');
   const model = useMemo(() => calculateFrcModel(configuration), [configuration]);
-  const updateConfiguration = (change) => setConfiguration((current) => {
+  useUndoRedoShortcuts({ undo, redo, canUndo, canRedo, isTextEditing: (target) => ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) });
+  const updateConfiguration = (change) => commit((current) => {
     if (change.input && change.input !== current.input) {
       const input = FRC_INPUTS[change.input] ? change.input : 'DT';
       return {
         ...current,
         ...change,
         input,
+        plasmaColor: input === 'Argon' ? ARGON_PLASMA_COLOR : DEFAULT_PLASMA_COLOR,
         showDTInput: input === 'DT',
         showDHe3Input: input === 'DHe_3',
         showArgonInput: input === 'Argon'
@@ -1001,7 +1021,7 @@ export default function FrcFusionSim({ onBack }) {
       <header className="frc-topbar"><div className="frc-brand"><span className="frc-mark">FRC</span><span><b>FUSION DEVICE LAB</b><em>Field-reversed configuration / phase 02</em></span></div><div className="frc-top-meta"><span>PHYSICAL MODEL</span><span>GPGPU TRANSPORT ACTIVE</span></div><button type="button" className="frc-back-button" onClick={onBack}>Lab menu</button></header>
       <section className="frc-title"><p>Transparent reactor study</p><h1>Shape the vessel.<br />Read the field.</h1><span>GPU plasma transport is active inside the device. Kinetic solver dynamics work follows in phase 03.</span></section>
       <nav className="frc-view-toolbar"><button type="button" onClick={() => setParametersVisible((visible) => !visible)}>{parametersVisible ? 'Hide params' : 'Show params'}</button><span>ORBIT / DEVICE SCALE 1:{configuration.vesselScale.toFixed(2)}</span></nav>
-      {parametersVisible && <FrcPanel configuration={configuration} model={model} gpuError={gpuError} onChange={updateConfiguration} onHide={() => setParametersVisible(false)} />}
+      {parametersVisible && <FrcPanel configuration={configuration} model={model} gpuError={gpuError} onChange={updateConfiguration} onHide={() => setParametersVisible(false)} editing={editing} onEditing={setEditing} canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} onReset={() => load(INITIAL_CONFIGURATION)} />}
       <div className="frc-footer"><span>GEOMETRY / COILS / SEPARATRIX</span><span>BETA {Math.round(model.beta * 100)}% / CONFINEMENT {Math.round(model.confinement * 100)}%</span></div>
     </main>
   );
