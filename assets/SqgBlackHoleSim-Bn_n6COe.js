@@ -1,0 +1,1 @@
+import{j as r}from"./react-Bwx2ax-9.js";import{SimpleAttractorSim as o}from"./SimpleAttractorSim-CJ_fSP1Z.js";import"./react-three-B9ZbQd5B.js";import"./three-core-rDWkGbJH.js";import"./gpuParticleRuntime-CuHbv3Oj.js";import"./three-extras-DGniBTVG.js";import"./ParamControls-CtAF-1qp.js";function s({onBack:t}){return r.jsx(o,{variant:"blackhole",onBack:t})}export{s as default};
