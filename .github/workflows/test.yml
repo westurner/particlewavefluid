@@ -1,0 +1,50 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/subwaysim2/package-lock.json
+
+      - name: Install dependencies
+        working-directory: src/subwaysim2
+        run: npm ci
+
+      - name: Run tests with branch coverage
+        working-directory: src/subwaysim2
+        run: |
+          rm -rf coverage
+          mkdir -p coverage
+          node --test \
+            --experimental-test-coverage \
+            --test-reporter=lcov \
+            --test-reporter-destination=coverage/lcov.info \
+            src/*.test.js
+
+      - name: Upload branch coverage artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: branch-coverage
+          path: src/subwaysim2/coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 14
