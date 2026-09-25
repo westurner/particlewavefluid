@@ -4,6 +4,7 @@ import { chromium } from 'playwright';
 import { PNG } from 'pngjs';
 
 const baseUrl = process.env.BASE_URL ?? 'http://localhost:5173/';
+const expectedDefaultParticleCount = new URL(baseUrl).searchParams.has('e2e') ? '2048' : '4096';
 
 function countParticlePixels(buffer) {
   const image = PNG.sync.read(buffer);
@@ -32,6 +33,11 @@ function countChangedPixels(beforeBuffer, afterBuffer) {
     if (difference > 30) count += 1;
   }
   return count;
+}
+
+async function selectParam(page, label, value, scope = page) {
+  await scope.getByRole('combobox', { name: label }).click();
+  await page.locator(`[role="option"][data-value="${value}"]`).click();
 }
 
 async function exerciseRangeSliders(container) {
@@ -74,17 +80,15 @@ test('wave interference renders visible particles after mode changes', async (t)
   const initialPixels = countParticlePixels(await page.screenshot({ clip: sceneClip }));
   assert.ok(initialPixels > 500, `expected visible wave particles, found ${initialPixels} colored pixels`);
 
-  const sourcePreset = page.getByLabel('Source preset');
-  await sourcePreset.selectOption('continuous-wave-laser-helical-pair');
-  assert.equal(await sourcePreset.inputValue(), 'continuous-wave-laser-helical-pair');
+  await selectParam(page, 'Source preset', 'continuous-wave-laser-helical-pair');
+  assert.match(await page.getByRole('combobox', { name: 'Source preset' }).textContent(), /laser/i);
   assert.equal(await page.locator('.wave-editor').count(), 3);
-  await page.getByLabel('Named state').selectOption({ label: 'Mixed phase field' });
+  await selectParam(page, 'Named state', 'Mixed phase field');
   assert.equal(await page.locator('.wave-editor').count(), 6);
-  const occlusionMap = page.getByLabel('Occlusion map');
-  await occlusionMap.selectOption('pinhole');
-  assert.equal(await occlusionMap.inputValue(), 'pinhole');
+  await selectParam(page, 'Occlusion map', 'pinhole');
+  assert.match(await page.getByRole('combobox', { name: 'Occlusion map' }).textContent(), /pinhole/i);
   assert.equal(await page.locator('.wave-scene').getAttribute('data-occlusion-preset'), 'pinhole');
-  await occlusionMap.selectOption('none');
+  await selectParam(page, 'Occlusion map', 'none');
 
   const firstWaveEditor = page.locator('.wave-editor').first();
   const vectorControls = firstWaveEditor.locator('.wave-vector-control');
@@ -100,8 +104,7 @@ test('wave interference renders visible particles after mode changes', async (t)
   assert.equal(await vectorControls.nth(2).locator('input').nth(1).inputValue(), '0.5');
   const waveSliderCount = await exerciseRangeSliders(firstWaveEditor);
   assert.equal(waveSliderCount, 14, 'wave editor should expose every base wave parameter slider');
-  const polarization = firstWaveEditor.getByLabel('Polarization');
-  await polarization.selectOption('EM-Tensor-Gaussian');
+  await selectParam(page, 'Polarization', 'EM-Tensor-Gaussian', firstWaveEditor);
   const beamWaist = firstWaveEditor.getByLabel('Beam waist');
   assert.equal(await beamWaist.inputValue(), '6');
   await beamWaist.fill('3');
@@ -154,7 +157,7 @@ test('wave interference renders visible particles after mode changes', async (t)
   assert.ok(combinedPixels > 500, `expected particles with both interference layers, found ${combinedPixels} colored pixels`);
 
   const particleCount = page.locator('.wave-range-control').filter({ hasText: 'Particle count' }).locator('input');
-  assert.equal(await particleCount.inputValue(), '4096');
+  assert.equal(await particleCount.inputValue(), expectedDefaultParticleCount);
   await particleCount.fill('1024');
   await page.waitForTimeout(250);
   assert.equal(await page.locator('.wave-scene').getAttribute('data-particle-count'), '1024');
@@ -232,7 +235,7 @@ test('source direction edits point vectors and remain inspectable with orbit con
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: /01 \/ LOAD FIELD/ }).click();
   await page.locator('.wave-panel').waitFor();
-  await page.getByLabel('Source preset').selectOption('continuous-wave-laser');
+  await selectParam(page, 'Source preset', 'continuous-wave-laser');
   const sourceFrame = async () => JSON.parse(await page.locator('.wave-scene').getAttribute('data-source-frame'));
   assert.deepEqual((await sourceFrame()).origin, { x: -8, y: 0, z: 0 });
   assert.ok(Math.abs((await sourceFrame()).direction.x - 1) < 1e-12);
@@ -285,15 +288,14 @@ test('source orbit control edits origin direction and rotation with pointer inpu
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: /01 \/ LOAD FIELD/ }).click();
   await page.locator('.wave-panel').waitFor();
-  await page.getByLabel('Source preset').selectOption('continuous-wave-laser');
+  await selectParam(page, 'Source preset', 'continuous-wave-laser');
   const editor = page.locator('.wave-editor').first();
   const orbit = editor.locator('[aria-label="Wave 1 source orbit controls"]');
-  const placement = editor.getByLabel('Wave 1 parameter placement');
   for (const option of ['auto', 'above', 'below', 'outward', 'inward']) {
-    await placement.selectOption(option);
+    await selectParam(page, 'Wave 1 parameter placement', option, editor);
     assert.match(await editor.locator('.wave-editor-workbench').getAttribute('class'), new RegExp(`placement-${option}`));
   }
-  await placement.selectOption('auto');
+  await selectParam(page, 'Wave 1 parameter placement', 'auto', editor);
   const pad = orbit.locator('.wave-source-orbit-pad');
   await pad.scrollIntoViewIfNeeded();
   const padBox = await pad.boundingBox();

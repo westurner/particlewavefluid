@@ -5,7 +5,7 @@ import { AdditiveBlending, BufferAttribute, BufferGeometry, CatmullRomCurve3, Co
 import { calculateFrcModel, FRC_CONFIGURATIONS, FRC_INPUTS, FRC_SHAPES, getFrcVisualizationVisibility } from './frcModel.js';
 import { advanceFlowProgress, createFlowPathPoints, createInputParticlePathPoints, FLOW_PARTICLE_STREAMS, getFlowParticleVisibility, getInputParticleVisibility, INPUT_PARTICLE_STREAMS } from './flowParticles.js';
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
-import { ColorParamControl, HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle } from './lib/ParamControls.jsx';
+import { ColorParamControl, HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 
 const DEFAULT_PLASMA_COLOR = '#ff4fa3';
@@ -113,7 +113,9 @@ function dampRotationAngle(current, target, delta) {
 }
 
 const PLASMA_PARTICLE_COUNT = 4096;
-const PLASMA_RESOLUTION = Math.ceil(Math.sqrt(PLASMA_PARTICLE_COUNT));
+const E2E_PLASMA_PARTICLE_COUNT = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('e2e') ? 2048 : null;
+const ACTIVE_PLASMA_PARTICLE_COUNT = E2E_PLASMA_PARTICLE_COUNT ?? PLASMA_PARTICLE_COUNT;
+const PLASMA_RESOLUTION = Math.ceil(Math.sqrt(ACTIVE_PLASMA_PARTICLE_COUNT));
 
 const plasmaPositionShader = `
   uniform float uDt;
@@ -602,8 +604,8 @@ function PlasmaParticles({ configuration, model, onGpuError }) {
   stateRef.current = { configuration, model };
   const geometry = useMemo(() => {
     const nextGeometry = new BufferGeometry();
-    nextGeometry.setAttribute('position', new BufferAttribute(new Float32Array(PLASMA_PARTICLE_COUNT * 3), 3));
-    nextGeometry.setAttribute('aSimulationUv', new BufferAttribute(createSimulationUvs(PLASMA_RESOLUTION, PLASMA_PARTICLE_COUNT), 2));
+    nextGeometry.setAttribute('position', new BufferAttribute(new Float32Array(ACTIVE_PLASMA_PARTICLE_COUNT * 3), 3));
+    nextGeometry.setAttribute('aSimulationUv', new BufferAttribute(createSimulationUvs(PLASMA_RESOLUTION, ACTIVE_PLASMA_PARTICLE_COUNT), 2));
     return nextGeometry;
   }, []);
   const material = useMemo(() => new ShaderMaterial({
@@ -881,9 +883,9 @@ function FrcPanel({ configuration, model, gpuError, onChange, onHide, editing = 
       <div className="frc-editor-toolbar"><ParamEditingToggle checked={editing} onChange={onEditing} /><HistoryControls canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} /></div>
       {gpuError && <p className="frc-gpu-error">GPU OFFLINE / {gpuError}</p>}
       <div className="frc-select-grid">
-        <label><span>Vessel shape</span><select value={configuration.shape} onChange={(event) => onChange({ shape: event.target.value })}>{Object.entries(FRC_SHAPES).map(([id, shape]) => <option key={id} value={id}>{shape.label}</option>)}</select></label>
-        <label><span>Device configuration</span><select value={configuration.configuration} onChange={(event) => onChange({ configuration: event.target.value })}>{Object.entries(FRC_CONFIGURATIONS).map(([id, config]) => <option key={id} value={id}>{config.label}</option>)}</select></label>
-        <label><span>Plasma input</span><select value={configuration.input ?? 'DT'} onChange={(event) => onChange({ input: event.target.value })}>{Object.entries(FRC_INPUTS).map(([id, input]) => <option key={id} value={id}>{input.label}</option>)}</select></label>
+        <ParamSelect label="Vessel shape" value={configuration.shape} options={Object.entries(FRC_SHAPES).map(([id, shape]) => ({ value: id, label: shape.label }))} onChange={(value) => onChange({ shape: value })} />
+        <ParamSelect label="Device configuration" value={configuration.configuration} options={Object.entries(FRC_CONFIGURATIONS).map(([id, config]) => ({ value: id, label: config.label }))} onChange={(value) => onChange({ configuration: value })} />
+        <ParamSelect label="Plasma input" value={configuration.input ?? 'DT'} options={Object.entries(FRC_INPUTS).map(([id, input]) => ({ value: id, label: input.label }))} onChange={(value) => onChange({ input: value })} />
       </div>
       <p className="frc-description">{FRC_SHAPES[configuration.shape].description} {FRC_CONFIGURATIONS[configuration.configuration].description} {FRC_INPUTS[configuration.input ?? 'DT'].description}</p>
       <section className="frc-readout-grid" aria-label="Calculated reactor values">

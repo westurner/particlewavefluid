@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { parseNumericValue } from "./simulation-state.js";
 
 function formatNumber(value, step) {
@@ -22,6 +23,71 @@ export function HistoryControls({ canUndo, canRedo, onUndo, onRedo }) {
 
 export function YamlTextArea({ label, value }) {
   return <label className="param-yaml-textarea"><span>{label}</span><textarea readOnly value={value} aria-label={label} /></label>;
+}
+
+export function ParamSelect({ label, value, options, onChange, className = "", ariaLabel = label }) {
+  const [open, setOpen] = useState(false);
+  const [menuStyle, setMenuStyle] = useState({});
+  const rootRef = useRef(null);
+  const triggerRef = useRef(null);
+  const menuRef = useRef(null);
+  const normalizedOptions = options.map((option) => typeof option === "string" ? { value: option, label: option } : option);
+  const selectedOption = normalizedOptions.find((option) => option.value === value) ?? normalizedOptions[0];
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const updateMenuPosition = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const width = Math.min(Math.max(rect.width, 160), window.innerWidth - 16);
+      const maxHeight = Math.min(280, window.innerHeight - 16);
+      const spaceBelow = window.innerHeight - rect.bottom - 8;
+      const spaceAbove = rect.top - 8;
+      const requiredHeight = Math.min(maxHeight, normalizedOptions.length * 30 + 8);
+      const openAbove = spaceBelow < requiredHeight && spaceAbove > spaceBelow;
+      const height = Math.min(maxHeight, Math.max(80, openAbove ? spaceAbove : spaceBelow));
+      const top = openAbove ? rect.top - height - 4 : rect.bottom + 4;
+      setMenuStyle({
+        left: Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8)),
+        top: Math.min(Math.max(8, top), Math.max(8, window.innerHeight - height - 8)),
+        width,
+        maxHeight: height
+      });
+    };
+    const closeOnOutsidePointer = (event) => {
+      if (!rootRef.current?.contains(event.target) && !menuRef.current?.contains(event.target)) setOpen(false);
+    };
+    updateMenuPosition();
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    window.addEventListener("resize", updateMenuPosition);
+    window.addEventListener("scroll", updateMenuPosition, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      window.removeEventListener("resize", updateMenuPosition);
+      window.removeEventListener("scroll", updateMenuPosition, true);
+    };
+  }, [normalizedOptions.length, open]);
+
+  const handleKeyDown = (event) => {
+    if (event.key === "Escape") {
+      setOpen(false);
+      triggerRef.current?.focus();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      setOpen(true);
+    }
+  };
+
+  return <div ref={rootRef} className={`param-select ${className}`} onPointerDown={(event) => event.stopPropagation()}>
+    {label && <span className="param-select-label">{label}</span>}
+    <button ref={triggerRef} type="button" className="param-select-trigger" role="combobox" aria-label={ariaLabel} aria-expanded={open} aria-haspopup="listbox" onClick={() => setOpen((current) => !current)} onKeyDown={handleKeyDown}>
+      <span>{selectedOption?.label ?? value}</span><span className="param-select-chevron" aria-hidden="true">v</span>
+    </button>
+    {open && createPortal(<div ref={menuRef} className="param-select-menu" role="listbox" style={menuStyle} aria-label={ariaLabel}>
+      {normalizedOptions.map((option) => <button key={option.value} type="button" role="option" aria-selected={option.value === value} data-value={option.value} className="param-select-option" onClick={() => { onChange(option.value); setOpen(false); triggerRef.current?.focus(); }}>{option.label}</button>)}
+    </div>, document.body)}
+  </div>;
 }
 
 export function NumericParamControl({ label, value, min, max, step, onChange, suffix = "", editing = false, isDefault = true, onReset, description, showDescription, className = "" }) {

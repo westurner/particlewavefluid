@@ -3,13 +3,15 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DoubleSide, FrontSide, ShaderMaterial, Vector3 } from 'three';
 import { calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveFrame, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, INTERFERENCE_MODES, MAX_WAVES, OCCLUSION_PRESETS, PHASE_MODES, POLARIZATION_MODES, readSavedWaveStates, SIGNAL_SOURCE_PRESETS, writeSavedWaveStates } from './waveModel.js';
-import { HistoryControls, NumericParamControl, ParamEditingToggle } from './lib/ParamControls.jsx';
+import { HistoryControls, NumericParamControl, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 
 const FIELD_SIZE = 18;
-const DEFAULT_PARTICLE_COUNT = 4096;
+const DEFAULT_PARTICLE_COUNT = 2 ** 10;
+const E2E_PARTICLE_COUNT = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('e2e') ? 2048 : null;
 const MIN_PARTICLE_COUNT = 1024;
-const MAX_PARTICLE_COUNT = 9216;
+//const MAX_PARTICLE_COUNT = 9216;
+const MAX_PARTICLE_COUNT = 2 ** 14;
 const WAVE_COLORS = ['#f4bf66', '#66d5d1', '#df7d8d', '#a899ed', '#d7e681', '#7da8ec', '#f28e5d', '#86d3a5'];
 const PARTICLE_SHAPES = ['square', 'circle', 'vector'];
 
@@ -306,7 +308,7 @@ function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate
         <label className="wave-toggle"><input type="checkbox" checked={wave.enabled} onChange={(event) => update('enabled', event.target.checked)} /><span>{wave.enabled ? 'Enabled' : 'Disabled'}</span></label>
         <div className="wave-editor-buttons"><button type="button" onClick={() => onDuplicate(index)} disabled={!canDuplicate}>Duplicate</button><button type="button" className="wave-remove-button" onClick={() => onRemove(index)} disabled={!canRemove}>Remove</button></div>
       </div>
-      <label className="wave-select wave-parameter-placement"><span>Parameter placement</span><select aria-label={`Wave ${index + 1} parameter placement`} value={parameterPlacement} onChange={(event) => setParameterPlacement(event.target.value)}>{PARAMETER_PLACEMENTS.map((placement) => <option key={placement.id} value={placement.id}>{placement.label}</option>)}</select></label>
+      <ParamSelect className="wave-select wave-parameter-placement" label="Parameter placement" ariaLabel={`Wave ${index + 1} parameter placement`} value={parameterPlacement} options={PARAMETER_PLACEMENTS.map((placement) => ({ value: placement.id, label: placement.label }))} onChange={setParameterPlacement} />
       <div className={`wave-editor-workbench placement-${parameterPlacement}`}>
         <SourceOrbitControl wave={wave} index={index} onChange={update} editing={editing} />
         <div className="wave-parameter-dock">
@@ -315,8 +317,8 @@ function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate
           <RangeControl label="Decay rate" value={wave.decayRate ?? 0} min={0} max={1} step={0.01} suffix=" /u" editing={editing} isDefault={isDefault(['waves', index, 'decayRate'])} onReset={() => onResetPath(['waves', index, 'decayRate'])} onChange={(value) => update('decayRate', value)} />
           <RangeControl label="Phase offset" value={wave.phaseOffset} min={-Math.PI} max={Math.PI} step={0.01} suffix=" rad" editing={editing} isDefault={isDefault(['waves', index, 'phaseOffset'])} onReset={() => onResetPath(['waves', index, 'phaseOffset'])} onChange={(value) => update('phaseOffset', value)} />
           <RangeControl label="Phase rate" value={wave.phaseRate} min={-2} max={2} step={0.01} suffix=" /s" editing={editing} isDefault={isDefault(['waves', index, 'phaseRate'])} onReset={() => onResetPath(['waves', index, 'phaseRate'])} onChange={(value) => update('phaseRate', value)} />
-          <label className="wave-select"><span>Phase mode</span><select value={wave.phaseMode} onChange={(event) => update('phaseMode', event.target.value)}>{PHASE_MODES.map((mode) => <option key={mode} value={mode}>{mode}</option>)}</select></label>
-          <label className="wave-select"><span>Polarization</span><select value={wave.polarization ?? 'Scalar'} onChange={(event) => update('polarization', event.target.value)}>{POLARIZATION_MODES.map((mode) => <option key={mode} value={mode}>{mode}</option>)}</select></label>
+          <ParamSelect className="wave-select" label="Phase mode" value={wave.phaseMode} options={PHASE_MODES} onChange={(value) => update('phaseMode', value)} />
+          <ParamSelect className="wave-select" label="Polarization" value={wave.polarization ?? 'Scalar'} options={POLARIZATION_MODES} onChange={(value) => update('polarization', value)} />
           {(['Electromagnetic', 'EM-Tensor-Gaussian'].includes(wave.polarization)) && <RangeControl label="Beam waist" value={wave.beamWaist ?? DEFAULT_BEAM_WAIST} min={0.5} max={9} step={0.1} suffix=" u" editing={editing} isDefault={isDefault(['waves', index, 'beamWaist'])} onReset={() => onResetPath(['waves', index, 'beamWaist'])} onChange={(value) => update('beamWaist', value)} />}
           <VectorControl label="Signal origin" value={wave.origin} min={-9} max={9} step={0.1} editing={editing} isDefault={(axis) => isDefault(['waves', index, 'origin', axis])} onReset={(axis) => onResetPath(['waves', index, 'origin', axis])} onChange={(axis, value) => updateVector('origin', axis, value, DEFAULT_SIGNAL_ORIGIN)} />
           <VectorControl label="Signal direction" value={wave.direction} min={-1} max={1} step={0.05} editing={editing} isDefault={(axis) => isDefault(['waves', index, 'direction', axis])} onReset={(axis) => onResetPath(['waves', index, 'direction', axis])} onChange={(axis, value) => updateVector('direction', axis, value, DEFAULT_SIGNAL_DIRECTION)} />
@@ -338,14 +340,14 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
       <div className="wave-status"><span><i /> {enabledCount} enabled / {waveCount} {waveCount === 1 ? 'wave slot' : 'wave slots'}</span><strong>{running ? 'RUNNING' : 'PAUSED'}</strong></div><div className="wave-editor-toolbar"><ParamEditingToggle checked={editing} onChange={onEditing} /><HistoryControls canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} /></div>
       <section className="wave-control-section wave-state-section">
         <span className="wave-section-label">WAVE STATES</span>
-        <label className="wave-select wave-state-select"><span>Named state</span><select value={selectedState} onChange={(event) => onStateChange(event.target.value)}>{selectedState === '' && <option value="">Current field / unsaved</option>}{stateOptions.map((state) => <option key={state.name} value={state.name}>{state.name}</option>)}</select></label>
+        <ParamSelect className="wave-select wave-state-select" label="Named state" value={selectedState} options={[...(selectedState === '' ? [{ value: '', label: 'Current field / unsaved' }] : []), ...stateOptions.map((state) => ({ value: state.name, label: state.name }))]} onChange={onStateChange} />
         {stateDescription && <p className="wave-description wave-state-description">{stateDescription}</p>}
         <div className="wave-state-save"><input value={stateName} onChange={(event) => onStateName(event.target.value)} placeholder="Name this wave state" aria-label="Name this wave state" /><button type="button" onClick={onSaveState} disabled={!stateName.trim()}>Save state</button></div>
         {stateMessage && <p className="wave-state-message" role="status">{stateMessage}</p>}
       </section>
       <section className="wave-control-section wave-state-section">
         <span className="wave-section-label">SIGNAL SOURCE PRESETS</span>
-        <label className="wave-select wave-state-select"><span>Source preset</span><select value={sourcePreset} onChange={(event) => onSourcePreset(event.target.value)}><option value="">Current field</option>{SIGNAL_SOURCE_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select></label>
+        <ParamSelect className="wave-select wave-state-select" label="Source preset" value={sourcePreset} options={[{ value: '', label: 'Current field' }, ...SIGNAL_SOURCE_PRESETS.map((preset) => ({ value: preset.id, label: preset.name }))]} onChange={onSourcePreset} />
         {sourcePreset && <p className="wave-description wave-state-description">{SIGNAL_SOURCE_PRESETS.find((preset) => preset.id === sourcePreset)?.description}</p>}
       </section>
       <section className="wave-control-section">
@@ -364,7 +366,7 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
         <RangeControl label="Particle count" value={particleCount} min={MIN_PARTICLE_COUNT} max={MAX_PARTICLE_COUNT} step={512} editing={editing} isDefault={isDefault('particleCount')} onReset={() => onResetPath('particleCount')} onChange={onParticleCount} />
         <RangeControl label="Particle size" value={particleSize} min={0.02} max={0.4} step={0.005} suffix=" u" editing={editing} isDefault={isDefault('particleSize')} onReset={() => onResetPath('particleSize')} onChange={onParticleSize} />
         <RangeControl label="Particle opacity" value={particleOpacity} min={0.05} max={1} step={0.01} editing={editing} isDefault={isDefault('particleOpacity')} onReset={() => onResetPath('particleOpacity')} onChange={onParticleOpacity} />
-        <label className="wave-select"><span>Particle shape</span><select value={particleShape} onChange={(event) => onParticleShape(event.target.value)}>{PARTICLE_SHAPES.map((shape) => <option key={shape} value={shape}>{shape}</option>)}</select></label>
+        <ParamSelect className="wave-select" label="Particle shape" value={particleShape} options={PARTICLE_SHAPES} onChange={onParticleShape} />
         {particleShape === 'vector' && <><RangeControl label="Vector derivative n" value={particleDerivativeOrder} min={0} max={4} step={1} editing={editing} isDefault={isDefault('particleDerivativeOrder')} onReset={() => onResetPath('particleDerivativeOrder')} onChange={onParticleDerivativeOrder} /><p className="wave-description">Vector direction follows the n-th spatial derivative of particle motion.</p></>}
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={doubleSided} onChange={(event) => onDoubleSided(event.target.checked)} /><span>Double-sided field</span></label>
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={orbitControlsVisible} onChange={(event) => onOrbitControls(event.target.checked)} /><span>Allow moving camera</span></label>
@@ -372,7 +374,7 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
       </section>
       <section className="wave-control-section wave-state-section">
         <span className="wave-section-label">OCCLUSION MAP PRESETS</span>
-        <label className="wave-select wave-state-select"><span>Occlusion map</span><select value={occlusionPreset} onChange={(event) => onOcclusionPreset(event.target.value)}>{OCCLUSION_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select></label>
+        <ParamSelect className="wave-select wave-state-select" label="Occlusion map" value={occlusionPreset} options={OCCLUSION_PRESETS.map((preset) => ({ value: preset.id, label: preset.name }))} onChange={onOcclusionPreset} />
         <p className="wave-description wave-state-description">{OCCLUSION_PRESETS.find((preset) => preset.id === occlusionPreset)?.description}</p>
       </section>
     </aside>
@@ -401,7 +403,7 @@ export default function WaveInterferenceSim({ onBack }) {
   const [interferenceModes, setInterferenceModes] = useState(initialWaveState.interferenceModes);
   const [sourcePreset, setSourcePreset] = useState('');
   const [occlusionPreset, setOcclusionPresetState] = useState('none');
-  const [particleCount, setParticleCount] = useState(DEFAULT_PARTICLE_COUNT);
+  const [particleCount, setParticleCount] = useState(E2E_PARTICLE_COUNT ?? DEFAULT_PARTICLE_COUNT);
   const [savedStates, setSavedStates] = useState(() => readSavedWaveStates());
   const [selectedState, setSelectedState] = useState(initialState.name);
   const [stateModified, setStateModified] = useState(false);
