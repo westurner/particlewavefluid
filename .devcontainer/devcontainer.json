@@ -1,0 +1,40 @@
+{
+  "name": "particlewavefluid R3F devcontainer",
+  "build": {
+    "dockerfile": "../Dockerfile.e2e",
+    "context": "../"
+  },
+  "runArgs": [
+    "--userns=keep-id",
+		"--security-opt=label=disable",
+		"--log-level=debug",
+    "-e _WRD=/workspaces/src/src/subwaysim2"
+    //"--net=pasta"
+  ],
+  // "mounts": [
+  //   {
+  //     "type": "bind",
+  //     "source": "/usr/sbin/distrobox-host-exec",
+  //     "target": "/usr/local/sbin/distrobox-host-exec"
+  //   }
+  // ],
+  "forwardPorts": [3000, 8000],
+  "postCreateCommand": "sh -c 'cd src/subwaysim2; npm install && npm run build'", // Example: install root dependencies and build Next.js
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.cwd": "/workspaces/src/src/subwaysim2"
+      },
+      "extensions": [
+        "ms-azuretools.vscode-containers",
+        "ms-playwright.playwright",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint",
+        // "pflannery.vscode-versionlens"
+      ]
+    }
+  },
+  "remoteUser": "appuser" // Or "root" or a specific user if created in Dockerfile
+}
