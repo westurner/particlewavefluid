@@ -1,4 +1,4 @@
-# SQGSIM
+# particlewavefluid simulator
 
 A React, Three.js, React Three Fiber, and Drei particle-simulation loader. The GPU particle runtime was extracted from the subway airflow experiment so multiple simulations can share the same resource lifecycle and instanced-field boundary.
 
