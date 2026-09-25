@@ -1,0 +1,56 @@
+name: Publish site
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-site
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/subwaysim2/package-lock.json
+
+      - name: Install dependencies
+        working-directory: src/subwaysim2
+        run: npm ci
+
+      - name: Build site
+        working-directory: src/subwaysim2
+        env:
+          VITE_BASE_PATH: /particlewavefluid/
+        run: npm run build
+
+      - name: Publish to gh-pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          deploy_dir="$(mktemp -d)"
+          cp -R src/subwaysim2/dist/. "$deploy_dir/"
+          touch "$deploy_dir/.nojekyll"
+          git -C "$deploy_dir" init
+          git -C "$deploy_dir" config user.name "github-actions[bot]"
+          git -C "$deploy_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$deploy_dir" add --all
+          git -C "$deploy_dir" commit -m "Deploy ${GITHUB_SHA}"
+          git -C "$deploy_dir" branch -M gh-pages
+          git -C "$deploy_dir" remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$deploy_dir" push --force origin gh-pages
