@@ -105,6 +105,34 @@ async function selectParam(page, label, value) {
   await page.locator(`[role="option"][data-value="${value}"]`).click();
 }
 
+test('FRC recovery architectures retain independent parameters and separate net electric output from Q', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
+
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /04 \/ LOAD FIELD/ }).click();
+  await page.locator('.frc-panel').waitFor();
+
+  const fusionGain = page.getByLabel('Plasma fusion gain');
+  const netElectric = page.getByLabel('Net electric power');
+  const driveInput = page.getByRole('slider', { name: 'Pulsed drive input' });
+  const initialFusionGain = await fusionGain.innerText();
+  assert.match(await netElectric.innerText(), /gross recovery.*electrical loads/);
+
+  await driveInput.fill('33');
+  await selectParam(page, 'Recovery architecture', 'thermalCycle');
+  assert.equal(await driveInput.inputValue(), '8');
+  await driveInput.fill('7');
+
+  await selectParam(page, 'Recovery architecture', 'inductiveDirect');
+  assert.equal(await driveInput.inputValue(), '33');
+  await selectParam(page, 'Recovery architecture', 'thermalCycle');
+  assert.equal(await driveInput.inputValue(), '7');
+  assert.equal(await fusionGain.innerText(), initialFusionGain);
+  assert.ok(await page.getByText(/not measured Helion performance/).isVisible());
+});
+
 test('FRC reactor is parallel to the ground by default and resettable', async (t) => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());

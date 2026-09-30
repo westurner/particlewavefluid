@@ -38,6 +38,138 @@ The piezo configuration represents a structure-side strain command modulating an
 
 This translation deliberately excludes the transcript's unsupported longitudinal-vacuum-photon, massive-Proca, "flat light," SQG-confinement, twistor-spinor-locking, eliminated-bremsstrahlung, and deterministic-fusion claims. Those ideas have no sourced constitutive law or validated coupling to the FRC equations and therefore are not reactor configurations.
 
+#### Research translation of the excluded mechanisms
+
+The exclusion does not mean that every engineering objective behind those claims is inaccessible. It means that the proposed cause must be replaced by a mechanism with measured couplings, conservation laws, and a validated domain.
+
+| Transcript claim | Closest physical mechanisms | What transfers | What does not transfer |
+| --- | --- | --- | --- |
+| Massive longitudinal Proca photons | Massive vector bosons; a hypothetical dark photon; longitudinal plasmons; phonons; exciton-, phonon-, and plasmon-polaritons; transverse-magnetic guided modes; and the effective gauge-field mass associated with plasma or superconducting response | A massive spin-1 field has three physical polarizations. Matter can also support longitudinal collective modes and mixed light-matter quasiparticles with an effective dispersion or mass. | $W^\pm$ and $Z$ bosons are short-lived electroweak particles, not controllable RF carriers. Dark photons remain hypothetical. A plasmon or polariton exists only in its material or plasma environment and does not become a freely propagating massive vacuum photon. A waveguide TM field can have a longitudinal electric component while the underlying photon remains massless. |
+| SQG or optical pressure confinement | Ordinary FRC magnetic pressure and field-line tension, diamagnetic current, RMF current drive, electrostatic sheaths, ponderomotive forces, neutral-beam momentum, and externally driven acoustic or MHD pressure | Time-averaged wave forces and driven currents can alter density, flow, current, and stability if their deposited momentum and power are included. | No source establishes an SQG vacuum pressure, gravitational optical pressure, or pressure independent of field energy and boundary reaction forces. These names cannot replace $\mathbf J\times\mathbf B$, $-\nabla p$, Maxwell stress, or a measured material stress. |
+| Deterministic helicity locking | RMF current drive, RF wave-particle resonance, coaxial or oscillating-field magnetic-helicity injection, injection locking of a collective mode, spin-polarized fuel, and feedback phase control | A driven plasma can acquire current, flow, magnetic helicity, or a phase-correlated collective response. Nuclear polarization can modify angular distributions and reaction rates for supported channels. | Magnetic helicity, particle kinetic helicity, spin polarization, and optical phase are different observables. None forces two nuclei into the same six-dimensional phase-space point, and none changes a fusion cross section into a deterministic step function. |
+| Barrier-free fusion | Maxwellian or beam-target tunneling, electron screening, muon-catalyzed molecular fusion, lattice-confinement experiments, resonant reactions, and polarized-fuel enhancement | Screening or a heavy negative particle can reduce the effective separation or barrier width; polarization may change a supported reaction rate. | The Coulomb interaction and nuclear branching remain. Muon production energy, muon decay and sticking, finite screening energies, target damage, stopping power, depolarization, and reaction-product losses prevent these mechanisms from being a barrier-free power source by definition. |
+
+##### Which excitations are actually similar to a Proca photon?
+
+Similarity must be qualified by the property being compared:
+
+- **Same spin count:** a fundamental massive vector boson has spin one and three on-shell polarizations. Standard Model $W^\pm$ and $Z$ bosons are examples, but their mass, lifetime, coupling, and production energy make them irrelevant to an FRC actuator. A dark photon would be a closer formal analogue, but no validated reactor-scale source or coupling exists.
+- **Longitudinal electric response:** a longitudinal plasmon or ion-acoustic wave is a collective density oscillation. Its longitudinal field follows from charge separation and a dielectric response, not from a vacuum photon mass.
+- **Effective mass or cutoff:** photons in a plasma, superconductor, cavity, or waveguide can obey a massive-looking dispersion. This is a property of the coupled system and boundary conditions. Removing the medium removes the quasiparticle or changes the mode.
+- **Mixed light and matter:** polaritons are legitimate quasiparticles, but their lifetime, group velocity, longitudinal fraction, and coupling are material- and wave-vector-dependent. They do not inherit arbitrary Proca interactions.
+
+For a Proca field $A^\mu$, the mass term and constraint leave three physical polarizations. A twistor construction may encode the same massive state, just as spinor-helicity variables may encode a scattering amplitude, but neither construction supplies an additional physical component. In a plasma, the longitudinal degree of freedom is obtained from the dielectric tensor, Poisson's equation, and the particle or fluid response. **Twistors are not necessary for the third component of a longitudinal wave.** They are an optional mathematical representation, not a polarization-generating medium or force law.
+
+##### Longitudinal-drive geometry in a magnetized FRC
+
+For an electrostatic ion-acoustic drive, $\mathbf E_1\parallel\mathbf k$. The relevant angle is local,
+
+$$
+	heta_B=\cos^{-1}(\hat{\mathbf k}\cdot\hat{\mathbf B}_0),
+\qquad
+k_\parallel=k\cos\theta_B,
+\qquad
+k_\perp=k\sin\theta_B.
+$$
+
+The ordinary low-frequency ion-acoustic branch is primarily a parallel-compression mode. A useful baseline is therefore $\theta_B=0^\circ$ with a near-parallel scan at $0^\circ$, $5^\circ$, $10^\circ$, $15^\circ$, and $30^\circ$. Larger-angle points at $45^\circ$, $60^\circ$, $75^\circ$, and $90^\circ$ are controls for oblique coupling, damping, mode conversion, and transition toward lower-hybrid, ion-cyclotron/Bernstein, drift, or sheath-dominated responses. At $90^\circ$, $k_\parallel=0$ and the drive is not the ordinary parallel ion-acoustic mode.
+
+There is no universal optimal angle. An FRC has curved field lines, a field reversal, and a magnetic null, so one laboratory angle cannot remain parallel everywhere. The implementation should use local flux coordinates and optimize a measured objective such as absorbed power, coherent density response, driven current, or damping rate subject to wall loading and stability constraints. Frequency must be scanned with angle rather than held at a nominal acoustic value. A starting dispersion check is
+
+$$
+\omega_r\simeq\frac{k_\parallel c_s}{\sqrt{1+k^2\lambda_D^2}},
+$$
+
+followed by kinetic calculation of electron and ion Landau damping and magnetized corrections. "Strong" must be represented by dimensionless amplitudes such as $e\Phi/(k_B T_e)$, $\delta n/n_0$, and wave Mach number. Once these cease to be small, the solver must include trapping, harmonic generation, shocks, sheath coupling, and nonlinear damping rather than extrapolate a linear wave.
+
+Acceptance criteria:
+
+- [ ] The drive angle is defined against the local equilibrium field, with magnetic-null cells treated separately.
+- [ ] Angle-frequency scans report launched, reflected, absorbed, and wall-coupled power rather than selecting an angle from field amplitude alone.
+- [ ] The parallel limit reproduces a cited ion-acoustic dispersion and damping benchmark; the perpendicular limit is not labeled ion-acoustic without a branch-identification test.
+- [ ] Nonlinear runs report $e\Phi/(k_B T_e)$, $\delta n/n_0$, Mach number, trapped-particle fraction, and harmonic energy.
+
+##### DDF as a constitutive stress, not a confinement source
+
+The current DDF option is a bounded phenomenological dilatancy model. A physically testable continuation would place it in the viscous stress,
+
+$$
+\boldsymbol\tau_{DDF}=2\eta_{eff}(\dot\gamma,|\mathbf u|,\rho,T)\mathbf S
++\zeta_{eff}(\nabla\cdot\mathbf u)\mathbf I,
+$$
+
+with non-negative dissipative coefficients and a declared relaxation time. This can change momentum diffusion, shear-layer thickness, rotation damping, normal-stress differences, and instability growth. It does **not** directly add an inward thermodynamic pressure. FRC balance still requires plasma pressure, magnetic pressure and tension, inertia, and boundary traction. If DDF is intended to supply a reversible elastic or quantum stress, that stress must come from a free-energy functional and appear consistently in momentum and total-energy equations; otherwise it is only drag and generally increases the sustainment power required.
+
+Acceptance criteria:
+
+- [ ] DDF stress is objective, dimensionally consistent, and dissipates rather than creates energy for every tested strain state.
+- [ ] Magnetic equilibrium is unchanged when DDF strain rate is zero.
+- [ ] Any claimed confinement improvement is decomposed into reduced transport, altered stability, and extra actuator power; it is not reported as a new static pressure.
+- [ ] DDF coefficients are fitted to an identified material or plasma data set and rejected outside its calibration domain.
+
+##### Piezoelectric-to-RMF transfer model
+
+A piezoelectric element alone does not generate a useful rotating magnetic field. Two plausible architectures should be modeled separately:
+
+1. **Mechanically tuned coil:** piezoelectric displacement changes coil geometry, spacing, capacitance, ferrite position, or matching-network state, thereby modulating the amplitude and phase of conventional polyphase RMF coils.
+2. **Magnetoelectric transducer:** voltage drives a piezoelectric strain, elastic coupling drives a magnetostrictive layer, and oscillating magnetization produces a near magnetic field. This is the mechanism demonstrated by resonant magnetoelectric composites and NEMS antennas, but scaling field strength, aperture, temperature, radiation tolerance, and distance to an FRC remains unvalidated.
+
+The model must retain the cascaded complex transfer functions,
+
+$$
+\frac{\delta B_{plasma}(\omega)}{V_{drive}(\omega)}=
+H_{piezo}(\omega,T)H_{structure}(\omega,T)H_{mag}(\omega,B_{bias})
+H_{vacuum}(\omega,\mathbf x)H_{plasma}(\omega,n,T,B),
+$$
+
+rather than replace them with one optimistic coupling slider. A minimal mechanical state is
+
+$$
+M\ddot q+C\dot q+Kq=\Theta V+F_{back},
+$$
+
+coupled to either a measured coil perturbation $\delta L(q),\delta M(q)$ or a magnetostrictive constitutive relation and then to the plasma induction/current-drive model. I/Q demodulation should identify the complex gain and phase of each stage with plasma off, cold plasma, and hot plasma. Required parameters include piezoelectric tensor and dielectric loss, elastic mode shape, resonance and quality factor, preload, magnetostriction curve, magnetic bias, hysteresis, coil mutual inductance, matching impedance, thermal drift, fatigue, radiation damage, vacuum compatibility, plasma loading, and uncertainty.
+
+Acceptance criteria:
+
+- [ ] Bench measurements identify voltage-to-strain and strain-to-field transfer functions, including phase, bandwidth, harmonics, hysteresis, and uncertainty.
+- [ ] A calibrated field map predicts $\delta\mathbf B(\mathbf x,\omega)$ at the plasma boundary and closes electrical, mechanical, magnetic, and thermal power.
+- [ ] Polyphase channels report amplitude/phase imbalance and the resulting rotating-to-counter-rotating field ratio.
+- [ ] Plasma-on measurements identify penetration, shielding, driven current, torque transfer, and back-reaction without reusing validation shots for calibration.
+- [ ] The model enforces displacement, stress, depoling, fatigue, temperature, voltage, magnetic saturation, and vacuum-feedthrough limits.
+
+##### Why deterministic helicity locking and barrier-free fusion remain infeasible
+
+The present claims skip several necessary maps:
+
+1. **Observable mismatch:** optical phase, spinor phase, nuclear spin, particle helicity, fluid vorticity, and magnetic helicity $K=\int\mathbf A\cdot\mathbf B\,dV$ are not interchangeable. A coupling Hamiltonian or transport equation must state which observable is driven.
+2. **Scale mismatch:** an RF or acoustic field acts collectively over Debye, gyroradius, skin-depth, and device scales. Fusion occurs at femtometer nuclear range after close Coulomb approach. A derivation must bridge those scales without inserting an assumed unit cross section.
+3. **Conservation gap:** instantaneous or infinite torque violates finite field energy, angular-momentum transfer, causality, and actuator bandwidth. Current drive and helicity injection must include the equal reaction torque and dissipated power.
+4. **Kinetic gap:** a deterministic collision claim needs a normalized distribution function, two-body correlation, impact-parameter distribution, stopping and scattering, decoherence, and a measured reaction cross section. Matching one phase does not localize position and momentum arbitrarily.
+5. **Barrier gap:** screening changes the tunneling exponent by a finite energy; it does not delete the Coulomb potential. Muon catalysis forms compact molecules but is limited by muon creation cost, $2.2\,\mu\mathrm{s}$ lifetime, sticking, and finite cycles. Polarized fuel changes supported spin-channel probabilities but does not guarantee reaction.
+6. **Plasma gap:** coherent forcing competes with collisions, Landau/cyclotron damping, turbulence, field-line curvature, phase mixing, neutral friction, and instabilities. A lock range and decoherence rate must be measured, not asserted.
+7. **Power-balance gap:** any enhancement must include source wall-plug power, failed interactions, radiation, products, target replacement, and recirculating loads in $Q_{eng}$.
+
+The acceptable alternatives are therefore probabilistic and measurable: phase-lock a collective mode, inject magnetic helicity, drive current resonantly, prepare polarized fuel where retention is demonstrated, or include a finite screened/catalyzed reaction rate. None may be labeled deterministic or barrier-free.
+
+##### Research anchors
+
+- Bohm and Gross, "Theory of Plasma Oscillations. A. Origin of Medium-Like Behavior" (1949), [doi:10.1103/PhysRev.75.1851](https://doi.org/10.1103/PhysRev.75.1851).
+- Anderson, "Plasmons, Gauge Invariance, and Mass" (1963), [doi:10.1103/PhysRev.130.439](https://doi.org/10.1103/PhysRev.130.439).
+- Hirose, Alexeff, and Jones, "Landau Damping of Ion Acoustic Waves in a Uniform Magnetic Field" (1970), [doi:10.1063/1.1693062](https://doi.org/10.1063/1.1693062).
+- Ahmadihojatabad, Abbasi, and Hakimi Pajouh, "Influence of superthermal and trapped electrons on oblique propagation of ion-acoustic waves in magnetized plasma" (2010), [doi:10.1063/1.3503664](https://doi.org/10.1063/1.3503664).
+- Steinhauer, "Review of field-reversed configurations" (2011), [doi:10.1063/1.3613680](https://doi.org/10.1063/1.3613680).
+- Milroy, "A magnetohydrodynamic model of rotating magnetic field current drive in a field-reversed configuration" (2000), [doi:10.1063/1.1290279](https://doi.org/10.1063/1.1290279).
+- Guo et al., "Formation and steady-state maintenance of field reversed configuration using rotating magnetic field current drive" (2002), [doi:10.1063/1.1426102](https://doi.org/10.1063/1.1426102).
+- Slough and Miller, "Enhanced Confinement and Stability of a Field-Reversed Configuration with Rotating Magnetic Field Current Drive" (2000), [doi:10.1103/PhysRevLett.85.1444](https://doi.org/10.1103/PhysRevLett.85.1444).
+- Nan et al., "Multiferroic magnetoelectric composites: Historical perspective, status, and future directions" (2008), [doi:10.1063/1.2836410](https://doi.org/10.1063/1.2836410).
+- Nan et al., "Acoustically actuated ultra-compact NEMS magnetoelectric antennas" (2017), [doi:10.1038/s41467-017-00343-8](https://doi.org/10.1038/s41467-017-00343-8).
+- Taylor, "Current drive by plasma waves and helicity conservation" (1989), [doi:10.1103/PhysRevLett.63.1384](https://doi.org/10.1103/PhysRevLett.63.1384).
+- Kulsrud et al., "Fusion Reactor Plasmas with Polarized Nuclei" (1982), [doi:10.1103/PhysRevLett.49.1248](https://doi.org/10.1103/PhysRevLett.49.1248).
+- Assenbaum, Langanke, and Rolfs, "Effects of electron screening on low-energy fusion cross sections" (1987), [doi:10.1007/BF01289572](https://doi.org/10.1007/BF01289572).
+- Breunlich et al., "Muon-Catalyzed Fusion" (1989), [doi:10.1146/annurev.ns.39.120189.001523](https://doi.org/10.1146/annurev.ns.39.120189.001523).
+- Albonico, Geyer, and Mason, "From Twistor-Particle Models to Massive Amplitudes" (2022), [doi:10.3842/SIGMA.2022.045](https://doi.org/10.3842/SIGMA.2022.045). This supports twistors as a representation of massive-particle phase space and amplitudes, not as an extra plasma-wave polarization.
+
 The FRC model also provides a reproducible bounded parameter-grid search. For each MHD mode it evaluates 5,760 combinations across vessel shape, magnetic field, density, temperature, and rotation at fixed 12 MW auxiliary heating. Candidates must satisfy declared beta, stability, confinement, and gyroradius-containment bounds. The three selectable `DT projection from Argon grid optimum` configurations maximize a projected DT gain from the same modeled state; actual Argon gain remains zero, and the projection is not experimental validation.
 
 Acceptance criteria:

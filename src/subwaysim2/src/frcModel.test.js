@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateFrcModel, FRC_CONFIGURATIONS, FRC_INPUTS, FRC_SHAPES, getFrcVisualizationVisibility, searchArgonMhdParameterGrid } from './frcModel.js';
+import { calculateFrcModel, FRC_CONFIGURATIONS, FRC_INPUTS, FRC_RECOVERY_CONFIGURATIONS, FRC_SHAPES, getFrcVisualizationVisibility, searchArgonMhdParameterGrid } from './frcModel.js';
 import { advanceFlowProgress, createFlowPathPoints, createInputParticlePathPoints, FLOW_PARTICLE_STREAMS, getFlowParticleVisibility, getInputParticleVisibility, INPUT_PARTICLE_STREAMS } from './flowParticles.js';
 
 test('every FRC shape produces a contained plasma volume', () => {
@@ -71,6 +71,68 @@ test('fusion gain Q uses explicit auxiliary heating and remains zero for Argon',
   assert.equal(lowHeating.fusionGainQ, lowHeating.fusionPowerMW / 6);
   assert.ok(lowHeating.fusionGainQ > highHeating.fusionGainQ);
   assert.equal(argon.fusionGainQ, 0);
+});
+
+test('recovery configurations conserve allocated fusion energy and balance net electric power', () => {
+  for (const recoveryConfiguration of Object.keys(FRC_RECOVERY_CONFIGURATIONS)) {
+    const model = calculateFrcModel({ input: 'DHe_3', recoveryConfiguration });
+    const recovery = model.recovery;
+
+    assert.equal(recovery.configuration, recoveryConfiguration);
+    assert.ok(recovery.directlyCapturedFusionPowerMW <= recovery.chargedFusionPowerMW);
+    assert.equal(recovery.thermalAvailablePowerMW, model.fusionPowerMW - recovery.directlyCapturedFusionPowerMW);
+    assert.equal(recovery.recoveredPowerMW, recovery.directElectricPowerMW + recovery.thermalElectricPowerMW + recovery.inductiveElectricPowerMW);
+    assert.equal(recovery.totalElectricLoadMW, recovery.drivePowerMW + recovery.auxiliaryElectricPowerMW + recovery.facilityPowerMW);
+    assert.equal(recovery.netElectricPowerMW, recovery.recoveredPowerMW - recovery.totalElectricLoadMW);
+    assert.ok(recovery.directElectricPowerMW + recovery.thermalElectricPowerMW <= model.fusionPowerMW);
+  }
+});
+
+test('recovery scenarios retain independent parameters and do not alter fusion Q', () => {
+  const recoveryConfigurations = {
+    inductiveDirect: { drivePowerMW: 31, facilityPowerMW: 2 },
+    thermalCycle: { drivePowerMW: 7, facilityPowerMW: 11 }
+  };
+  const direct = calculateFrcModel({ auxiliaryHeatingMW: 9, recoveryConfiguration: 'inductiveDirect', recoveryConfigurations });
+  const thermal = calculateFrcModel({ auxiliaryHeatingMW: 9, recoveryConfiguration: 'thermalCycle', recoveryConfigurations });
+  const baseline = calculateFrcModel({ auxiliaryHeatingMW: 9 });
+
+  assert.equal(direct.recovery.drivePowerMW, 31);
+  assert.equal(direct.recovery.facilityPowerMW, 2);
+  assert.equal(thermal.recovery.drivePowerMW, 7);
+  assert.equal(thermal.recovery.facilityPowerMW, 11);
+  assert.equal(direct.fusionGainQ, baseline.fusionGainQ);
+  assert.equal(thermal.fusionGainQ, baseline.fusionGainQ);
+  assert.deepEqual(recoveryConfigurations, {
+    inductiveDirect: { drivePowerMW: 31, facilityPowerMW: 2 },
+    thermalCycle: { drivePowerMW: 7, facilityPowerMW: 11 }
+  });
+});
+
+test('recovery efficiencies and loads are bounded before accounting', () => {
+  const model = calculateFrcModel({
+    recoveryConfigurations: {
+      inductiveDirect: {
+        drivePowerMW: -5,
+        inductiveRecoveryEfficiency: 2,
+        chargedParticleCaptureEfficiency: 4,
+        directConversionEfficiency: -1,
+        thermalCaptureEfficiency: 3,
+        thermalConversionEfficiency: 2,
+        auxiliaryWallPlugEfficiency: 0,
+        facilityPowerMW: -8
+      }
+    }
+  });
+
+  assert.equal(model.recovery.drivePowerMW, 0);
+  assert.equal(model.recovery.inductiveRecoveryEfficiency, 1);
+  assert.equal(model.recovery.chargedParticleCaptureEfficiency, 1);
+  assert.equal(model.recovery.directConversionEfficiency, 0);
+  assert.equal(model.recovery.thermalCaptureEfficiency, 1);
+  assert.equal(model.recovery.thermalConversionEfficiency, 1);
+  assert.equal(model.recovery.auxiliaryWallPlugEfficiency, 0.01);
+  assert.equal(model.recovery.facilityPowerMW, 0);
 });
 
 test('plasma cycle matches the electron plasma frequency equation', () => {

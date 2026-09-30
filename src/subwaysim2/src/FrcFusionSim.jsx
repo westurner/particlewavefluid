@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html, OrbitControls } from '@react-three/drei';
 import { AdditiveBlending, BufferAttribute, BufferGeometry, CatmullRomCurve3, Color, DoubleSide, MathUtils, ShaderMaterial, Vector3 } from 'three';
-import { calculateFrcModel, FRC_CONFIGURATIONS, FRC_INPUTS, FRC_SHAPES, getFrcVisualizationVisibility } from './frcModel.js';
+import { calculateFrcModel, FRC_CONFIGURATIONS, FRC_INPUTS, FRC_RECOVERY_CONFIGURATIONS, FRC_SHAPES, getFrcVisualizationVisibility } from './frcModel.js';
 import { advanceFlowProgress, createFlowPathPoints, createInputParticlePathPoints, FLOW_PARTICLE_STREAMS, getFlowParticleVisibility, getInputParticleVisibility, INPUT_PARTICLE_STREAMS } from './flowParticles.js';
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
 import { ColorParamControl, HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
@@ -15,6 +15,9 @@ const DEFAULT_VESSEL_SHELL_COLOR = '#a9d9dd';
 const DEFAULT_VESSEL_SHELL_EMISSIVE_COLOR = '#000000';
 const DEFAULT_SEPARATRIX_VOLUME_COLOR = DEFAULT_PLASMA_COLOR;
 const DEFAULT_SEPARATRIX_VOLUME_EMISSIVE_COLOR = DEFAULT_PLASMA_COLOR;
+const INITIAL_RECOVERY_CONFIGURATIONS = Object.fromEntries(
+  Object.entries(FRC_RECOVERY_CONFIGURATIONS).map(([id, recovery]) => [id, { ...recovery }])
+);
 
 const INITIAL_CONFIGURATION = {
   shape: 'elongated',
@@ -24,6 +27,8 @@ const INITIAL_CONFIGURATION = {
   density: 1.8,
   ionTemperature: 1.6,
   auxiliaryHeatingMW: 12,
+  recoveryConfiguration: 'inductiveDirect',
+  recoveryConfigurations: INITIAL_RECOVERY_CONFIGURATIONS,
   rotation: 0.18,
   piezoDriveFrequencyKHz: 20,
   piezoStrainPpm: 80,
@@ -957,12 +962,26 @@ function ToggleInput({ label, checked, onChange, swatch, disabled = false }) {
   );
 }
 
+function formatSignedPower(powerMW) {
+  return `${powerMW >= 0 ? '+' : ''}${powerMW.toFixed(2)} MW`;
+}
+
 function FrcPanel({ configuration, model, gpuError, onChange, onHide, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {}, onReset = () => {} }) {
   const visualizationVisibility = getFrcVisualizationVisibility(configuration);
   const activeInput = model.input;
   const annotationsEnabled = configuration.showAnnotations !== false;
   const selectedDevice = FRC_CONFIGURATIONS[configuration.configuration];
+  const selectedRecovery = FRC_RECOVERY_CONFIGURATIONS[model.recovery.configuration];
   const mhdConfigurationSelected = Boolean(selectedDevice.mhdMode);
+  const updateRecovery = (change) => onChange({
+    recoveryConfigurations: {
+      ...configuration.recoveryConfigurations,
+      [model.recovery.configuration]: {
+        ...configuration.recoveryConfigurations?.[model.recovery.configuration],
+        ...change
+      }
+    }
+  });
   const deviceStatus = selectedDevice.mhdGridOptimized
     ? `${model.input === 'Argon' ? 'ARGON CHECK' : 'DT PROJECTION'} / ${selectedDevice.mhdMode.toUpperCase()} / ARGON GRID`
     : model.mhd.active
@@ -986,6 +1005,11 @@ function FrcPanel({ configuration, model, gpuError, onChange, onHide, editing = 
         <span>PLASMA FUSION GAIN</span>
         <strong>Q {model.fusionGainQ.toFixed(2)}</strong>
         <small>{model.fusionPowerMW.toFixed(2)} MW fusion / {model.auxiliaryHeatingMW.toFixed(2)} MW auxiliary heating</small>
+      </section>
+      <section className={`frc-q-factor frc-net-electric${model.recovery.netElectricPowerMW >= 0 ? ' is-positive' : ''}`} aria-label="Net electric power">
+        <span>NET ELECTRIC OBJECTIVE</span>
+        <strong>{formatSignedPower(model.recovery.netElectricPowerMW)}</strong>
+        <small>{model.recovery.recoveredPowerMW.toFixed(2)} MW gross recovery - {model.recovery.totalElectricLoadMW.toFixed(2)} MW electrical loads</small>
       </section>
       <section className="frc-readout-grid" aria-label="Calculated reactor values">
         <div><span>PLASMA BETA</span><strong>{(model.beta * 100).toFixed(1)}%</strong></div>
@@ -1025,16 +1049,27 @@ function FrcPanel({ configuration, model, gpuError, onChange, onHide, editing = 
       <section className="frc-output-section" aria-label="Reactor outputs">
         <div className="frc-section-label">OUTPUTS / ENGINEERING ESTIMATE</div>
         <div className="frc-output-grid">
-          <div><span>CAPTURED ENERGY</span><strong>{model.capturedPowerMW.toFixed(2)} MW</strong><small>{Math.round(model.energyCaptureEfficiency * 100)}% harness efficiency</small></div>
           <div><span>GRID FREQUENCY</span><strong>{model.outputFrequencyHz.toFixed(0)} Hz</strong><small>conversion-stage grid interface</small></div>
           <div><span>PLASMA FREQUENCY</span><strong>{(model.plasmaFrequencyHz / 1e9).toFixed(1)} GHz</strong><small>density-derived electron mode</small></div>
           <div><span>PLASMA CYCLE</span><strong>{model.plasmaPeriodSeconds.toExponential(2)} s</strong><small>one full electron oscillation</small></div>
-          <div><span>ELECTRICITY</span><strong>{model.electricPowerMW.toFixed(2)} MW</strong><small>converted output power</small></div>
-          <div><span>CONVERSION EFFICIENCY</span><strong>{Math.round(model.electricConversionEfficiency * 100)}%</strong><small>captured energy to electricity</small></div>
           <div><span>NITROGEN OUTPUT</span><strong>{model.nitrogenOutputSLM.toFixed(1)} SLM</strong><small>N2 purge / blanket stream</small></div>
           <div><span>HELIUM OUTPUT</span><strong>{model.heliumOutputGPerHour.toFixed(3)} g/h</strong><small>fusion alpha product</small></div>
           <div><span>NEUTRONS PRODUCED</span><strong>{model.neutronProductionRate.toExponential(2)} /s</strong><small>{model.neutronFlux.toExponential(2)} /m2/s estimated flux</small></div>
         </div>
+      </section>
+      <section className="frc-output-section" aria-label="Electric recovery accounting">
+        <div className="frc-section-label">ELECTRIC RECOVERY / {selectedRecovery.label.toUpperCase()}</div>
+        <div className="frc-output-grid">
+          <div><span>DIRECT ELECTRIC</span><strong>{model.recovery.directElectricPowerMW.toFixed(2)} MW</strong><small>charged products captured and converted</small></div>
+          <div><span>THERMAL ELECTRIC</span><strong>{model.recovery.thermalElectricPowerMW.toFixed(2)} MW</strong><small>remaining fusion channel through heat cycle</small></div>
+          <div><span>INDUCTIVE RETURN</span><strong>{model.recovery.inductiveElectricPowerMW.toFixed(2)} MW</strong><small>recovered from pulsed drive</small></div>
+          <div><span>GROSS RECOVERED</span><strong>{model.recovery.recoveredPowerMW.toFixed(2)} MW</strong><small>direct + thermal + inductive return</small></div>
+          <div><span>DRIVE INPUT</span><strong>-{model.recovery.drivePowerMW.toFixed(2)} MW</strong><small>gross pulsed electrical demand</small></div>
+          <div><span>AUXILIARY ELECTRIC</span><strong>-{model.recovery.auxiliaryElectricPowerMW.toFixed(2)} MW</strong><small>wall-plug cost of plasma heating</small></div>
+          <div><span>FACILITY LOAD</span><strong>-{model.recovery.facilityPowerMW.toFixed(2)} MW</strong><small>balance-of-plant demand</small></div>
+          <div><span>NET ELECTRIC</span><strong>{formatSignedPower(model.recovery.netElectricPowerMW)}</strong><small>gross recovery minus all electrical loads</small></div>
+        </div>
+        <p className="frc-description">Configurable engineering scenario, not measured Helion performance. Fusion energy captured by the direct path is removed before thermal conversion.</p>
       </section>
       <div className="frc-control-group">
         <span className="frc-section-label">PHYSICAL INPUTS</span>
@@ -1051,6 +1086,19 @@ function FrcPanel({ configuration, model, gpuError, onChange, onHide, editing = 
           <RangeInput label="DDF speed limit" value={configuration.transportSpeedLimit} min={0.1} max={3} step={0.05} onChange={(value) => onChange({ transportSpeedLimit: value })} />
         </>}
         {configuration.transportModel !== 'classical' && <p className="frc-description">Experimental constitutive overlay; it does not alter the reactor power estimates.</p>}
+      </div>
+      <div className="frc-control-group">
+        <span className="frc-section-label">ELECTRIC RECOVERY SCENARIO</span>
+        <ParamSelect label="Recovery architecture" value={model.recovery.configuration} options={Object.entries(FRC_RECOVERY_CONFIGURATIONS).map(([id, recovery]) => ({ value: id, label: recovery.label }))} onChange={(value) => onChange({ recoveryConfiguration: value })} />
+        <p className="frc-description">{selectedRecovery.description} Parameters are retained independently when switching architectures.</p>
+        <RangeInput label="Pulsed drive input" value={model.recovery.drivePowerMW} min={0} max={100} step={0.5} suffix=" MW" onChange={(value) => updateRecovery({ drivePowerMW: value })} />
+        <RangeInput label="Inductive recovery" value={model.recovery.inductiveRecoveryEfficiency} min={0} max={1} step={0.01} onChange={(value) => updateRecovery({ inductiveRecoveryEfficiency: value })} />
+        <RangeInput label="Charged-particle capture" value={model.recovery.chargedParticleCaptureEfficiency} min={0} max={1} step={0.01} onChange={(value) => updateRecovery({ chargedParticleCaptureEfficiency: value })} />
+        <RangeInput label="Direct conversion" value={model.recovery.directConversionEfficiency} min={0} max={1} step={0.01} onChange={(value) => updateRecovery({ directConversionEfficiency: value })} />
+        <RangeInput label="Thermal capture" value={model.recovery.thermalCaptureEfficiency} min={0} max={1} step={0.01} onChange={(value) => updateRecovery({ thermalCaptureEfficiency: value })} />
+        <RangeInput label="Thermal conversion" value={model.recovery.thermalConversionEfficiency} min={0} max={1} step={0.01} onChange={(value) => updateRecovery({ thermalConversionEfficiency: value })} />
+        <RangeInput label="Auxiliary wall-plug efficiency" value={model.recovery.auxiliaryWallPlugEfficiency} min={0.05} max={1} step={0.01} onChange={(value) => updateRecovery({ auxiliaryWallPlugEfficiency: value })} />
+        <RangeInput label="Facility load" value={model.recovery.facilityPowerMW} min={0} max={50} step={0.5} suffix=" MW" onChange={(value) => updateRecovery({ facilityPowerMW: value })} />
       </div>
       {selectedDevice.driveMode && <div className="frc-control-group">
         <span className="frc-section-label">EXTERNAL DRIVE PARAMETERS</span>

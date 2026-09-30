@@ -243,6 +243,65 @@ export const FRC_INPUTS = {
   }
 };
 
+export const FRC_RECOVERY_CONFIGURATIONS = {
+  inductiveDirect: {
+    label: 'Pulsed inductive + direct',
+    description: 'Scenario combining pulse-field energy recovery with direct conversion of captured charged fusion products.',
+    drivePowerMW: 18,
+    inductiveRecoveryEfficiency: 0.82,
+    chargedParticleCaptureEfficiency: 0.75,
+    directConversionEfficiency: 0.72,
+    thermalCaptureEfficiency: 0.1,
+    thermalConversionEfficiency: 0.35,
+    auxiliaryWallPlugEfficiency: 0.7,
+    facilityPowerMW: 4
+  },
+  chargedDirect: {
+    label: 'Charged-particle direct',
+    description: 'Scenario prioritizing electrostatic or inductive conversion of charged fusion products with little thermal recovery.',
+    drivePowerMW: 10,
+    inductiveRecoveryEfficiency: 0.25,
+    chargedParticleCaptureEfficiency: 0.9,
+    directConversionEfficiency: 0.78,
+    thermalCaptureEfficiency: 0.05,
+    thermalConversionEfficiency: 0.32,
+    auxiliaryWallPlugEfficiency: 0.72,
+    facilityPowerMW: 3
+  },
+  thermalCycle: {
+    label: 'Thermal cycle',
+    description: 'Conventional blanket and heat-engine scenario with no direct charged-particle or pulse-drive recovery.',
+    drivePowerMW: 8,
+    inductiveRecoveryEfficiency: 0,
+    chargedParticleCaptureEfficiency: 0,
+    directConversionEfficiency: 0,
+    thermalCaptureEfficiency: 0.88,
+    thermalConversionEfficiency: 0.42,
+    auxiliaryWallPlugEfficiency: 0.68,
+    facilityPowerMW: 5
+  },
+  hybrid: {
+    label: 'Hybrid recovery',
+    description: 'Scenario combining partial pulse, charged-particle, and thermal recovery without reusing the same fusion-energy channel.',
+    drivePowerMW: 14,
+    inductiveRecoveryEfficiency: 0.65,
+    chargedParticleCaptureEfficiency: 0.72,
+    directConversionEfficiency: 0.7,
+    thermalCaptureEfficiency: 0.65,
+    thermalConversionEfficiency: 0.4,
+    auxiliaryWallPlugEfficiency: 0.7,
+    facilityPowerMW: 4.5
+  }
+};
+
+function boundedFraction(value, fallback) {
+  return Math.min(1, Math.max(0, Number(value ?? fallback)));
+}
+
+function nonNegative(value, fallback) {
+  return Math.max(0, Number(value ?? fallback));
+}
+
 export function getFrcVisualizationVisibility({ configuration = 'thetaPinch', input = 'DT' } = {}) {
   const configurationModel = FRC_CONFIGURATIONS[configuration] || FRC_CONFIGURATIONS.thetaPinch;
   const inputKey = FRC_INPUTS[input] ? input : 'DT';
@@ -273,7 +332,7 @@ const OUTPUT_FREQUENCY_HZ = 60;
 const ARGON_ION_MASS_KG = 39.948 * 1.66053906660e-27;
 const ADIABATIC_INDEX = 5 / 3;
 
-export function calculateFrcModel({ shape = 'elongated', configuration = 'thetaPinch', input = 'DT', magneticField, density, ionTemperature, rotation, auxiliaryHeatingMW = 12, piezoDriveFrequencyKHz, piezoStrainPpm, longitudinalDriveFrequencyKHz, longitudinalDriveAmplitude, wavePacketWidth, driveCoupling } = {}) {
+export function calculateFrcModel({ shape = 'elongated', configuration = 'thetaPinch', input = 'DT', magneticField, density, ionTemperature, rotation, auxiliaryHeatingMW = 12, recoveryConfiguration = 'inductiveDirect', recoveryConfigurations = {}, piezoDriveFrequencyKHz, piezoStrainPpm, longitudinalDriveFrequencyKHz, longitudinalDriveAmplitude, wavePacketWidth, driveCoupling } = {}) {
   const shapeModel = FRC_SHAPES[shape] || FRC_SHAPES.elongated;
   const configurationModel = FRC_CONFIGURATIONS[configuration] || FRC_CONFIGURATIONS.thetaPinch;
   const inputKey = FRC_INPUTS[input] ? input : 'DT';
@@ -314,6 +373,29 @@ export function calculateFrcModel({ shape = 'elongated', configuration = 'thetaP
   const electricPowerMW = capturedPowerMW * electricConversionEfficiency;
   const auxiliaryPowerMW = Math.max(0.01, Number(auxiliaryHeatingMW));
   const fusionGainQ = fusionPowerMW / auxiliaryPowerMW;
+  const recoveryConfigurationKey = FRC_RECOVERY_CONFIGURATIONS[recoveryConfiguration]
+    ? recoveryConfiguration
+    : 'inductiveDirect';
+  const recoveryDefaults = FRC_RECOVERY_CONFIGURATIONS[recoveryConfigurationKey];
+  const recoveryOverrides = recoveryConfigurations?.[recoveryConfigurationKey] ?? {};
+  const drivePowerMW = nonNegative(recoveryOverrides.drivePowerMW, recoveryDefaults.drivePowerMW);
+  const inductiveRecoveryEfficiency = boundedFraction(recoveryOverrides.inductiveRecoveryEfficiency, recoveryDefaults.inductiveRecoveryEfficiency);
+  const chargedParticleCaptureEfficiency = boundedFraction(recoveryOverrides.chargedParticleCaptureEfficiency, recoveryDefaults.chargedParticleCaptureEfficiency);
+  const directConversionEfficiency = boundedFraction(recoveryOverrides.directConversionEfficiency, recoveryDefaults.directConversionEfficiency);
+  const thermalCaptureEfficiency = boundedFraction(recoveryOverrides.thermalCaptureEfficiency, recoveryDefaults.thermalCaptureEfficiency);
+  const thermalConversionEfficiency = boundedFraction(recoveryOverrides.thermalConversionEfficiency, recoveryDefaults.thermalConversionEfficiency);
+  const auxiliaryWallPlugEfficiency = Math.max(0.01, boundedFraction(recoveryOverrides.auxiliaryWallPlugEfficiency, recoveryDefaults.auxiliaryWallPlugEfficiency));
+  const facilityPowerMW = nonNegative(recoveryOverrides.facilityPowerMW, recoveryDefaults.facilityPowerMW);
+  const chargedFusionPowerMW = fusionPowerMW * inputModel.chargedEnergyFraction;
+  const directlyCapturedFusionPowerMW = chargedFusionPowerMW * chargedParticleCaptureEfficiency;
+  const directElectricPowerMW = directlyCapturedFusionPowerMW * directConversionEfficiency;
+  const thermalAvailablePowerMW = Math.max(0, fusionPowerMW - directlyCapturedFusionPowerMW);
+  const thermalElectricPowerMW = thermalAvailablePowerMW * thermalCaptureEfficiency * thermalConversionEfficiency;
+  const inductiveElectricPowerMW = drivePowerMW * inductiveRecoveryEfficiency;
+  const recoveredPowerMW = directElectricPowerMW + thermalElectricPowerMW + inductiveElectricPowerMW;
+  const auxiliaryElectricPowerMW = auxiliaryPowerMW / auxiliaryWallPlugEfficiency;
+  const totalElectricLoadMW = drivePowerMW + auxiliaryElectricPowerMW + facilityPowerMW;
+  const netElectricPowerMW = recoveredPowerMW - totalElectricLoadMW;
   const massDensityKgM3 = electronDensity * ARGON_ION_MASS_KG;
   const ionThermalEnergyJoules = temperature * 1e3 * ELECTRONVOLT_JOULES;
   const alfvenSpeedMps = field / Math.sqrt(MU_0 * massDensityKgM3);
@@ -368,6 +450,27 @@ export function calculateFrcModel({ shape = 'elongated', configuration = 'thetaP
     electricPowerMW,
     auxiliaryHeatingMW: auxiliaryPowerMW,
     fusionGainQ,
+    recovery: {
+      configuration: recoveryConfigurationKey,
+      drivePowerMW,
+      inductiveRecoveryEfficiency,
+      chargedParticleCaptureEfficiency,
+      directConversionEfficiency,
+      thermalCaptureEfficiency,
+      thermalConversionEfficiency,
+      auxiliaryWallPlugEfficiency,
+      facilityPowerMW,
+      chargedFusionPowerMW,
+      directlyCapturedFusionPowerMW,
+      thermalAvailablePowerMW,
+      directElectricPowerMW,
+      thermalElectricPowerMW,
+      inductiveElectricPowerMW,
+      recoveredPowerMW,
+      auxiliaryElectricPowerMW,
+      totalElectricLoadMW,
+      netElectricPowerMW
+    },
     reversedField: axialField < 0,
     mhd: {
       active: Boolean(configurationModel.mhdMode) && inputKey === 'Argon',
