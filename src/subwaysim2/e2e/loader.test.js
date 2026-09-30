@@ -69,3 +69,25 @@ test('amplitude gravity lab exposes positive-cell and model-difference diagnosti
   await page.waitForTimeout(500);
   assert.deepEqual(errors, []);
 });
+
+test('FTLE lab switches time direction and reports deformation telemetry', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
+
+  await page.goto(`${baseUrl}?e2e=1`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /08 \/ LOAD FIELD/ }).evaluate((button) => button.click());
+  await page.locator('.ftle-panel').waitFor();
+  await page.locator('canvas').waitFor();
+  assert.match(await page.getByRole('combobox', { name: 'Time direction' }).textContent(), /Forward-time repulsion/);
+  await page.getByRole('combobox', { name: 'Time direction' }).click();
+  await page.locator('[role="option"][data-value="backward"]').click();
+  assert.match(await page.getByRole('combobox', { name: 'Time direction' }).textContent(), /Backward-time attraction/);
+  assert.match(await page.getByText('Trajectory samples').locator('..').locator('strong').textContent(), /121/);
+  assert.ok(Number.isFinite(Number(await page.getByText('Max ridge confidence').locator('..').locator('strong').textContent())));
+  await page.setViewportSize({ width: 390, height: 844 });
+  const panel = await page.locator('.ftle-panel').boundingBox();
+  assert.ok(panel);
+  assert.ok(panel.x >= 0 && panel.y >= 0, `FTLE panel should start inside the mobile viewport: ${JSON.stringify(panel)}`);
+  assert.ok(panel.x + panel.width <= 390 && panel.y + panel.height <= 844, `FTLE panel should fit the mobile viewport: ${JSON.stringify(panel)}`);
+});

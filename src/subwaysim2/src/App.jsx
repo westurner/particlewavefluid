@@ -5,6 +5,7 @@ const SimpleAttractorSim = lazy(() => import('./SimpleAttractorSim.jsx').then(({
 const SqgBlackHoleSim = lazy(() => import('./SqgBlackHoleSim.jsx'));
 const DdfBlackHoleSim = lazy(() => import('./DdfBlackHoleSim.jsx'));
 const AmplitudeGravitySim = lazy(() => import('./AmplitudeGravitySim.jsx'));
+const FtleLabSim = lazy(() => import('./FtleLabSim.jsx'));
 const FrcFusionSim = lazy(() => import('./FrcFusionSim.jsx'));
 const SubwaySim = lazy(() => import('./SubwaySim.jsx').then(({ SubwaySim: component }) => ({ default: component })));
 
@@ -71,6 +72,15 @@ const SIMULATION_MODES = [
     description: 'Compare Newtonian motion with spin-2 EFT and positive-Grassmannian geometric correction proxies.',
     detail: 'GR(2,4) / SPIN-2 / N-BODY',
     accent: 'blue'
+  },
+  {
+    id: 'ftlelabsim',
+    index: '08',
+    name: 'ftlelabsim',
+    label: 'FTLE / coherent structures',
+    description: 'Integrate trajectories and inspect deformation, volume change, and attracting or repelling transport structures.',
+    detail: 'FLOW MAP / C-G TENSOR / LCS',
+    accent: 'teal'
   }
 ];
 
@@ -89,6 +99,7 @@ function SimulationLoader() {
   if (selectedSimulation === 'frcfusionsim') simulation = <FrcFusionSim onBack={onBack} />;
   if (selectedSimulation === 'subwaysim2') simulation = <SubwaySim onBack={onBack} />;
   if (selectedSimulation === 'amplitudegravitysim') simulation = <AmplitudeGravitySim onBack={onBack} />;
+  if (selectedSimulation === 'ftlelabsim') simulation = <FtleLabSim onBack={onBack} />;
   if (simulation) return <Suspense fallback={<LoadingScreen />}>{simulation}</Suspense>;
 
   return (

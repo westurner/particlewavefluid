@@ -21,6 +21,7 @@ The transcripts are inputs to experiments, not authorities. Implementations must
 | FRC fusion | Classical transport, bounded GPE/Euler-Korteweg core-pressure response, or DDF damping. These overlays do not alter engineering power estimates. |
 | Wave interference | Linear superposition or a bounded GPE-inspired cubic/curvature response, with optional difference coloring. |
 | Amplitude geometry gravity | Newtonian reference, spin-2 EFT tree proxy, and a positive-$Gr(2,4)$ gravituhedron hypothesis with Newtonian acceleration-difference halos. |
+| FTLE / LCS lab | Reusable RK4 trajectory histories, finite-difference deformation gradients, Cauchy-Green eigenvalues, volume change, ridge confidence, and forward/backward field views. |
 
 `src/mechanicsModels.js` is the CPU reference for model selectors, bounds, response equations, and comparison metrics. GPU formulas must remain synchronized with it.
 
@@ -37,16 +38,19 @@ Acceptance criteria:
 - Vacuum nodes are handled without dividing by zero in the Madelung transform.
 - CPU fixtures cover plane waves, stationary vortices, and dispersive packets.
 
-### 2. FTLE / LCS Lab
+### 2. FTLE / LCS Lab - phase 1 implemented
 
-Create a shared trajectory-history service and deformation-gradient estimator usable by Subway, FRC, and attractor fields. Render forward/backward FTLE, Cauchy-Green eigenvalues, volume change, and ridge confidence. Keep particle FTLE distinct from acoustic-characteristic diagnostics.
+`src/ftleModel.js` now provides a velocity-sampler contract, RK4 trajectory histories, finite-difference flow-map gradients, Cauchy-Green eigenvalues, volume change, ridge confidence, and grid sampling. The dedicated FTLE lab renders forward/backward diagnostics for analytic saddle, rotation, source, sink, and time-dependent double-gyre fields. It keeps material-particle FTLE explicitly distinct from acoustic-characteristic diagnostics.
+
+Phase 2 should adapt throttled velocity-history samplers for Subway, FRC, and attractor GPU fields without forcing full texture readback every frame.
 
 Acceptance criteria:
 
-- Affine-flow fixtures recover analytic exponents.
-- Incompressible fixtures preserve `det(F) = 1` within tolerance.
-- Forward and backward integration use the same sampled velocity history.
-- GPU readback is throttled and can be disabled.
+- [x] Affine-flow fixtures recover analytic exponents.
+- [x] Incompressible fixtures preserve `det(F) = 1` within tolerance.
+- [x] Forward and backward integration use the same velocity-sampler contract.
+- [x] FTLE, Cauchy-Green eigenvalues, volume change, and ridge confidence are exposed.
+- [ ] GPU velocity histories use throttled readback that can be disabled.
 
 ### 3. N-body EFT / Amplitude Lab - phase 1 implemented
 
