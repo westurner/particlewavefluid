@@ -1,8 +1,18 @@
 export const FIELD_MODEL_OPTIONS = [
   { value: 'newtonian', label: 'Newtonian' },
+  { value: 'ns-compressible', label: 'NS compressible fluid' },
+  { value: 'ns-incompressible', label: 'NS incompressible fluid' },
   { value: 'sqg', label: 'SQG hypothesis' },
   { value: 'ddf', label: 'DDF hypothesis' }
 ];
+
+export const FIELD_MODEL_DETAILS = Object.freeze({
+  newtonian: { status: 'Established reference', equation: 'a = -GM r / |r|^3' },
+  'ns-compressible': { status: 'Reduced NS experiment', equation: 'd rho/dt + div(rho u) = 0' },
+  'ns-incompressible': { status: 'Reduced NS experiment', equation: 'div(u) = 0' },
+  sqg: { status: 'Speculative SQG hypothesis', equation: 'compressible sink + bounded quantum pressure' },
+  ddf: { status: 'Speculative DDF hypothesis', equation: 'SQG response / (1 + strain-dependent viscosity)' }
+});
 
 export const FLUID_MODEL_OPTIONS = [
   { value: 'baseline', label: 'Baseline Newtonian' },
@@ -72,6 +82,8 @@ export function evaluateFieldModel(model, state = {}, mechanics = DEFAULT_FIELD_
   const magnitude = Math.max(0, finiteOr(state.magnitude, 1));
   const rotation = finiteOr(state.rotation, 1);
   const inverseSquare = magnitude / (radius * radius);
+  const coreRatio = radius / settings.coreRadius;
+  const tangentialAcceleration = rotation * magnitude / radius;
 
   if (model === 'newtonian') {
     return {
@@ -79,15 +91,41 @@ export function evaluateFieldModel(model, state = {}, mechanics = DEFAULT_FIELD_
       tangentialAcceleration: 0,
       quantumPressure: 0,
       effectiveViscosity: 0,
-      mobility: 1
+      mobility: 1,
+      divergence: null,
+      volumeChangeRate: null
     };
   }
 
-  const coreRatio = radius / settings.coreRadius;
+  if (model === 'ns-incompressible') {
+    return {
+      radialAcceleration: -inverseSquare,
+      tangentialAcceleration,
+      quantumPressure: 0,
+      effectiveViscosity: settings.baseViscosity,
+      mobility: 1,
+      divergence: 0,
+      volumeChangeRate: 0
+    };
+  }
+
+  const divergence = -settings.compressibility * magnitude
+    / (settings.coreRadius ** 3 * (1 + coreRatio) ** 2);
   const quantumPressure = settings.quantumPressure
     * Math.exp(-(coreRatio * coreRatio)) / settings.coreRadius;
   const compressibleSink = inverseSquare * (1 + settings.compressibility / (1 + coreRatio));
-  const tangentialAcceleration = rotation * magnitude / radius;
+
+  if (model === 'ns-compressible') {
+    return {
+      radialAcceleration: -compressibleSink,
+      tangentialAcceleration,
+      quantumPressure: 0,
+      effectiveViscosity: settings.baseViscosity,
+      mobility: 1,
+      divergence,
+      volumeChangeRate: divergence
+    };
+  }
 
   if (model === 'sqg') {
     return {
@@ -95,7 +133,9 @@ export function evaluateFieldModel(model, state = {}, mechanics = DEFAULT_FIELD_
       tangentialAcceleration,
       quantumPressure,
       effectiveViscosity: settings.baseViscosity,
-      mobility: 1
+      mobility: 1,
+      divergence,
+      volumeChangeRate: divergence
     };
   }
 
@@ -110,7 +150,9 @@ export function evaluateFieldModel(model, state = {}, mechanics = DEFAULT_FIELD_
     tangentialAcceleration: tangentialAcceleration * mobility,
     quantumPressure,
     effectiveViscosity,
-    mobility
+    mobility,
+    divergence: divergence * mobility,
+    volumeChangeRate: divergence * mobility
   };
 }
 

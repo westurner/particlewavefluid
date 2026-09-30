@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateFrcModel, FRC_CONFIGURATIONS, FRC_INPUTS, FRC_SHAPES, getFrcVisualizationVisibility } from './frcModel.js';
+import { calculateFrcModel, FRC_CONFIGURATIONS, FRC_INPUTS, FRC_SHAPES, getFrcVisualizationVisibility, searchArgonMhdParameterGrid } from './frcModel.js';
 import { advanceFlowProgress, createFlowPathPoints, createInputParticlePathPoints, FLOW_PARTICLE_STREAMS, getFlowParticleVisibility, getInputParticleVisibility, INPUT_PARTICLE_STREAMS } from './flowParticles.js';
 
 test('every FRC shape produces a contained plasma volume', () => {
@@ -63,6 +63,16 @@ test('fusion outputs remain positive and captured power follows capture efficien
   assert.ok(thetaPinch.capturedPowerMW > steadyState.capturedPowerMW);
 });
 
+test('fusion gain Q uses explicit auxiliary heating and remains zero for Argon', () => {
+  const lowHeating = calculateFrcModel({ input: 'DT', auxiliaryHeatingMW: 6 });
+  const highHeating = calculateFrcModel({ input: 'DT', auxiliaryHeatingMW: 18 });
+  const argon = calculateFrcModel({ input: 'Argon', auxiliaryHeatingMW: 6 });
+
+  assert.equal(lowHeating.fusionGainQ, lowHeating.fusionPowerMW / 6);
+  assert.ok(lowHeating.fusionGainQ > highHeating.fusionGainQ);
+  assert.equal(argon.fusionGainQ, 0);
+});
+
 test('plasma cycle matches the electron plasma frequency equation', () => {
   const density = 1.8;
   const model = calculateFrcModel({ density });
@@ -122,6 +132,108 @@ test('Argon input preserves the calculated plasma readouts and field reversal', 
   assert.equal(model.electricPowerMW, 0);
   assert.equal(model.heliumOutputGPerHour, 0);
   assert.equal(model.neutronProductionRate, 0);
+});
+
+test('Argon MHD configurations are non-fusing and expose finite magnetofluid diagnostics', () => {
+  const configurations = ['argonMhdAxial', 'argonMhdRotating', 'argonMhdNozzle'];
+
+  for (const configuration of configurations) {
+    const model = calculateFrcModel({ configuration, input: 'Argon' });
+    assert.equal(model.mhd.active, true);
+    assert.equal(model.mhd.workingGas, 'Argon');
+    assert.ok(model.mhd.mode);
+    assert.ok(model.mhd.massDensityKgM3 > 0);
+    assert.ok(model.mhd.alfvenSpeedMps > 0);
+    assert.ok(model.mhd.ionSoundSpeedMps > 0);
+    assert.ok(model.mhd.ionCyclotronFrequencyHz > 0);
+    assert.ok(model.mhd.ionGyroradiusM > 0);
+    assert.equal(model.fusionPowerMW, 0);
+    assert.equal(model.electricPowerMW, 0);
+    assert.equal(model.neutronProductionRate, 0);
+    assert.equal(model.heliumOutputGPerHour, 0);
+  }
+});
+
+test('MHD configuration and Argon input remain independent controls', () => {
+  const nonArgon = calculateFrcModel({ configuration: 'argonMhdAxial', input: 'DT' });
+  const argonInStandardFrc = calculateFrcModel({ configuration: 'thetaPinch', input: 'Argon' });
+
+  assert.equal(nonArgon.input, 'DT');
+  assert.equal(nonArgon.mhd.active, false);
+  assert.equal(argonInStandardFrc.input, 'Argon');
+  assert.equal(argonInStandardFrc.mhd.active, false);
+});
+
+test('piezo and longitudinal-wave drives expose bounded diagnostics without changing Argon gain', () => {
+  const piezo = calculateFrcModel({ configuration: 'argonMhdPiezoRmf', input: 'Argon' });
+  const longitudinal = calculateFrcModel({ configuration: 'argonMhdIonAcoustic', input: 'Argon' });
+
+  assert.equal(piezo.drive.active, true);
+  assert.equal(piezo.drive.mode, 'piezo-rmf');
+  assert.ok(piezo.drive.piezoFrequencyHz > 0);
+  assert.ok(piezo.drive.piezoCyclotronRatio > 0);
+  assert.ok(piezo.drive.coupling > 0 && piezo.drive.coupling <= 1);
+  assert.equal(piezo.fusionGainQ, 0);
+
+  assert.equal(longitudinal.drive.active, true);
+  assert.equal(longitudinal.drive.mode, 'ion-acoustic');
+  assert.ok(longitudinal.drive.acousticFundamentalHz > 0);
+  assert.equal(longitudinal.drive.acousticWavelengthM, longitudinal.mhd.ionSoundSpeedMps / longitudinal.drive.longitudinalFrequencyHz);
+  assert.ok(longitudinal.drive.longitudinalAmplitude > 0 && longitudinal.drive.longitudinalAmplitude <= 1);
+  assert.equal(longitudinal.fusionGainQ, 0);
+});
+
+test('experimental longitudinal drives do not create fusion power or activate for non-Argon inputs', () => {
+  const baseline = calculateFrcModel({ configuration: 'argonMhdIonAcoustic', input: 'Argon', longitudinalDriveAmplitude: 0 });
+  const driven = calculateFrcModel({ configuration: 'argonMhdIonAcoustic', input: 'Argon', longitudinalDriveAmplitude: 1 });
+  const dt = calculateFrcModel({ configuration: 'argonMhdIonAcoustic', input: 'DT' });
+
+  assert.equal(driven.fusionPowerMW, baseline.fusionPowerMW);
+  assert.equal(driven.fusionGainQ, baseline.fusionGainQ);
+  assert.equal(dt.drive.active, false);
+});
+
+test('Argon MHD grid search preserves Q zero and ranks admissible DT projections', () => {
+  const candidates = searchArgonMhdParameterGrid();
+
+  assert.deepEqual(candidates.map(({ mode }) => mode), ['axial', 'rotating', 'nozzle']);
+  for (const candidate of candidates) {
+    assert.equal(candidate.argonFusionGainQ, 0);
+    assert.ok(candidate.projectedDtFusionGainQ > 0);
+    assert.ok(candidate.beta >= 0.05 && candidate.beta <= 0.8);
+    assert.ok(candidate.stability >= 0.55);
+    assert.ok(candidate.confinement >= 0.45);
+    assert.ok(candidate.gyroradiusRatio <= 0.05);
+  }
+});
+
+test('selectable Q-grid configurations match the reproducible search winners', () => {
+  const candidates = searchArgonMhdParameterGrid();
+  const optimizedConfigurations = Object.entries(FRC_CONFIGURATIONS)
+    .filter(([, configuration]) => configuration.mhdGridOptimized);
+
+  assert.equal(optimizedConfigurations.length, candidates.length);
+  for (const [configurationId, configuration] of optimizedConfigurations) {
+    const candidate = candidates.find(({ mode }) => mode === configuration.mhdMode);
+    const model = calculateFrcModel({
+      configuration: configurationId,
+      shape: configuration.shape,
+      input: 'Argon'
+    });
+    assert.ok(candidate);
+    assert.equal(model.fusionGainQ, 0);
+    assert.equal(model.magneticField, candidate.magneticField);
+    assert.equal(model.density, candidate.density);
+    assert.equal(model.ionTemperature, candidate.ionTemperature);
+    assert.equal(model.rotation, candidate.rotation);
+    assert.equal(model.mhd.projectedDtFusionGainQ, candidate.projectedDtFusionGainQ);
+  }
+});
+
+test('grid-derived configuration labels identify the DT counterfactual', () => {
+  assert.equal(FRC_CONFIGURATIONS.argonMhdAxialQGrid.label, 'Axial FRC, DT projection from Argon grid optimum');
+  assert.equal(FRC_CONFIGURATIONS.argonMhdRotatingQGrid.label, 'Rotating-field FRC, DT projection from Argon grid optimum');
+  assert.equal(FRC_CONFIGURATIONS.argonMhdNozzleQGrid.label, 'Magnetic-nozzle FRC, DT projection from Argon grid optimum');
 });
 
 test('neutron and helium output increase with hotter denser plasma', () => {

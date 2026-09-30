@@ -6,7 +6,7 @@ import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DoubleSide, E
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
 import { HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect, YamlTextArea } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
-import { compareFieldModels, DEFAULT_FIELD_MECHANICS, FIELD_MODEL_OPTIONS, fieldModelIndex, sanitizeFieldMechanics } from './mechanicsModels.js';
+import { compareFieldModels, DEFAULT_FIELD_MECHANICS, FIELD_MODEL_DETAILS, FIELD_MODEL_OPTIONS, fieldModelIndex, sanitizeFieldMechanics } from './mechanicsModels.js';
 
 const MAX_ATTRACTORS = 20;
 const PARTICLE_COUNT = 2 ** 18;
@@ -188,10 +188,12 @@ const MIXED_VELOCITY_SHADER = `
     float inverseSquare = magnitude / (radius * radius);
     if (model < 0.5) return vec4(-inverseSquare, 0.0, 0.0, 0.0);
     float coreRatio = radius / max(uCoreRadius, 0.05);
-    float pressure = uQuantumPressure * exp(-(coreRatio * coreRatio)) / max(uCoreRadius, 0.05);
     float sink = inverseSquare * (1.0 + uCompressibility / (1.0 + coreRatio));
     float tangent = rotation * magnitude / radius;
-    if (model < 1.5) return vec4(-sink + pressure, tangent, uBaseViscosity, pressure);
+    if (model < 1.5) return vec4(-sink, tangent, uBaseViscosity, 0.0);
+    if (model < 2.5) return vec4(-inverseSquare, tangent, uBaseViscosity, 0.0);
+    float pressure = uQuantumPressure * exp(-(coreRatio * coreRatio)) / max(uCoreRadius, 0.05);
+    if (model < 3.5) return vec4(-sink + pressure, tangent, uBaseViscosity, pressure);
     float beta = clamp(speed / max(uSpeedLimit, 0.1), 0.0, 0.9999);
     float lorentzFactor = inversesqrt(1.0 - beta * beta);
     float strainRate = speed / radius;
@@ -259,7 +261,7 @@ const MIXED_VELOCITY_SHADER = `
         );
         force += radial * response.x * 0.035;
         force += tangent * response.y * 0.12;
-        ddfViscosity = max(ddfViscosity, selectedModel > 1.5 ? response.z : 0.0);
+        ddfViscosity = max(ddfViscosity, selectedModel > 0.5 ? response.z : 0.0);
         if (uComparisonEnabled) {
           vec4 comparison = fieldResponse(
             uComparisonModel,
@@ -1225,6 +1227,7 @@ function SelectControl({ label, value, options, onChange }) {
 function AttractorPanel({ variant, particleCount, configuration, presets, currentPreset, jsonText, setJsonText, showParamEditLog, onShowParamEditLog, paramEditLogYaml, onChange, onApplyPreset, onSavePreset, onReset, onExport, onLoad, onDeletePresets, journal, playing, playbackTime, onPlaybackTime, onTogglePlayback, onStop, recording, onRecording, onAddAttractor, onRemoveAttractor, onSetOrigin, onResetOrigin, onBack, paramsVisible, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {} }) {
   const hasBlackHoles = configuration.attractors.some((attractor) => attractor.type === 'blackhole');
   const mechanics = configuration.fieldMechanics;
+  const modelDetails = FIELD_MODEL_DETAILS[mechanics.model];
   const comparison = compareFieldModels(
     mechanics.model,
     mechanics.comparisonModel,
@@ -1258,17 +1261,19 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
       </details>
 
       {hasBlackHoles && <details className="attractor-details" open>
-        <summary>Field hypothesis</summary>
+        <summary>Fluid experiment</summary>
         <BooleanControl label="Enable model mechanics" value={mechanics.enabled} onChange={(value) => updateMechanics('enabled', value)} />
         <SelectControl label="Active model" value={mechanics.model} options={FIELD_MODEL_OPTIONS} onChange={(value) => updateMechanics('model', value)} />
+        <p className="attractor-model-note"><strong>{modelDetails.status}</strong><br />{modelDetails.equation}</p>
         <RangeControl label="Core radius" value={mechanics.coreRadius} min={0.05} max={5} step={0.05} onChange={(value) => updateMechanics('coreRadius', value)} />
-        <RangeControl label="Quantum pressure" value={mechanics.quantumPressure} min={0} max={5} step={0.01} onChange={(value) => updateMechanics('quantumPressure', value)} />
-        <RangeControl label="Compressibility" value={mechanics.compressibility} min={0} max={4} step={0.01} onChange={(value) => updateMechanics('compressibility', value)} />
+        {(mechanics.model === 'sqg' || mechanics.model === 'ddf') && <RangeControl label="Quantum pressure" value={mechanics.quantumPressure} min={0} max={5} step={0.01} onChange={(value) => updateMechanics('quantumPressure', value)} />}
+        {mechanics.model !== 'newtonian' && mechanics.model !== 'ns-incompressible' && <RangeControl label="Compressibility" value={mechanics.compressibility} min={0} max={4} step={0.01} onChange={(value) => updateMechanics('compressibility', value)} />}
+        {mechanics.model !== 'newtonian' && <RangeControl label="Base viscosity" value={mechanics.baseViscosity} min={0} max={0.5} step={0.005} onChange={(value) => updateMechanics('baseViscosity', value)} />}
         {mechanics.model === 'ddf' && <>
           <RangeControl label="Dilatancy" value={mechanics.dilatancy} min={0} max={10} step={0.05} onChange={(value) => updateMechanics('dilatancy', value)} />
           <RangeControl label="Speed limit" value={mechanics.speedLimit} min={0.1} max={10} step={0.1} onChange={(value) => updateMechanics('speedLimit', value)} />
-          <RangeControl label="Base viscosity" value={mechanics.baseViscosity} min={0} max={0.5} step={0.005} onChange={(value) => updateMechanics('baseViscosity', value)} />
         </>}
+        {comparison.primary.volumeChangeRate !== null && <p className="attractor-model-difference">Reference volume rate at 2 core radii: <strong>{comparison.primary.volumeChangeRate.toFixed(4)} / step</strong></p>}
         <BooleanControl label="Show model difference" value={mechanics.comparisonEnabled} onChange={(value) => updateMechanics('comparisonEnabled', value)} />
         {mechanics.comparisonEnabled && <>
           <SelectControl label="Compare against" value={mechanics.comparisonModel} options={FIELD_MODEL_OPTIONS} onChange={(value) => updateMechanics('comparisonModel', value)} />
@@ -1276,7 +1281,7 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
           <p className="attractor-model-difference">Reference delta at 2 core radii: <strong>{(comparison.relativeDifference * 100).toFixed(1)}%</strong></p>
         </>}
         <BooleanControl label="Show stress streamlines" value={configuration.blackHoleStreamlines} onChange={(value) => onChange({ blackHoleStreamlines: value }, 'blackHoleStreamlines')} />
-        <p className="attractor-model-note">SQG and DDF are phenomenological hypotheses. These controls do not claim a derivation from QED, amplituhedra, or general relativity.</p>
+        <p className="attractor-model-note">GPU particles sample reduced response fields, not a full shock-capturing or pressure-Poisson NS solver. SQG and DDF remain phenomenological hypotheses with no claimed derivation from QED, amplituhedra, or general relativity.</p>
       </details>}
 
       <details className="attractor-details" open>

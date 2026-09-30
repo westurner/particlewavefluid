@@ -36,17 +36,17 @@ const SIMULATION_MODES = [
     index: '03',
     name: 'sqgblackholesim',
     label: 'Black-hole sandbox',
-    description: 'The attractor rig, copied forward as a blank gravitational playground for the next SQG experiment.',
-    detail: 'PROTOTYPE / INHERITED RIG',
+    description: 'Compare compressible and incompressible NS response fields with explicitly hypothetical SQG and DDF sink models.',
+    detail: 'NS / SQG / MODEL DELTA',
     accent: 'orange'
   },
   {
     id: 'frcfusionsim',
     index: '04',
     name: 'frcfusionsim',
-    label: 'FRC fusion device',
-    description: 'A transparent field-reversed configuration foundation with selectable vessel geometries and physical device configurations.',
-    detail: 'DEVICE / HIGH-BETA / PHASE 01',
+    label: 'FRC + Argon MHD device',
+    description: 'A transparent field-reversed device with independent Argon MHD, piezo-modulated RMF, and longitudinal ion-acoustic experiments.',
+    detail: 'DEVICE / HIGH-BETA / MHD',
     accent: 'orange'
   },
   {

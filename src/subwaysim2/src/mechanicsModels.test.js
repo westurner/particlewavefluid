@@ -14,10 +14,25 @@ import {
 
 test('field model indices stay synchronized with shader selectors', () => {
   assert.equal(fieldModelIndex('newtonian'), 0);
-  assert.equal(fieldModelIndex('sqg'), 1);
-  assert.equal(fieldModelIndex('ddf'), 2);
+  assert.equal(fieldModelIndex('ns-compressible'), 1);
+  assert.equal(fieldModelIndex('ns-incompressible'), 2);
+  assert.equal(fieldModelIndex('sqg'), 3);
+  assert.equal(fieldModelIndex('ddf'), 4);
   assert.equal(fluidModelIndex('hbn-farnesane'), 1);
   assert.equal(quantumTransportIndex('gpe'), 1);
+});
+
+test('Navier-Stokes experiments distinguish compressible volume change from incompressible projection', () => {
+  const state = { radius: 2, speed: 1, magnitude: 1, rotation: 0.5 };
+  const compressible = evaluateFieldModel('ns-compressible', state);
+  const incompressible = evaluateFieldModel('ns-incompressible', state);
+
+  assert.ok(compressible.divergence < 0);
+  assert.ok(compressible.volumeChangeRate < 0);
+  assert.equal(incompressible.divergence, 0);
+  assert.equal(incompressible.volumeChangeRate, 0);
+  assert.equal(compressible.quantumPressure, 0);
+  assert.equal(incompressible.quantumPressure, 0);
 });
 
 test('nanofluid and DDF constitutive modes respond oppositely to shear', () => {

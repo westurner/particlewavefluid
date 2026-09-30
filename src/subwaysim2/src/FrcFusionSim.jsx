@@ -23,7 +23,14 @@ const INITIAL_CONFIGURATION = {
   magneticField: 2.8,
   density: 1.8,
   ionTemperature: 1.6,
+  auxiliaryHeatingMW: 12,
   rotation: 0.18,
+  piezoDriveFrequencyKHz: 20,
+  piezoStrainPpm: 80,
+  longitudinalDriveFrequencyKHz: 2,
+  longitudinalDriveAmplitude: 0.2,
+  wavePacketWidth: 0.35,
+  driveCoupling: 0.08,
   vesselScale: 1,
   vesselOpacity: 0.18,
   fieldTilt: 0,
@@ -121,6 +128,11 @@ const PLASMA_PARTICLE_COUNT = 4096;
 const E2E_PLASMA_PARTICLE_COUNT = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('e2e') ? 2048 : null;
 const ACTIVE_PLASMA_PARTICLE_COUNT = E2E_PLASMA_PARTICLE_COUNT ?? PLASMA_PARTICLE_COUNT;
 const PLASMA_RESOLUTION = Math.ceil(Math.sqrt(ACTIVE_PLASMA_PARTICLE_COUNT));
+const MHD_MODE_INDICES = Object.freeze({ axial: 1, rotating: 2, nozzle: 3, 'piezo-rmf': 4, 'ion-acoustic': 5 });
+
+function mhdModeIndex(model) {
+  return model.mhd.active ? MHD_MODE_INDICES[model.mhd.mode] ?? 0 : 0;
+}
 
 const plasmaPositionShader = `
   uniform float uDt;
@@ -160,6 +172,12 @@ const plasmaVelocityShader = `
   uniform float uQuantumPressure;
   uniform float uDilatancy;
   uniform float uSpeedLimit;
+  uniform float uMhdMode;
+  uniform float uDriveTime;
+  uniform float uDriveAmplitude;
+  uniform float uDriveCoupling;
+  uniform float uDriveFrequencyRatio;
+  uniform float uWavePacketWidth;
   uniform bool uRunning;
 
   void main() {
@@ -177,6 +195,29 @@ const plasmaVelocityShader = `
     vec3 acceleration = -radial * edgePressure * (uField * 0.72 + uDensity * 0.18);
     acceleration += azimuthal * uRotation * uField * (0.3 + 0.7 * axialProfile);
     acceleration.x += uTransportSpeed * (0.16 + 0.28 * axialProfile) * sign(uAxialField);
+    if (uMhdMode > 0.5) {
+      vec3 axialDirection = vec3(sign(uAxialField), 0.0, 0.0);
+      acceleration += cross(velocity, axialDirection) * uField * 0.55;
+      if (uMhdMode < 1.5) {
+        acceleration.x += -position.x / max(uHalfLength, 0.1) * uField * 0.18;
+      } else if (uMhdMode < 2.5) {
+        acceleration += azimuthal * uField * (0.24 + normalizedRadius * 0.34);
+      } else if (uMhdMode < 3.5) {
+        float nozzleProgress = clamp(position.x / max(uHalfLength, 0.1) * 0.5 + 0.5, 0.0, 1.0);
+        acceleration.x += uField * (0.12 + nozzleProgress * 0.42);
+        acceleration += -radial * uField * (1.0 - nozzleProgress) * 0.16;
+      } else if (uMhdMode < 4.5) {
+        float piezoPhase = uDriveTime * (2.0 + min(uDriveFrequencyRatio, 2.0) * 2.0);
+        float strainModulation = uDriveAmplitude * uDriveCoupling * sin(piezoPhase);
+        acceleration += azimuthal * uField * (0.24 + strainModulation * 0.7);
+        acceleration += -radial * uField * abs(strainModulation) * 0.12;
+      } else {
+        float normalizedAxialPosition = position.x / max(uHalfLength, 0.1);
+        float packetEnvelope = exp(-pow(normalizedAxialPosition / max(uWavePacketWidth, 0.05), 2.0));
+        float wavePhase = normalizedAxialPosition * 6.2832 - uDriveTime * (2.0 + min(uDriveFrequencyRatio, 4.0));
+        acceleration.x += sin(wavePhase) * packetEnvelope * uField * uDriveAmplitude * uDriveCoupling * 0.85;
+      }
+    }
     if (uTransportModel > 0.5 && uTransportModel < 1.5) {
       float coreRadius = max(uRadius * 0.28, 0.05);
       float coreRatio = radialDistance / coreRadius;
@@ -692,6 +733,12 @@ function PlasmaParticles({ configuration, model, onGpuError }) {
       velocityUniforms.uQuantumPressure = { value: stateRef.current.configuration.quantumPressure };
       velocityUniforms.uDilatancy = { value: stateRef.current.configuration.transportDilatancy };
       velocityUniforms.uSpeedLimit = { value: stateRef.current.configuration.transportSpeedLimit };
+      velocityUniforms.uMhdMode = { value: mhdModeIndex(stateRef.current.model) };
+      velocityUniforms.uDriveTime = { value: 0 };
+      velocityUniforms.uDriveAmplitude = { value: 0 };
+      velocityUniforms.uDriveCoupling = { value: 0 };
+      velocityUniforms.uDriveFrequencyRatio = { value: 0 };
+      velocityUniforms.uWavePacketWidth = { value: 0.35 };
       velocityUniforms.uRunning = { value: true };
       const initializationError = simulation.gpuCompute.init();
       if (initializationError) throw new Error(initializationError);
@@ -734,6 +781,16 @@ function PlasmaParticles({ configuration, model, onGpuError }) {
     velocityUniforms.uQuantumPressure.value = currentConfiguration.quantumPressure;
     velocityUniforms.uDilatancy.value = currentConfiguration.transportDilatancy;
     velocityUniforms.uSpeedLimit.value = currentConfiguration.transportSpeedLimit;
+    velocityUniforms.uMhdMode.value = mhdModeIndex(currentModel);
+    velocityUniforms.uDriveTime.value += frameDelta;
+    velocityUniforms.uDriveAmplitude.value = currentModel.drive.mode === 'piezo-rmf'
+      ? currentModel.drive.piezoStrainPpm / 1000
+      : currentModel.drive.longitudinalAmplitude;
+    velocityUniforms.uDriveCoupling.value = currentModel.drive.active ? currentModel.drive.coupling : 0;
+    velocityUniforms.uDriveFrequencyRatio.value = currentModel.drive.mode === 'piezo-rmf'
+      ? currentModel.drive.piezoCyclotronRatio
+      : currentModel.drive.longitudinalFrequencyHz / Math.max(currentModel.drive.acousticFundamentalHz, 1);
+    velocityUniforms.uWavePacketWidth.value = currentModel.drive.wavePacketWidth;
     velocityUniforms.uRunning.value = currentConfiguration.plasmaRunning;
     compute.compute();
     material.uniforms.uPositionTex.value = compute.getCurrentRenderTarget(positionVariable).texture;
@@ -904,11 +961,18 @@ function FrcPanel({ configuration, model, gpuError, onChange, onHide, editing = 
   const visualizationVisibility = getFrcVisualizationVisibility(configuration);
   const activeInput = model.input;
   const annotationsEnabled = configuration.showAnnotations !== false;
+  const selectedDevice = FRC_CONFIGURATIONS[configuration.configuration];
+  const mhdConfigurationSelected = Boolean(selectedDevice.mhdMode);
+  const deviceStatus = selectedDevice.mhdGridOptimized
+    ? `${model.input === 'Argon' ? 'ARGON CHECK' : 'DT PROJECTION'} / ${selectedDevice.mhdMode.toUpperCase()} / ARGON GRID`
+    : model.mhd.active
+      ? `ARGON MHD / ${model.mhd.mode.toUpperCase()}`
+      : 'FIELD-REVERSED CONFIGURATION';
   return (
     <aside className="frc-panel">
       <ParamEditingProvider editing={editing}>
       <div className="frc-panel-topline"><span className="frc-panel-kicker"><i /> DEVICE + PLASMA / PHASE 02</span><button type="button" className="frc-hide-button" onClick={onHide}>Hide params</button></div>
-      <div className="frc-status"><span>FIELD-REVERSED CONFIGURATION</span><strong>{model.reversedField ? 'STABLE AXIAL BIAS' : 'OPEN AXIAL BIAS'}</strong></div>
+      <div className="frc-status"><span>{deviceStatus}</span><strong>{model.reversedField ? 'STABLE AXIAL BIAS' : 'OPEN AXIAL BIAS'}</strong></div>
       <div className="frc-editor-toolbar"><ParamEditingToggle checked={editing} onChange={onEditing} /><HistoryControls canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} /></div>
       {gpuError && <p className="frc-gpu-error">GPU OFFLINE / {gpuError}</p>}
       <div className="frc-select-grid">
@@ -917,13 +981,48 @@ function FrcPanel({ configuration, model, gpuError, onChange, onHide, editing = 
         <ParamSelect label="Plasma input" value={configuration.input ?? 'DT'} options={Object.entries(FRC_INPUTS).map(([id, input]) => ({ value: id, label: input.label }))} onChange={(value) => onChange({ input: value })} />
       </div>
       <p className="frc-description">{FRC_SHAPES[configuration.shape].description} {FRC_CONFIGURATIONS[configuration.configuration].description} {FRC_INPUTS[configuration.input ?? 'DT'].description}</p>
+      {mhdConfigurationSelected && !model.mhd.active && <p className="frc-description">{selectedDevice.mhdGridOptimized ? 'This is a DT counterfactual at an Argon-grid operating point. Reduced MHD forcing remains Argon-only; the displayed DT gain comes from the current screening model.' : 'This configuration preserves the independent plasma-input control. Select Argon to activate its MHD transport response and diagnostics.'}</p>}
+      <section className="frc-q-factor" aria-label="Plasma fusion gain">
+        <span>PLASMA FUSION GAIN</span>
+        <strong>Q {model.fusionGainQ.toFixed(2)}</strong>
+        <small>{model.fusionPowerMW.toFixed(2)} MW fusion / {model.auxiliaryHeatingMW.toFixed(2)} MW auxiliary heating</small>
+      </section>
       <section className="frc-readout-grid" aria-label="Calculated reactor values">
         <div><span>PLASMA BETA</span><strong>{(model.beta * 100).toFixed(1)}%</strong></div>
         <div><span>FIELD REVERSAL</span><strong>{model.axialField.toFixed(2)} T</strong></div>
         <div><span>PLASMA CURRENT</span><strong>{model.plasmaCurrentMA.toFixed(2)} MA</strong></div>
         <div><span>PLASMA VOLUME</span><strong>{model.plasmaVolume.toFixed(1)} m3</strong></div>
       </section>
-      <section className="frc-output-section" aria-label="Fusion outputs">
+      {model.mhd.active && <section className="frc-output-section" aria-label="Argon MHD diagnostics">
+        <div className="frc-section-label">ARGON MHD / DERIVED DIAGNOSTICS</div>
+        <div className="frc-output-grid">
+          <div><span>MASS DENSITY</span><strong>{model.mhd.massDensityKgM3.toExponential(2)} kg/m3</strong><small>singly ionized argon estimate</small></div>
+          <div><span>ALFVEN SPEED</span><strong>{(model.mhd.alfvenSpeedMps / 1000).toFixed(1)} km/s</strong><small>B / sqrt(mu0 rho)</small></div>
+          <div><span>ION SOUND SPEED</span><strong>{(model.mhd.ionSoundSpeedMps / 1000).toFixed(1)} km/s</strong><small>ideal monatomic estimate</small></div>
+          <div><span>ION CYCLOTRON</span><strong>{(model.mhd.ionCyclotronFrequencyHz / 1000).toFixed(1)} kHz</strong><small>qB / 2 pi m-Ar</small></div>
+          <div><span>THERMAL GYRORADIUS</span><strong>{model.mhd.ionGyroradiusM.toFixed(3)} m</strong><small>thermal speed / cyclotron rate</small></div>
+          <div><span>PROJECTED DT GAIN</span><strong>Q {model.mhd.projectedDtFusionGainQ.toFixed(2)}</strong><small>same state with DT reaction factor; not Argon gain</small></div>
+        </div>
+        {selectedDevice.mhdGridOptimized && <p className="frc-description">Best of 5,760 points for this mode at fixed 12 MW auxiliary heating: 4 shapes, 8 fields, 6 densities, 6 temperatures, and 5 rotations. Constraints: beta 0.05-0.80, stability at least 0.55, confinement at least 0.45, and thermal gyroradius at most 5% of plasma radius.</p>}
+        <p className="frc-description">Reduced ideal-MHD tracer response; not a resistive, Hall-MHD, or kinetic plasma solver.</p>
+      </section>}
+      {model.drive.active && <section className="frc-output-section" aria-label="Argon external-drive diagnostics">
+        <div className="frc-section-label">EXTERNAL DRIVE / REDUCED RESPONSE</div>
+        <div className="frc-output-grid">
+          {model.drive.mode === 'piezo-rmf' ? <>
+            <div><span>PIEZO FREQUENCY</span><strong>{(model.drive.piezoFrequencyHz / 1000).toFixed(1)} kHz</strong><small>external actuator command</small></div>
+            <div><span>STRAIN COMMAND</span><strong>{model.drive.piezoStrainPpm.toFixed(0)} ppm</strong><small>structure-side amplitude</small></div>
+            <div><span>CYCLOTRON RATIO</span><strong>{model.drive.piezoCyclotronRatio.toFixed(3)}</strong><small>actuator / argon ion rate</small></div>
+          </> : <>
+            <div><span>ION-ACOUSTIC MODE</span><strong>{(model.drive.acousticFundamentalHz / 1000).toFixed(1)} kHz</strong><small>sound speed / 4 half-length</small></div>
+            <div><span>DRIVE FREQUENCY</span><strong>{(model.drive.longitudinalFrequencyHz / 1000).toFixed(1)} kHz</strong><small>electrostatic packet command</small></div>
+            <div><span>WAVELENGTH</span><strong>{model.drive.acousticWavelengthM.toFixed(2)} m</strong><small>ion sound speed / drive rate</small></div>
+          </>}
+          <div><span>COUPLING</span><strong>{(model.drive.coupling * 100).toFixed(0)}%</strong><small>assumed transfer coefficient</small></div>
+        </div>
+        <p className="frc-description">{model.drive.status}. The drive changes only the tracer response; it does not alter fusion power, confinement, or Q.</p>
+      </section>}
+      <section className="frc-output-section" aria-label="Reactor outputs">
         <div className="frc-section-label">OUTPUTS / ENGINEERING ESTIMATE</div>
         <div className="frc-output-grid">
           <div><span>CAPTURED ENERGY</span><strong>{model.capturedPowerMW.toFixed(2)} MW</strong><small>{Math.round(model.energyCaptureEfficiency * 100)}% harness efficiency</small></div>
@@ -942,6 +1041,7 @@ function FrcPanel({ configuration, model, gpuError, onChange, onHide, editing = 
         <RangeInput label="Applied magnetic field" value={configuration.magneticField} min={1} max={4.5} step={0.1} suffix=" T" onChange={(value) => onChange({ magneticField: value })} />
         <RangeInput label="Particle density" value={configuration.density} min={0.5} max={3} step={0.05} suffix="e20 m-3" onChange={(value) => onChange({ density: value })} />
         <RangeInput label="Ion temperature" value={configuration.ionTemperature} min={0.5} max={5} step={0.1} suffix=" keV" onChange={(value) => onChange({ ionTemperature: value })} />
+        <RangeInput label="Auxiliary heating" value={configuration.auxiliaryHeatingMW} min={0.5} max={50} step={0.5} suffix=" MW" onChange={(value) => onChange({ auxiliaryHeatingMW: value })} />
         <RangeInput label="Field-axis tilt" value={configuration.fieldTilt} min={-18} max={18} step={1} suffix=" deg" onChange={(value) => onChange({ fieldTilt: value })} />
         <RangeInput label="Transport speed" value={configuration.transportSpeed} min={0} max={2} step={0.05} suffix=" x" onChange={(value) => onChange({ transportSpeed: value })} />
         <ParamSelect label="Transport model" value={configuration.transportModel} options={QUANTUM_TRANSPORT_OPTIONS} onChange={(value) => onChange({ transportModel: value })} />
@@ -952,6 +1052,19 @@ function FrcPanel({ configuration, model, gpuError, onChange, onHide, editing = 
         </>}
         {configuration.transportModel !== 'classical' && <p className="frc-description">Experimental constitutive overlay; it does not alter the reactor power estimates.</p>}
       </div>
+      {selectedDevice.driveMode && <div className="frc-control-group">
+        <span className="frc-section-label">EXTERNAL DRIVE PARAMETERS</span>
+        {selectedDevice.driveMode === 'piezo-rmf' ? <>
+          <RangeInput label="Piezo drive frequency" value={configuration.piezoDriveFrequencyKHz} min={1} max={100} step={1} suffix=" kHz" onChange={(value) => onChange({ piezoDriveFrequencyKHz: value })} />
+          <RangeInput label="Piezo strain command" value={configuration.piezoStrainPpm} min={0} max={1000} step={10} suffix=" ppm" onChange={(value) => onChange({ piezoStrainPpm: value })} />
+        </> : <>
+          <RangeInput label="Longitudinal drive frequency" value={configuration.longitudinalDriveFrequencyKHz} min={0.1} max={100} step={0.1} suffix=" kHz" onChange={(value) => onChange({ longitudinalDriveFrequencyKHz: value })} />
+          <RangeInput label="Longitudinal field amplitude" value={configuration.longitudinalDriveAmplitude} min={0} max={1} step={0.01} onChange={(value) => onChange({ longitudinalDriveAmplitude: value })} />
+          <RangeInput label="Wave-packet width" value={configuration.wavePacketWidth} min={0.05} max={1} step={0.05} suffix=" L" onChange={(value) => onChange({ wavePacketWidth: value })} />
+        </>}
+        <RangeInput label="Measured drive coupling" value={configuration.driveCoupling} min={0} max={1} step={0.01} onChange={(value) => onChange({ driveCoupling: value })} />
+        <p className="frc-description">Argon-only reduced experiment. Renderer phase is slowed for visibility and does not resolve the physical kHz timescale.</p>
+      </div>}
       <div className="frc-control-group">
         <span className="frc-section-label">DEVICE LAYERS</span>
         <RangeInput label="Vessel scale" value={configuration.vesselScale} min={0.8} max={1.2} step={0.01} onChange={(value) => onChange({ vesselScale: value })} />
@@ -1046,10 +1159,18 @@ export default function FrcFusionSim({ onBack }) {
     return {
       ...current,
       ...change,
+      shape: preset.shape ?? current.shape,
       magneticField: preset.magneticField,
       density: preset.density,
       ionTemperature: preset.ionTemperature,
-      rotation: preset.rotation
+      rotation: preset.rotation,
+      auxiliaryHeatingMW: preset.auxiliaryHeatingMW ?? current.auxiliaryHeatingMW,
+      piezoDriveFrequencyKHz: preset.piezoDriveFrequencyKHz ?? current.piezoDriveFrequencyKHz,
+      piezoStrainPpm: preset.piezoStrainPpm ?? current.piezoStrainPpm,
+      longitudinalDriveFrequencyKHz: preset.longitudinalDriveFrequencyKHz ?? current.longitudinalDriveFrequencyKHz,
+      longitudinalDriveAmplitude: preset.longitudinalDriveAmplitude ?? current.longitudinalDriveAmplitude,
+      wavePacketWidth: preset.wavePacketWidth ?? current.wavePacketWidth,
+      driveCoupling: preset.driveCoupling ?? current.driveCoupling
     };
   });
 
