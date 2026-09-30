@@ -4,6 +4,9 @@ import { OrbitControls } from '@react-three/drei';
 import { BufferAttribute, BufferGeometry, Color, Vector3 } from 'three';
 import {
   AMPLITUDE_GRAVITY_MODES,
+  calculateSystemInvariants,
+  calculateWeakFieldObservables,
+  compareSystemInvariants,
   createPositiveGrassmannianCell,
   DEFAULT_AMPLITUDE_GRAVITY,
   evaluateAmplitudeChannels,
@@ -66,16 +69,21 @@ function NBodyField({ configuration, running, resetToken, onTelemetry }) {
   const bodyRefs = useRef([]);
   const haloRefs = useRef([]);
   const bodiesRef = useRef(cloneBodies());
+  const invariantBaselineRef = useRef(null);
   const telemetryTimerRef = useRef(0);
 
   useEffect(() => {
     bodiesRef.current = cloneBodies();
-  }, [resetToken]);
+    invariantBaselineRef.current = null;
+  }, [configuration.coupling, configuration.mode, configuration.softening, resetToken]);
 
   useFrame((_, delta) => {
     const bodies = bodiesRef.current;
     const frameDelta = Math.min(delta, 1 / 45) * configuration.timeScale;
     const selected = evaluateNBodyAmplitudeGravity(bodies, configuration);
+    const invariants = calculateSystemInvariants(bodies, selected.potential);
+    if (!invariantBaselineRef.current) invariantBaselineRef.current = invariants;
+    const invariantResiduals = compareSystemInvariants(invariants, invariantBaselineRef.current);
     const reference = evaluateNBodyAmplitudeGravity(bodies, { ...configuration, mode: 'newtonian' });
     const differences = selected.accelerations.map((acceleration, index) => {
       const absolute = Math.hypot(...acceleration.map((value, axis) => value - reference.accelerations[index][axis]));
@@ -110,7 +118,8 @@ function NBodyField({ configuration, running, resetToken, onTelemetry }) {
         photonDiagnostic: selected.photonDiagnostic,
         forceResidual: Math.hypot(...selected.forceResidual),
         maximumDifference: Math.max(...differences),
-        bodyDifferences: differences
+        bodyDifferences: differences,
+        ...invariantResiduals
       });
     }
   });
@@ -158,10 +167,11 @@ export default function AmplitudeGravitySim({ onBack }) {
   const [running, setRunning] = useState(true);
   const [resetToken, setResetToken] = useState(0);
   const [panelVisible, setPanelVisible] = useState(true);
-  const [telemetry, setTelemetry] = useState({ potential: 0, photonDiagnostic: 0, forceResidual: 0, maximumDifference: 0, bodyDifferences: [] });
+  const [telemetry, setTelemetry] = useState({ potential: 0, photonDiagnostic: 0, forceResidual: 0, maximumDifference: 0, bodyDifferences: [], energyDrift: 0, momentumResidual: 0, angularMomentumResidual: 0 });
   const settings = sanitizeAmplitudeGravity(configuration);
   const cell = useMemo(() => createPositiveGrassmannianCell(settings), [settings.cellGaps.join(','), settings.fourthColumnWeight]);
   const sampleChannels = useMemo(() => evaluateAmplitudeChannels({ distance: 3, massProduct: 1, chargeProduct: -1 }, settings), [settings]);
+  const weakField = useMemo(() => calculateWeakFieldObservables({ centralMass: 12, semiMajorAxis: 3.2, eccentricity: 0.2, impactParameter: 4, asymptoticSpeed: 2 }, settings), [settings]);
   const update = (patch) => setConfiguration((current) => ({ ...current, ...patch }));
   const updateGap = (index, value) => update({ cellGaps: settings.cellGaps.map((gap, gapIndex) => gapIndex === index ? value : gap) });
 
@@ -178,6 +188,7 @@ export default function AmplitudeGravitySim({ onBack }) {
         <Slider label="Geometric coupling" value={settings.coupling} min={0} max={4} step={0.01} onChange={(coupling) => update({ coupling })} />
         <Slider label="Correction range" value={settings.correctionRange} min={0.2} max={12} step={0.1} onChange={(correctionRange) => update({ correctionRange })} />
         <Slider label="Softening" value={settings.softening} min={0.01} max={1} step={0.01} onChange={(softening) => update({ softening })} />
+        <Slider label="Relativistic scale c" value={settings.speedOfLight} min={5} max={100} step={1} onChange={(speedOfLight) => update({ speedOfLight })} />
         <Slider label="Time scale" value={configuration.timeScale} min={0} max={1.5} step={0.01} onChange={(timeScale) => update({ timeScale })} />
         <div className="amplitude-actions"><button type="button" onClick={() => setResetToken((value) => value + 1)}>Reset bodies</button></div>
         <details open>
@@ -195,7 +206,17 @@ export default function AmplitudeGravitySim({ onBack }) {
           <div className="amplitude-invariant"><span>Max model delta</span><strong>{(telemetry.maximumDifference * 100).toFixed(2)}%</strong></div>
           <div className="amplitude-invariant"><span>Force residual</span><strong>{telemetry.forceResidual.toExponential(2)}</strong></div>
           <div className="amplitude-invariant"><span>Potential proxy</span><strong>{telemetry.potential.toFixed(3)}</strong></div>
+          <div className="amplitude-invariant"><span>Energy drift</span><strong>{telemetry.energyDrift.toExponential(2)}</strong></div>
+          <div className="amplitude-invariant"><span>Momentum residual</span><strong>{telemetry.momentumResidual.toExponential(2)}</strong></div>
+          <div className="amplitude-invariant"><span>Angular momentum residual</span><strong>{telemetry.angularMomentumResidual.toExponential(2)}</strong></div>
           <p className="amplitude-note">The photon value is an electromagnetic comparison channel. It is never substituted for the spin-2 gravity kernel.</p>
+        </details>
+        <details open>
+          <summary>Sourced weak-field observables</summary>
+          <div className="amplitude-invariant"><span>1PN periapsis / orbit</span><strong>{weakField.periapsisAdvanceRadians.toExponential(2)} rad</strong></div>
+          <div className="amplitude-invariant"><span>1PM scattering estimate</span><strong>{weakField.scatteringAngleRadians.toExponential(2)} rad</strong></div>
+          <p className="amplitude-note">{weakField.sources.periapsis}</p>
+          <p className="amplitude-note">{weakField.sources.scattering}</p>
         </details>
       </aside>
     </main>

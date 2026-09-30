@@ -12,6 +12,7 @@ export const DEFAULT_AMPLITUDE_GRAVITY = Object.freeze({
   correctionRange: 4,
   softening: 0.18,
   gravitationalConstant: 1,
+  speedOfLight: 20,
   showDifference: false
 });
 
@@ -39,6 +40,7 @@ export function sanitizeAmplitudeGravity(value = {}) {
     correctionRange: positive(value.correctionRange, DEFAULT_AMPLITUDE_GRAVITY.correctionRange),
     softening: clamp(finiteOr(value.softening, DEFAULT_AMPLITUDE_GRAVITY.softening), 0.001, 10),
     gravitationalConstant: clamp(finiteOr(value.gravitationalConstant, DEFAULT_AMPLITUDE_GRAVITY.gravitationalConstant), 0, 100),
+    speedOfLight: clamp(finiteOr(value.speedOfLight, DEFAULT_AMPLITUDE_GRAVITY.speedOfLight), 1, 1e6),
     showDifference: Boolean(value.showDifference)
   };
 }
@@ -140,4 +142,54 @@ export function evaluateNBodyAmplitudeGravity(bodies, configuration = DEFAULT_AM
     0
   ));
   return { accelerations, potential, photonDiagnostic, maximumDifference, forceResidual };
+}
+
+export function calculateSystemInvariants(bodies, potential = 0) {
+  const momentum = [0, 0, 0];
+  const angularMomentum = [0, 0, 0];
+  let kinetic = 0;
+  bodies.forEach((body) => {
+    const mass = positive(body.mass, 1);
+    const velocity = body.velocity ?? [0, 0, 0];
+    const position = body.position ?? [0, 0, 0];
+    kinetic += 0.5 * mass * velocity.reduce((sum, component) => sum + component * component, 0);
+    for (let axis = 0; axis < 3; axis += 1) momentum[axis] += mass * velocity[axis];
+    angularMomentum[0] += mass * (position[1] * velocity[2] - position[2] * velocity[1]);
+    angularMomentum[1] += mass * (position[2] * velocity[0] - position[0] * velocity[2]);
+    angularMomentum[2] += mass * (position[0] * velocity[1] - position[1] * velocity[0]);
+  });
+  return { momentum, angularMomentum, kinetic, potential, totalEnergy: kinetic + potential };
+}
+
+export function compareSystemInvariants(current, baseline) {
+  const relative = (value, reference) => (value - reference) / Math.max(Math.abs(reference), 1e-12);
+  const vectorDifference = (first, second) => Math.hypot(...first.map((value, index) => value - second[index]));
+  return {
+    energyDrift: relative(current.totalEnergy, baseline.totalEnergy),
+    momentumResidual: vectorDifference(current.momentum, baseline.momentum),
+    angularMomentumResidual: vectorDifference(current.angularMomentum, baseline.angularMomentum)
+  };
+}
+
+export function calculateWeakFieldObservables(input = {}, configuration = DEFAULT_AMPLITUDE_GRAVITY) {
+  const settings = sanitizeAmplitudeGravity(configuration);
+  const centralMass = positive(input.centralMass, 1);
+  const semiMajorAxis = positive(input.semiMajorAxis, 1);
+  const eccentricity = clamp(finiteOr(input.eccentricity, 0), 0, 0.999);
+  const impactParameter = positive(input.impactParameter, semiMajorAxis);
+  const asymptoticSpeed = clamp(finiteOr(input.asymptoticSpeed, 1), 1e-6, settings.speedOfLight * 0.999);
+  const cSquared = settings.speedOfLight ** 2;
+  const periapsisAdvanceRadians = 6 * Math.PI * settings.gravitationalConstant * centralMass
+    / (semiMajorAxis * (1 - eccentricity ** 2) * cSquared);
+  const scatteringAngleRadians = 2 * settings.gravitationalConstant * centralMass
+    / (impactParameter * asymptoticSpeed ** 2)
+    * (1 + asymptoticSpeed ** 2 / cSquared);
+  return {
+    periapsisAdvanceRadians,
+    scatteringAngleRadians,
+    sources: {
+      periapsis: 'Standard 1PN Schwarzschild test-particle periapsis advance: 6πGM/[a(1-e²)c²].',
+      scattering: 'Leading weak-field 1PM massive test-particle scattering estimate; displayed as an analytic observable, not an N-body force term.'
+    }
+  };
 }

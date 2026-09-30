@@ -91,3 +91,67 @@ test('FTLE lab switches time direction and reports deformation telemetry', async
   assert.ok(panel.x >= 0 && panel.y >= 0, `FTLE panel should start inside the mobile viewport: ${JSON.stringify(panel)}`);
   assert.ok(panel.x + panel.width <= 390 && panel.y + panel.height <= 844, `FTLE panel should fit the mobile viewport: ${JSON.stringify(panel)}`);
 });
+
+test('quantum fluid lab evolves synchronized models and exposes conservation telemetry', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+
+  await page.goto(`${baseUrl}?e2e=1`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /09 \/ LOAD FIELD/ }).evaluate((button) => button.click());
+  await page.locator('.quantum-panel').waitFor();
+  await page.locator('canvas').waitFor();
+  await page.waitForTimeout(600);
+  assert.match(await page.getByRole('combobox', { name: 'View' }).textContent(), /GPE \/ Euler-Korteweg/);
+  assert.ok(Number.isFinite(Number(await page.getByText('Norm drift').locator('..').locator('strong').textContent())));
+  assert.ok(Number.isFinite(Number(await page.getByText('Density RMS delta').locator('..').locator('strong').textContent())));
+  await page.getByRole('combobox', { name: 'View' }).click();
+  await page.locator('[role="option"][data-value="difference"]').click();
+  assert.match(await page.getByRole('combobox', { name: 'View' }).textContent(), /Density difference/);
+  await page.setViewportSize({ width: 390, height: 844 });
+  const panel = await page.locator('.quantum-panel').boundingBox();
+  assert.ok(panel && panel.x >= 0 && panel.y >= 0 && panel.x + panel.width <= 390 && panel.y + panel.height <= 844);
+  assert.deepEqual(errors, []);
+});
+
+test('thermal loop lab closes energy balance and labels hypothetical fluid data', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
+
+  await page.goto(`${baseUrl}?e2e=1`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /10 \/ LOAD FIELD/ }).evaluate((button) => button.click());
+  await page.locator('.thermal-panel').waitFor();
+  assert.match(await page.getByText('Energy residual').locator('..').locator('strong').textContent(), /0\.00e\+0 W/);
+  await page.getByRole('combobox', { name: 'Fluid' }).click();
+  await page.locator('[role="option"][data-value="hbnFarnesane"]').click();
+  assert.match(await page.locator('.thermal-provenance').textContent(), /HYPOTHESIS/);
+  assert.ok(Number.isFinite(Number((await page.getByText('vs water PUE').locator('..').locator('strong').textContent()).replace('+', ''))));
+  assert.match(await page.getByText('PUE uncertainty').locator('..').locator('strong').textContent(), /–/);
+  await page.setViewportSize({ width: 390, height: 844 });
+  const panel = await page.locator('.thermal-panel').boundingBox();
+  assert.ok(panel && panel.x >= 0 && panel.y >= 0 && panel.x + panel.width <= 390 && panel.y + panel.height <= 844);
+});
+
+test('phase signal lab detects events and labels vortex correlation as analogy', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
+
+  await page.goto(`${baseUrl}?e2e=1`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /11 \/ LOAD FIELD/ }).evaluate((button) => button.click());
+  await page.locator('.signal-panel').waitFor();
+  assert.equal(await page.locator('.signal-trace').count(), 4);
+  assert.ok(Number(await page.getByText('Total events').locator('..').locator('strong').textContent()) > 0);
+  const analogy = page.getByRole('checkbox', { name: 'Correlate synthetic vortex events' });
+  await analogy.click();
+  assert.equal(await analogy.isChecked(), true);
+  assert.match(await page.locator('.signal-warning').textContent(), /does not assert/);
+  assert.ok(Number.isFinite(Number((await page.getByText('Matched fraction').locator('..').locator('strong').textContent()).replace('%', ''))));
+  await page.setViewportSize({ width: 390, height: 844 });
+  const panel = await page.locator('.signal-panel').boundingBox();
+  assert.ok(panel && panel.x >= 0 && panel.y >= 0 && panel.x + panel.width <= 390 && panel.y + panel.height <= 844);
+});

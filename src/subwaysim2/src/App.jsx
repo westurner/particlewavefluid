@@ -6,6 +6,9 @@ const SqgBlackHoleSim = lazy(() => import('./SqgBlackHoleSim.jsx'));
 const DdfBlackHoleSim = lazy(() => import('./DdfBlackHoleSim.jsx'));
 const AmplitudeGravitySim = lazy(() => import('./AmplitudeGravitySim.jsx'));
 const FtleLabSim = lazy(() => import('./FtleLabSim.jsx'));
+const QuantumFluidSim = lazy(() => import('./QuantumFluidSim.jsx'));
+const ThermalLoopSim = lazy(() => import('./ThermalLoopSim.jsx'));
+const PhaseSignalSim = lazy(() => import('./PhaseSignalSim.jsx'));
 const FrcFusionSim = lazy(() => import('./FrcFusionSim.jsx'));
 const SubwaySim = lazy(() => import('./SubwaySim.jsx').then(({ SubwaySim: component }) => ({ default: component })));
 
@@ -81,6 +84,33 @@ const SIMULATION_MODES = [
     description: 'Integrate trajectories and inspect deformation, volume change, and attracting or repelling transport structures.',
     detail: 'FLOW MAP / C-G TENSOR / LCS',
     accent: 'teal'
+  },
+  {
+    id: 'quantumfluidsim',
+    index: '09',
+    name: 'quantumfluidsim',
+    label: 'Quantum fluid',
+    description: 'Evolve a complex Gross-Pitaevskii field beside an Euler-Korteweg hydrodynamic reference.',
+    detail: 'GPE / PHASE / QUANTUM PRESSURE',
+    accent: 'violet'
+  },
+  {
+    id: 'thermalloopsim',
+    index: '10',
+    name: 'thermalloopsim',
+    label: 'Datacenter thermal loop',
+    description: 'Balance heat capacity, pressure drop, pump work, chiller load, economizer hours, and PUE uncertainty.',
+    detail: 'ENERGY / HYDRAULICS / PUE',
+    accent: 'orange'
+  },
+  {
+    id: 'phasesignalsim',
+    index: '11',
+    name: 'phasesignalsim',
+    label: 'Fracture / phase-slip signals',
+    description: 'Demodulate synthetic I/Q data, unwrap phase, detect discontinuities, and compare event timing.',
+    detail: 'I/Q / EVENTS / PHASE UNWRAP',
+    accent: 'blue'
   }
 ];
 
@@ -100,6 +130,9 @@ function SimulationLoader() {
   if (selectedSimulation === 'subwaysim2') simulation = <SubwaySim onBack={onBack} />;
   if (selectedSimulation === 'amplitudegravitysim') simulation = <AmplitudeGravitySim onBack={onBack} />;
   if (selectedSimulation === 'ftlelabsim') simulation = <FtleLabSim onBack={onBack} />;
+  if (selectedSimulation === 'quantumfluidsim') simulation = <QuantumFluidSim onBack={onBack} />;
+  if (selectedSimulation === 'thermalloopsim') simulation = <ThermalLoopSim onBack={onBack} />;
+  if (selectedSimulation === 'phasesignalsim') simulation = <PhaseSignalSim onBack={onBack} />;
   if (simulation) return <Suspense fallback={<LoadingScreen />}>{simulation}</Suspense>;
 
   return (

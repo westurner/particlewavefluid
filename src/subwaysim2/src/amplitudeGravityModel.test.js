@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  calculateSystemInvariants,
+  calculateWeakFieldObservables,
+  compareSystemInvariants,
   createPositiveGrassmannianCell,
   evaluateAmplitudeChannels,
   evaluateNBodyAmplitudeGravity
@@ -11,6 +14,25 @@ test('positive cell has positive minors and satisfies the Plucker relation', () 
   assert.equal(cell.positive, true);
   Object.values(cell.minors).forEach((minor) => assert.ok(minor > 0));
   assert.ok(Math.abs(cell.pluckerResidual) < 1e-12);
+});
+
+test('weak-field observables decrease with the relativistic scale', () => {
+  const slowScale = calculateWeakFieldObservables({ centralMass: 12, semiMajorAxis: 3.2, eccentricity: 0.2, impactParameter: 4, asymptoticSpeed: 2 }, { speedOfLight: 20 });
+  const largeScale = calculateWeakFieldObservables({ centralMass: 12, semiMajorAxis: 3.2, eccentricity: 0.2, impactParameter: 4, asymptoticSpeed: 2 }, { speedOfLight: 200 });
+  assert.ok(slowScale.periapsisAdvanceRadians > largeScale.periapsisAdvanceRadians);
+  assert.ok(slowScale.scatteringAngleRadians > largeScale.scatteringAngleRadians);
+  assert.match(slowScale.sources.periapsis, /1PN/);
+  assert.match(slowScale.sources.scattering, /1PM/);
+});
+
+test('system invariant comparison reports no drift for identical states', () => {
+  const bodies = [{ mass: 2, position: [1, 0, 0], velocity: [0, 1, 0] }];
+  const invariants = calculateSystemInvariants(bodies, -1);
+  assert.deepEqual(compareSystemInvariants(invariants, invariants), {
+    energyDrift: 0,
+    momentumResidual: 0,
+    angularMomentumResidual: 0
+  });
 });
 
 test('Newtonian mode matches the spin-2 reference kernel', () => {
