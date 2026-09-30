@@ -7,6 +7,7 @@ import { advanceFlowProgress, createFlowPathPoints, createInputParticlePathPoint
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
 import { ColorParamControl, HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
+import { QUANTUM_TRANSPORT_OPTIONS, quantumTransportIndex } from './mechanicsModels.js';
 
 const DEFAULT_PLASMA_COLOR = '#ff4fa3';
 const ARGON_PLASMA_COLOR = '#5ed9e8';
@@ -27,6 +28,10 @@ const INITIAL_CONFIGURATION = {
   vesselOpacity: 0.18,
   fieldTilt: 0,
   transportSpeed: 1,
+  transportModel: 'classical',
+  quantumPressure: 0.35,
+  transportDilatancy: 1,
+  transportSpeedLimit: 1.2,
   plasmaOpacity: 0.85,
   plasmaColor: DEFAULT_PLASMA_COLOR,
   vesselShellColor: DEFAULT_VESSEL_SHELL_COLOR,
@@ -151,6 +156,10 @@ const plasmaVelocityShader = `
   uniform float uTemperature;
   uniform float uDensity;
   uniform float uTransportSpeed;
+  uniform float uTransportModel;
+  uniform float uQuantumPressure;
+  uniform float uDilatancy;
+  uniform float uSpeedLimit;
   uniform bool uRunning;
 
   void main() {
@@ -168,6 +177,18 @@ const plasmaVelocityShader = `
     vec3 acceleration = -radial * edgePressure * (uField * 0.72 + uDensity * 0.18);
     acceleration += azimuthal * uRotation * uField * (0.3 + 0.7 * axialProfile);
     acceleration.x += uTransportSpeed * (0.16 + 0.28 * axialProfile) * sign(uAxialField);
+    if (uTransportModel > 0.5 && uTransportModel < 1.5) {
+      float coreRadius = max(uRadius * 0.28, 0.05);
+      float coreRatio = radialDistance / coreRadius;
+      acceleration += radial * uQuantumPressure * exp(-(coreRatio * coreRatio));
+    } else if (uTransportModel > 1.5) {
+      float speed = length(velocity);
+      float beta = clamp(speed / max(uSpeedLimit, 0.1), 0.0, 0.9999);
+      float lorentzFactor = inversesqrt(1.0 - beta * beta);
+      float strainRate = speed / max(uRadius, 0.05);
+      float dilatantDrag = uDilatancy * ((lorentzFactor - 1.0) + strainRate);
+      acceleration += -velocity * dilatantDrag;
+    }
     acceleration += -velocity * (0.34 + uTemperature * 0.018);
     if (!uRunning) acceleration = -velocity * 3.0;
     velocity += acceleration * uDt;
@@ -667,6 +688,10 @@ function PlasmaParticles({ configuration, model, onGpuError }) {
       velocityUniforms.uTemperature = { value: stateRef.current.model.ionTemperature };
       velocityUniforms.uDensity = { value: stateRef.current.model.density };
       velocityUniforms.uTransportSpeed = { value: stateRef.current.configuration.transportSpeed };
+      velocityUniforms.uTransportModel = { value: quantumTransportIndex(stateRef.current.configuration.transportModel) };
+      velocityUniforms.uQuantumPressure = { value: stateRef.current.configuration.quantumPressure };
+      velocityUniforms.uDilatancy = { value: stateRef.current.configuration.transportDilatancy };
+      velocityUniforms.uSpeedLimit = { value: stateRef.current.configuration.transportSpeedLimit };
       velocityUniforms.uRunning = { value: true };
       const initializationError = simulation.gpuCompute.init();
       if (initializationError) throw new Error(initializationError);
@@ -705,6 +730,10 @@ function PlasmaParticles({ configuration, model, onGpuError }) {
     velocityUniforms.uTemperature.value = currentModel.ionTemperature;
     velocityUniforms.uDensity.value = currentModel.density;
     velocityUniforms.uTransportSpeed.value = currentConfiguration.transportSpeed;
+    velocityUniforms.uTransportModel.value = quantumTransportIndex(currentConfiguration.transportModel);
+    velocityUniforms.uQuantumPressure.value = currentConfiguration.quantumPressure;
+    velocityUniforms.uDilatancy.value = currentConfiguration.transportDilatancy;
+    velocityUniforms.uSpeedLimit.value = currentConfiguration.transportSpeedLimit;
     velocityUniforms.uRunning.value = currentConfiguration.plasmaRunning;
     compute.compute();
     material.uniforms.uPositionTex.value = compute.getCurrentRenderTarget(positionVariable).texture;
@@ -915,6 +944,13 @@ function FrcPanel({ configuration, model, gpuError, onChange, onHide, editing = 
         <RangeInput label="Ion temperature" value={configuration.ionTemperature} min={0.5} max={5} step={0.1} suffix=" keV" onChange={(value) => onChange({ ionTemperature: value })} />
         <RangeInput label="Field-axis tilt" value={configuration.fieldTilt} min={-18} max={18} step={1} suffix=" deg" onChange={(value) => onChange({ fieldTilt: value })} />
         <RangeInput label="Transport speed" value={configuration.transportSpeed} min={0} max={2} step={0.05} suffix=" x" onChange={(value) => onChange({ transportSpeed: value })} />
+        <ParamSelect label="Transport model" value={configuration.transportModel} options={QUANTUM_TRANSPORT_OPTIONS} onChange={(value) => onChange({ transportModel: value })} />
+        {configuration.transportModel === 'gpe' && <RangeInput label="Quantum pressure" value={configuration.quantumPressure} min={0} max={3} step={0.05} onChange={(value) => onChange({ quantumPressure: value })} />}
+        {configuration.transportModel === 'ddf' && <>
+          <RangeInput label="DDF dilatancy" value={configuration.transportDilatancy} min={0} max={8} step={0.05} onChange={(value) => onChange({ transportDilatancy: value })} />
+          <RangeInput label="DDF speed limit" value={configuration.transportSpeedLimit} min={0.1} max={3} step={0.05} onChange={(value) => onChange({ transportSpeedLimit: value })} />
+        </>}
+        {configuration.transportModel !== 'classical' && <p className="frc-description">Experimental constitutive overlay; it does not alter the reactor power estimates.</p>}
       </div>
       <div className="frc-control-group">
         <span className="frc-section-label">DEVICE LAYERS</span>

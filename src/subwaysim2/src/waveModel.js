@@ -5,6 +5,28 @@ export const DEFAULT_SIGNAL_DIRECTION = { x: 1, y: 0, z: 0 };
 export const DEFAULT_SIGNAL_ROTATION = { x: 0, y: 0, z: 0 };
 export const HELICAL_TOPOLOGICAL_CHARGE = 1;
 export const DEFAULT_BEAM_WAIST = 6;
+export const DOUBLE_SLIT_SCREEN_X = 0;
+export const DOUBLE_SLIT_CENTERS = [-2.1, 2.1];
+export const DOUBLE_SLIT_WIDTH = 1.1;
+export const DOUBLE_SLIT_SCREEN_THICKNESS = 0.4;
+export const APERTURE_SCREEN_DEPTH = 0.22;
+export const DOUBLE_SLIT_DETECTOR_X = 7.2;
+export const DOUBLE_SLIT_DETECTOR_SPAN = 16;
+export const APERTURE_SCREEN_HEIGHT = 3.2;
+export const DETECTOR_TRANSVERSE_SPAN = 16;
+export const PINHOLE_RADIUS = 0.85;
+export const SINGLE_SLIT_WIDTH = 3.6;
+export const GRATING_SLIT_COUNT = 5;
+export const GRATING_SLIT_SPACING = 1.6;
+export const GRATING_SLIT_WIDTH = 0.55;
+export const GRATING_SLIT_CENTERS = Array.from({ length: GRATING_SLIT_COUNT }, (_, index) => (index - (GRATING_SLIT_COUNT - 1) / 2) * GRATING_SLIT_SPACING);
+export const TWO_SOURCE_CENTERS = [-2.1, 2.1];
+export const DEFAULT_APERTURE_SETTINGS = {
+  slitPosition: 0,
+  slitWidthA: DOUBLE_SLIT_WIDTH,
+  slitWidthB: DOUBLE_SLIT_WIDTH,
+  slitWidthsLinked: true
+};
 export const POLARIZATION_MODES = ['Scalar', 'Transverse', 'Longitudinal', 'Electromagnetic', 'EM-Tensor-Gaussian'];
 
 export const PHASE_MODES = [
@@ -33,9 +55,10 @@ export const DEFAULT_INTERFERENCE_MODES = { constructive: false, superposition: 
 
 export const OCCLUSION_PRESETS = [
   { id: 'none', name: 'Open field', description: 'No occluding geometry; every sampled particle receives the field.' },
-  { id: 'pinhole', name: 'Pinhole', description: 'A small central aperture in an otherwise blocking screen.' },
+  { id: 'pinhole', name: 'Pinhole', description: 'A circular aperture in a transverse screen, sampled across both transverse dimensions.' },
   { id: 'single-slit', name: 'Single slit', description: 'One wider aperture for a single-slit transmission pattern.' },
   { id: 'double-slit', name: 'Double slit', description: 'Two separated apertures in an otherwise blocking screen.' },
+  { id: 'diffraction-grating', name: 'Diffraction grating', description: 'Five coherent slits in a transverse screen.' },
   { id: 'sierpinski-carpet', name: 'Sierpinski carpet', description: 'A recursive fractal transmission mask across the downstream field.' },
   { id: 'unilluminable-room', name: 'Unilluminable room', description: 'A closed room region that remains outside the source field.' },
   { id: 'boulder', name: 'Boulder', description: 'A rounded obstacle with a widening downstream shadow.' }
@@ -82,6 +105,11 @@ function waveState(name, description, waveCount, interferenceMode, waves) {
 
 const SILENT_WAVE = cloneWave({ wavelength: 4, amplitude: 0, phaseMode: 'Standard', phaseOffset: 0, phaseRate: 0, decayRate: 0, enabled: false });
 const SINGLE_TRAVELING = cloneWave({ wavelength: 4, amplitude: 0.9, phaseMode: 'Standard', phaseOffset: 0, phaseRate: 1, decayRate: 0, enabled: true });
+const DOUBLE_SLIT_SOURCE = cloneWave({ wavelength: 1.5, amplitude: 0.95, phaseMode: 'Standard', phaseOffset: 0, phaseRate: 1, decayRate: 0, polarization: 'Electromagnetic', origin: { x: -8, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 }, enabled: true });
+const PINHOLE_SOURCE = cloneWave({ wavelength: 0.95, amplitude: 0.95, phaseMode: 'Standard', phaseOffset: 0, phaseRate: 1, decayRate: 0, polarization: 'Electromagnetic', origin: { x: -8, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 }, enabled: true });
+const SINGLE_SLIT_SOURCE = cloneWave({ wavelength: 1.5, amplitude: 0.95, phaseMode: 'Standard', phaseOffset: 0, phaseRate: 1, decayRate: 0, polarization: 'Electromagnetic', origin: { x: -8, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 }, enabled: true });
+const GRATING_SOURCE = cloneWave({ wavelength: 0.95, amplitude: 0.95, phaseMode: 'Standard', phaseOffset: 0, phaseRate: 1, decayRate: 0, polarization: 'Electromagnetic', origin: { x: -8, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 }, enabled: true });
+const TWO_SOURCE_WAVE = cloneWave({ wavelength: 1.5, amplitude: 0.95, phaseMode: 'Standard', phaseOffset: 0, phaseRate: 1, decayRate: 0, polarization: 'Electromagnetic', origin: { x: -8, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 }, enabled: true });
 
 function waveSlots(waves) {
   return Array.from({ length: MAX_WAVES }, (_, index) => cloneWave(waves[index] || SILENT_WAVE));
@@ -145,6 +173,21 @@ export const DEFAULT_WAVE_STATES = [
     { wavelength: 4.4, amplitude: 0.54, phaseMode: 'Helical-Right', phaseOffset: 0, phaseRate: 0.7, enabled: true },
     SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE
   ]),
+  waveState('Double-slit experiment', 'A monochromatic transverse electromagnetic wave illuminates two finite apertures; the detector records coherent field intensity.', 1, 'superposition', [
+    DOUBLE_SLIT_SOURCE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE
+  ]),
+  waveState('Single-slit experiment', 'A monochromatic transverse electromagnetic wave forms a single-slit diffraction envelope on the detector.', 1, 'superposition', [
+    SINGLE_SLIT_SOURCE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE
+  ]),
+  waveState('Pinhole experiment', 'A coherent electromagnetic wave passes through a circular aperture and forms a two-dimensional diffraction pattern.', 1, 'superposition', [
+    PINHOLE_SOURCE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE
+  ]),
+  waveState('Diffraction grating', 'Five coherent slits produce narrow principal maxima on the two-dimensional detector.', 1, 'superposition', [
+    GRATING_SOURCE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE
+  ]),
+  waveState('Two coherent sources', 'Two in-phase point sources interfere without an intervening screen.', 1, 'superposition', [
+    TWO_SOURCE_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE, SILENT_WAVE
+  ]),
   waveState('Mixed phase field', 'A compact study set: traveling, standing, quadrature, and inverted contributions share one field.', DEFAULT_WAVE_COUNT, 'superposition', DEFAULT_WAVES)
 ];
 
@@ -184,11 +227,17 @@ function sierpinskiCarpetPass(x, z) {
   return true;
 }
 
-export function calculateOcclusionTransmission(presetId, x, z) {
-  if (presetId === 'none' || x <= 0) return 1;
-  if (presetId === 'pinhole') return Math.abs(z) < 0.55 ? 1 : 0;
-  if (presetId === 'single-slit') return Math.abs(z) < 1.8 ? 1 : 0;
-  if (presetId === 'double-slit') return Math.abs(Math.abs(z) - 2.1) < 0.55 ? 1 : 0;
+export function calculateOcclusionTransmission(presetId, x, z, y = 0, apertureSettings = DEFAULT_APERTURE_SETTINGS) {
+  const aperturePreset = ['pinhole', 'single-slit', 'double-slit', 'diffraction-grating'].includes(presetId);
+  if (presetId === 'none' || (!aperturePreset && x <= 0)) return 1;
+  if (aperturePreset && Math.abs(x - DOUBLE_SLIT_SCREEN_X) > DOUBLE_SLIT_SCREEN_THICKNESS / 2) return 1;
+  if (presetId === 'pinhole') return y ** 2 + z ** 2 <= PINHOLE_RADIUS ** 2 ? 1 : 0;
+  if (['single-slit', 'double-slit', 'diffraction-grating'].includes(presetId)) {
+    if (Math.abs(y) > APERTURE_SCREEN_HEIGHT / 2) return 0;
+    const mode = presetId === 'diffraction-grating' ? 'grating' : presetId;
+    const geometry = getSlitGeometry(mode, apertureSettings);
+    return geometry.centers.some((center, index) => Math.abs(z - center) <= geometry.widths[index] / 2) ? 1 : 0;
+  }
   if (presetId === 'sierpinski-carpet') return sierpinskiCarpetPass(x, z) ? 1 : 0;
   if (presetId === 'unilluminable-room') return x > 1.5 && x < 8.2 && Math.abs(z) < 4.2 ? 0 : 1;
   if (presetId === 'boulder') {
@@ -197,6 +246,35 @@ export function calculateOcclusionTransmission(presetId, x, z) {
     return distanceFromBoulder < 1.8 || (x > 2.8 && Math.abs(z) < shadowWidth) ? 0 : 1;
   }
   return 1;
+}
+
+export function normalizeApertureSettings(settings = {}) {
+  const finiteValue = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  return {
+    slitPosition: Math.min(3, Math.max(-3, finiteValue(settings.slitPosition, DEFAULT_APERTURE_SETTINGS.slitPosition))),
+    slitWidthA: Math.min(3.6, Math.max(0.2, finiteValue(settings.slitWidthA, DEFAULT_APERTURE_SETTINGS.slitWidthA))),
+    slitWidthB: Math.min(3.6, Math.max(0.2, finiteValue(settings.slitWidthB, DEFAULT_APERTURE_SETTINGS.slitWidthB))),
+    slitWidthsLinked: settings.slitWidthsLinked ?? DEFAULT_APERTURE_SETTINGS.slitWidthsLinked
+  };
+}
+
+export function getSlitGeometry(experimentMode, apertureSettings = DEFAULT_APERTURE_SETTINGS) {
+  const settings = normalizeApertureSettings(apertureSettings);
+  let centers;
+  let widths;
+  if (experimentMode === 'single-slit') {
+    centers = [0];
+    widths = [settings.slitWidthA];
+  } else if (experimentMode === 'double-slit') {
+    centers = DOUBLE_SLIT_CENTERS;
+    widths = [settings.slitWidthA, settings.slitWidthsLinked ? settings.slitWidthA : settings.slitWidthB].map((width) => Math.min(width, 2.4));
+  } else if (experimentMode === 'grating') {
+    centers = GRATING_SLIT_CENTERS;
+    widths = centers.map(() => Math.min(settings.slitWidthA, GRATING_SLIT_SPACING - 0.1));
+  } else {
+    return { centers: [], widths: [] };
+  }
+  return { centers: centers.map((center) => center + settings.slitPosition), widths };
 }
 
 function rotateVector(vector, rotation) {
@@ -385,6 +463,123 @@ export function calculateElectromagneticField(wave, x, z, time, y = 0) {
     tensor: normalizedTensor,
     tensorGaussian: Math.min(1, norm) * gaussian
   };
+}
+
+export function createApertureSamplePoints(experimentMode, apertureSettings = DEFAULT_APERTURE_SETTINGS) {
+  if (experimentMode === 'pinhole') {
+    const sampleCount = 96;
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+    return Array.from({ length: sampleCount }, (_, index) => {
+      const radius = PINHOLE_RADIUS * Math.sqrt((index + 0.5) / sampleCount);
+      const angle = index * goldenAngle;
+      return { y: radius * Math.cos(angle), z: radius * Math.sin(angle), weight: 1 / sampleCount };
+    });
+  }
+  if (['single-slit', 'double-slit', 'grating'].includes(experimentMode)) {
+    const rows = 5;
+    const columns = 7;
+    const { centers, widths } = getSlitGeometry(experimentMode, apertureSettings);
+    return centers.flatMap((center, slitIndex) => Array.from({ length: rows * columns }, (_, index) => {
+      const row = Math.floor(index / columns);
+      const column = index % columns;
+      return {
+        y: ((row + 0.5) / rows - 0.5) * APERTURE_SCREEN_HEIGHT,
+        z: center + ((column + 0.5) / columns - 0.5) * widths[slitIndex],
+        weight: widths[slitIndex] / (rows * columns)
+      };
+    }));
+  }
+  if (experimentMode === 'two-source') return TWO_SOURCE_CENTERS.map((z) => ({ y: 0, z, weight: 1 }));
+  return [];
+}
+
+export function prepareApertureField(waves, experimentMode, apertureSettings = DEFAULT_APERTURE_SETTINGS) {
+  const samplePoints = createApertureSamplePoints(experimentMode, apertureSettings);
+  const emitters = [];
+  for (const wave of waves.slice(0, MAX_WAVES)) {
+    if (wave.enabled === false) continue;
+    const wavelength = Math.max(0.1, Number(wave.wavelength) || 0.1);
+    const waveNumber = (Math.PI * 2) / wavelength;
+    const amplitude = Number(wave.amplitude) || 0;
+    const phaseOffset = (Number(wave.phaseOffset) || 0)
+      + (wave.phaseMode === 'Inverted' ? Math.PI : wave.phaseMode === 'Quadrature' ? Math.PI / 2 : 0);
+    const phaseRate = Number(wave.phaseRate) || 0;
+    const beamWaist = Math.max(0.1, Number(wave.beamWaist) || DEFAULT_BEAM_WAIST);
+    for (const point of samplePoints) {
+      const frame = calculateWaveFrame(wave, DOUBLE_SLIT_SCREEN_X, point.y, point.z);
+      const beamProfile = Math.exp(-(frame.transverseRadius ** 2) / (2 * beamWaist ** 2));
+      emitters.push({
+        y: point.y,
+        z: point.z,
+        waveNumber,
+        phaseRate,
+        phase: waveNumber * frame.longitudinal + phaseOffset,
+        amplitude: amplitude * calculateWaveEnvelope(wave, frame.longitudinal) * beamProfile * point.weight,
+        transverse: frame.transverse,
+        side: frame.side
+      });
+    }
+  }
+  return { experimentMode, emitters };
+}
+
+export function sampleApertureField(preparedField, x, y, z, time) {
+  const electric = { x: 0, y: 0, z: 0 };
+  const constructiveElectric = { x: 0, y: 0, z: 0 };
+  if (!preparedField) return { electric, constructiveElectric, intensity: 0, constructiveIntensity: 0 };
+  for (const emitter of preparedField.emitters) {
+    const offsetX = x - DOUBLE_SLIT_SCREEN_X;
+    const offsetY = y - emitter.y;
+    const offsetZ = z - emitter.z;
+    const distance = Math.hypot(offsetX, offsetY, offsetZ);
+    if (distance < 1e-6) continue;
+    const propagationX = offsetX / distance;
+    const propagationY = offsetY / distance;
+    const propagationZ = offsetZ / distance;
+    const polarizationAlongRay = emitter.transverse.x * propagationX + emitter.transverse.y * propagationY + emitter.transverse.z * propagationZ;
+    let polarizationX = emitter.transverse.x - polarizationAlongRay * propagationX;
+    let polarizationY = emitter.transverse.y - polarizationAlongRay * propagationY;
+    let polarizationZ = emitter.transverse.z - polarizationAlongRay * propagationZ;
+    const polarizationLength = Math.hypot(polarizationX, polarizationY, polarizationZ);
+    if (polarizationLength < 1e-6) {
+      const sideAlongRay = emitter.side.x * propagationX + emitter.side.y * propagationY + emitter.side.z * propagationZ;
+      polarizationX = emitter.side.x - sideAlongRay * propagationX;
+      polarizationY = emitter.side.y - sideAlongRay * propagationY;
+      polarizationZ = emitter.side.z - sideAlongRay * propagationZ;
+    }
+    const phase = emitter.waveNumber * distance + emitter.phase - emitter.phaseRate * time;
+    const fieldAmplitude = emitter.amplitude * Math.sin(phase) / distance;
+    const constructiveAmplitude = Math.abs(fieldAmplitude);
+    electric.x += polarizationX * fieldAmplitude;
+    electric.y += polarizationY * fieldAmplitude;
+    electric.z += polarizationZ * fieldAmplitude;
+    constructiveElectric.x += polarizationX * constructiveAmplitude;
+    constructiveElectric.y += polarizationY * constructiveAmplitude;
+    constructiveElectric.z += polarizationZ * constructiveAmplitude;
+  }
+  return {
+    electric,
+    constructiveElectric,
+    intensity: dot(electric, electric),
+    constructiveIntensity: dot(constructiveElectric, constructiveElectric)
+  };
+}
+
+export function calculateDoubleSlitField(waves, x, z, time, y = 0, apertureSettings = DEFAULT_APERTURE_SETTINGS) {
+  return sampleApertureField(prepareApertureField(waves, 'double-slit', apertureSettings), x, y, z, time);
+}
+
+export function calculatePinholeField(waves, x, y, z, time) {
+  return sampleApertureField(prepareApertureField(waves, 'pinhole'), x, y, z, time);
+}
+
+export function advanceDetectorResponse(response, intensity, delta, detectionTime, glowTime) {
+  const elapsed = Math.max(0, Number(delta) || 0);
+  const detectionDuration = Math.max(0.01, Number(detectionTime) || 0.01);
+  const glowDuration = Math.max(0.01, Number(glowTime) || 0.01);
+  const average = response.average + (Math.max(0, intensity) - response.average) * (1 - Math.exp(-elapsed / detectionDuration));
+  const glow = Math.max(average, response.glow * Math.exp(-elapsed / glowDuration));
+  return { average, glow };
 }
 
 function waveInterferenceContribution(wave, x, z, time, interferenceModes, y) {

@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DoubleSide, FrontSide, ShaderMaterial, Vector3 } from 'three';
-import { calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveFrame, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, INTERFERENCE_MODES, MAX_WAVES, OCCLUSION_PRESETS, PHASE_MODES, POLARIZATION_MODES, readSavedWaveStates, SIGNAL_SOURCE_PRESETS, writeSavedWaveStates } from './waveModel.js';
+import { advanceDetectorResponse, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveFrame, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_APERTURE_SETTINGS, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, DOUBLE_SLIT_SCREEN_THICKNESS, DOUBLE_SLIT_SCREEN_X, DOUBLE_SLIT_WIDTH, APERTURE_SCREEN_DEPTH, APERTURE_SCREEN_HEIGHT, DETECTOR_TRANSVERSE_SPAN, getSlitGeometry, GRATING_SLIT_CENTERS, GRATING_SLIT_WIDTH, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, readSavedWaveStates, sampleApertureField, SIGNAL_SOURCE_PRESETS, SINGLE_SLIT_WIDTH, TWO_SOURCE_CENTERS, writeSavedWaveStates } from './waveModel.js';
 import { HistoryControls, NumericParamControl, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
+import { evaluateGpeResponse, WAVE_EVOLUTION_OPTIONS } from './mechanicsModels.js';
 
 const FIELD_SIZE = 18;
 const DEFAULT_PARTICLE_COUNT = 2 ** 10;
@@ -12,6 +13,19 @@ const E2E_PARTICLE_COUNT = typeof window !== 'undefined' && new URLSearchParams(
 const MIN_PARTICLE_COUNT = 1024;
 //const MAX_PARTICLE_COUNT = 9216;
 const MAX_PARTICLE_COUNT = 2 ** 14;
+const DETECTOR_BINS_PER_AXIS = 48;
+const DETECTOR_UPDATE_INTERVAL = 1 / 12;
+const APERTURE_EXPERIMENT_MODES = ['single-slit', 'double-slit', 'pinhole', 'grating', 'two-source'];
+const EXPERIMENT_STATE_NAMES = {
+  'single-slit': 'Single-slit experiment',
+  'double-slit': 'Double-slit experiment',
+  pinhole: 'Pinhole experiment',
+  grating: 'Diffraction grating',
+  'two-source': 'Two coherent sources'
+};
+const EXPERIMENT_MODE_BY_STATE = Object.fromEntries(Object.entries(EXPERIMENT_STATE_NAMES).map(([mode, name]) => [name, mode]));
+const EXPERIMENT_PRESET_IDS = { 'single-slit': 'single-slit', 'double-slit': 'double-slit', pinhole: 'pinhole', grating: 'diffraction-grating', 'two-source': 'none' };
+const EXPERIMENT_MODE_BY_PRESET = Object.fromEntries(Object.entries(EXPERIMENT_PRESET_IDS).filter(([, preset]) => preset !== 'none').map(([mode, preset]) => [preset, mode]));
 const WAVE_COLORS = ['#f4bf66', '#66d5d1', '#df7d8d', '#a899ed', '#d7e681', '#7da8ec', '#f28e5d', '#86d3a5'];
 const PARTICLE_SHAPES = ['square', 'circle', 'vector'];
 
@@ -90,8 +104,162 @@ function createFieldGeometry(particleCount) {
   return geometry;
 }
 
-function WaveField({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, occlusionPreset }) {
+function createDetectorGeometry() {
+  const binCount = DETECTOR_BINS_PER_AXIS ** 2;
+  const positions = new Float32Array(binCount * 18);
+  const colors = new Float32Array(binCount * 18);
+  const binWidth = DETECTOR_TRANSVERSE_SPAN / DETECTOR_BINS_PER_AXIS;
+  for (let yBin = 0; yBin < DETECTOR_BINS_PER_AXIS; yBin += 1) {
+    const bottom = -DETECTOR_TRANSVERSE_SPAN / 2 + yBin * binWidth;
+    const top = bottom + binWidth;
+    for (let zBin = 0; zBin < DETECTOR_BINS_PER_AXIS; zBin += 1) {
+      const left = -DETECTOR_TRANSVERSE_SPAN / 2 + zBin * binWidth;
+      const right = left + binWidth;
+      const bin = yBin * DETECTOR_BINS_PER_AXIS + zBin;
+      const vertices = [
+        DOUBLE_SLIT_DETECTOR_X + 0.025, bottom, left,
+        DOUBLE_SLIT_DETECTOR_X + 0.025, top, left,
+        DOUBLE_SLIT_DETECTOR_X + 0.025, top, right,
+        DOUBLE_SLIT_DETECTOR_X + 0.025, bottom, left,
+        DOUBLE_SLIT_DETECTOR_X + 0.025, top, right,
+        DOUBLE_SLIT_DETECTOR_X + 0.025, bottom, right
+      ];
+      positions.set(vertices, bin * 18);
+    }
+  }
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new BufferAttribute(colors, 3));
+  geometry.userData.responses = Array.from({ length: binCount }, () => ({ average: 0, glow: 0 }));
+  return geometry;
+}
+
+function createPinholeScreenGeometry() {
+  const divisions = 128;
+  const positions = [];
+  const cellSize = DETECTOR_TRANSVERSE_SPAN / divisions;
+  for (let yIndex = 0; yIndex < divisions; yIndex += 1) {
+    const bottom = -DETECTOR_TRANSVERSE_SPAN / 2 + yIndex * cellSize;
+    const top = bottom + cellSize;
+    for (let zIndex = 0; zIndex < divisions; zIndex += 1) {
+      const left = -DETECTOR_TRANSVERSE_SPAN / 2 + zIndex * cellSize;
+      const right = left + cellSize;
+      const closestY = Math.max(bottom, Math.min(0, top));
+      const closestZ = Math.max(left, Math.min(0, right));
+      if (closestY ** 2 + closestZ ** 2 < PINHOLE_RADIUS ** 2) continue;
+      positions.push(
+        DOUBLE_SLIT_SCREEN_X, bottom, left,
+        DOUBLE_SLIT_SCREEN_X, top, left,
+        DOUBLE_SLIT_SCREEN_X, top, right,
+        DOUBLE_SLIT_SCREEN_X, bottom, left,
+        DOUBLE_SLIT_SCREEN_X, top, right,
+        DOUBLE_SLIT_SCREEN_X, bottom, right
+      );
+    }
+  }
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
+  return geometry;
+}
+
+function SlitScreen({ experimentMode, apertureSettings }) {
+  const segments = useMemo(() => {
+    const { centers, widths } = getSlitGeometry(experimentMode, apertureSettings);
+    const openings = centers.map((center, index) => [center - widths[index] / 2, center + widths[index] / 2]).sort((left, right) => left[0] - right[0]);
+    const result = [];
+    let cursor = -FIELD_SIZE / 2;
+    openings.forEach(([start, end]) => {
+      if (start > cursor) result.push({ start: cursor, end: start });
+      cursor = end;
+    });
+    if (cursor < FIELD_SIZE / 2) result.push({ start: cursor, end: FIELD_SIZE / 2 });
+    return result;
+  }, [apertureSettings, experimentMode]);
+  return (
+    <group>
+      {segments.map(({ start, end }, index) => <mesh key={index} position={[DOUBLE_SLIT_SCREEN_X, 0, (start + end) / 2]} rotation={[0, Math.PI / 2, 0]}>
+        <boxGeometry args={[end - start, APERTURE_SCREEN_HEIGHT, APERTURE_SCREEN_DEPTH]} />
+        <meshBasicMaterial color="#203640" side={DoubleSide} />
+      </mesh>)}
+    </group>
+  );
+}
+
+function TwoSourceMarkers() {
+  return <group>
+    {TWO_SOURCE_CENTERS.map((z) => <mesh key={z} position={[0, 0, z]}>
+      <sphereGeometry args={[0.18, 16, 12]} />
+      <meshBasicMaterial color="#f4bf66" toneMapped={false} />
+    </mesh>)}
+  </group>;
+}
+
+function PinholeScreen() {
+  const geometry = useMemo(createPinholeScreenGeometry, []);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return <mesh geometry={geometry}>
+    <meshBasicMaterial color="#203640" side={DoubleSide} />
+  </mesh>;
+}
+
+function ExperimentDetector({ apertureField, running, timeRef, detectionTime, glowTime, detectorBrightness }) {
+  const geometry = useMemo(createDetectorGeometry, []);
+  const color = useMemo(() => new Color(), []);
+  const updateTime = useRef(0);
+  const needsRefresh = useRef(true);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  useEffect(() => {
+    needsRefresh.current = true;
+  }, [apertureField, detectorBrightness, detectionTime, glowTime]);
+
+  useFrame((_, delta) => {
+    let elapsed = 0;
+    if (running) {
+      updateTime.current += Math.min(delta, 0.1);
+      if (!needsRefresh.current && updateTime.current < DETECTOR_UPDATE_INTERVAL) return;
+      elapsed = updateTime.current;
+      updateTime.current = 0;
+    } else if (!needsRefresh.current) return;
+    needsRefresh.current = false;
+    const totalAmplitude = apertureField?.emitters.reduce((total, emitter) => total + Math.abs(emitter.amplitude), 0) ?? 0;
+    const intensityScale = Math.max(0.001, 4 * totalAmplitude ** 2 / DOUBLE_SLIT_DETECTOR_X ** 2);
+    const colors = geometry.attributes.color.array;
+    for (let yBin = 0; yBin < DETECTOR_BINS_PER_AXIS; yBin += 1) {
+      const y = ((yBin + 0.5) / DETECTOR_BINS_PER_AXIS - 0.5) * DETECTOR_TRANSVERSE_SPAN;
+      for (let zBin = 0; zBin < DETECTOR_BINS_PER_AXIS; zBin += 1) {
+        const z = ((zBin + 0.5) / DETECTOR_BINS_PER_AXIS - 0.5) * DETECTOR_TRANSVERSE_SPAN;
+        const bin = yBin * DETECTOR_BINS_PER_AXIS + zBin;
+        const field = sampleApertureField(apertureField, DOUBLE_SLIT_DETECTOR_X, y, z, timeRef.current);
+        const response = advanceDetectorResponse(geometry.userData.responses[bin], field.intensity / intensityScale, elapsed, detectionTime, glowTime);
+        geometry.userData.responses[bin] = response;
+        const brightness = Math.min(1, Math.pow(Math.min(1, response.glow), 0.65) * detectorBrightness);
+        color.setHSL(0.48 - brightness * 0.4, 0.84, 0.12 + brightness * 0.55);
+        for (let vertex = 0; vertex < 6; vertex += 1) {
+          const offset = (bin * 6 + vertex) * 3;
+          colors[offset] = color.r;
+          colors[offset + 1] = color.g;
+          colors[offset + 2] = color.b;
+        }
+      }
+    }
+    geometry.attributes.color.needsUpdate = true;
+  });
+
+  return <>
+    <mesh position={[DOUBLE_SLIT_DETECTOR_X, 0, 0]} rotation={[0, Math.PI / 2, 0]}>
+      <planeGeometry args={[DETECTOR_TRANSVERSE_SPAN, DETECTOR_TRANSVERSE_SPAN]} />
+      <meshBasicMaterial color="#10242d" transparent opacity={0.88} side={DoubleSide} depthWrite={false} />
+    </mesh>
+    <mesh geometry={geometry}>
+      <meshBasicMaterial vertexColors transparent opacity={0.98} side={DoubleSide} toneMapped={false} />
+    </mesh>
+  </>;
+}
+
+function WaveField({ waves, waveCount, interferenceModes, running, timeRef, experimentMode, apertureField, apertureSettings, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, occlusionPreset, waveMechanics }) {
   const geometry = useMemo(() => createFieldGeometry(particleCount), [particleCount]);
+  const usesApertureExperiment = APERTURE_EXPERIMENT_MODES.includes(experimentMode);
+  const fieldUpdateTime = useRef(0);
   const material = useMemo(() => new ShaderMaterial({
     uniforms: {
       uParticleSize: { value: 0.075 },
@@ -106,7 +274,6 @@ function WaveField({ waves, waveCount, interferenceModes, running, particleCount
     depthWrite: false,
     blending: AdditiveBlending
   }), []);
-  const timeRef = useRef(0);
   const color = useMemo(() => new Color(), []);
 
   useEffect(() => () => geometry.dispose(), [geometry]);
@@ -127,6 +294,11 @@ function WaveField({ waves, waveCount, interferenceModes, running, particleCount
 
   useFrame((_, delta) => {
     if (running) timeRef.current += Math.min(delta, 0.05);
+    if (usesApertureExperiment) {
+      fieldUpdateTime.current += delta;
+      if (fieldUpdateTime.current < 1 / 20) return;
+      fieldUpdateTime.current = 0;
+    }
     const positions = geometry.attributes.position.array;
     const basePositions = geometry.userData.basePositions;
     const colors = geometry.attributes.color.array;
@@ -137,9 +309,30 @@ function WaveField({ waves, waveCount, interferenceModes, running, particleCount
     for (let index = 0; index < particleCount; index += 1) {
       const x = basePositions[index * 3];
       const z = basePositions[index * 3 + 2];
-      const transmission = calculateOcclusionTransmission(occlusionPreset, x, z);
-      const height = combineWaves(activeWaves, x, z, timeRef.current, interferenceModes) * transmission;
-      const displacement = calculateWaveDisplacement(activeWaves, x, z, timeRef.current, interferenceModes);
+      const transmission = usesApertureExperiment && x > DOUBLE_SLIT_DETECTOR_X
+        ? 0
+        : calculateOcclusionTransmission(occlusionPreset, x, z, 0, apertureSettings);
+      const apertureFieldSample = usesApertureExperiment && x > DOUBLE_SLIT_SCREEN_THICKNESS / 2
+        ? sampleApertureField(apertureField, x, 0, z, timeRef.current)
+        : null;
+      const apertureDisplacement = apertureFieldSample && {
+        x: apertureFieldSample.electric.x * Number(interferenceModes.superposition) + apertureFieldSample.constructiveElectric.x * Number(interferenceModes.constructive),
+        y: apertureFieldSample.electric.y * Number(interferenceModes.superposition) + apertureFieldSample.constructiveElectric.y * Number(interferenceModes.constructive),
+        z: apertureFieldSample.electric.z * Number(interferenceModes.superposition) + apertureFieldSample.constructiveElectric.z * Number(interferenceModes.constructive)
+      };
+      const linearHeight = apertureDisplacement
+        ? apertureDisplacement.y
+        : combineWaves(activeWaves, x, z, timeRef.current, interferenceModes) * transmission;
+      const useGpeResponse = waveMechanics.model === 'gpe' && !usesApertureExperiment;
+      const directionalCurvature = useGpeResponse
+        ? calculateWaveDerivative(activeWaves, x, z, timeRef.current, 2, interferenceModes) * transmission
+        : 0;
+      const height = useGpeResponse
+        ? evaluateGpeResponse(linearHeight, directionalCurvature, waveMechanics)
+        : linearHeight;
+      const displacement = apertureDisplacement
+        ? apertureDisplacement
+        : calculateWaveDisplacement(activeWaves, x, z, timeRef.current, interferenceModes);
       const tensorGaussian = calculateWaveTensorGaussian(activeWaves, x, z, timeRef.current, interferenceModes) * transmission;
       const derivative = particleShape === 'vector'
         ? calculateWaveDerivative(activeWaves, x, z, timeRef.current, particleDerivativeOrder, interferenceModes)
@@ -151,7 +344,10 @@ function WaveField({ waves, waveCount, interferenceModes, running, particleCount
       occlusions[index] = transmission;
       vectorAngles[index] = Math.atan(derivative * 0.35);
       tensorGaussians[index] = tensorGaussian;
-      const hue = height >= 0 ? 0.12 - normalized * 0.06 : 0.52 + normalized * 0.08;
+      const modelDifference = Math.min(1, Math.abs(height - linearHeight));
+      const hue = waveMechanics.showDifference
+        ? 0.55 - modelDifference * 0.43
+        : height >= 0 ? 0.12 - normalized * 0.06 : 0.52 + normalized * 0.08;
       color.setHSL(hue, 0.72, 0.42 + normalized * 0.18);
       colors[index * 3] = color.r;
       colors[index * 3 + 1] = color.g;
@@ -181,7 +377,11 @@ function SignalSourceArrows({ waves, waveCount, visible }) {
   );
 }
 
-function WaveScene({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, occlusionPreset, orbitControlsVisible, sourceVectorsVisible }) {
+function WaveScene({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, occlusionPreset, orbitControlsVisible, sourceVectorsVisible, waveMechanics, experimentMode, detectionTime, glowTime, apertureSettings, detectorBrightness }) {
+  const timeRef = useRef(0);
+  const apertureField = useMemo(() => APERTURE_EXPERIMENT_MODES.includes(experimentMode)
+    ? prepareApertureField(waves.slice(0, waveCount), experimentMode, apertureSettings)
+    : null, [apertureSettings, experimentMode, waveCount, waves]);
   return (
     <>
       <color attach="background" args={['#080d17']} />
@@ -189,7 +389,11 @@ function WaveScene({ waves, waveCount, interferenceModes, running, particleCount
       <ambientLight intensity={0.7} color="#b5d8d1" />
       <gridHelper args={[FIELD_SIZE, 18, '#294555', '#142631']} position={[0, -1.35, 0]} />
       <SignalSourceArrows waves={waves} waveCount={waveCount} visible={sourceVectorsVisible} />
-      <WaveField waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} occlusionPreset={occlusionPreset} />
+      {['single-slit', 'double-slit', 'grating'].includes(experimentMode) && <SlitScreen experimentMode={experimentMode} apertureSettings={apertureSettings} />}
+      {experimentMode === 'pinhole' && <PinholeScreen />}
+      {experimentMode === 'two-source' && <TwoSourceMarkers />}
+      <WaveField waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} timeRef={timeRef} experimentMode={experimentMode} apertureField={apertureField} apertureSettings={apertureSettings} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} occlusionPreset={occlusionPreset} waveMechanics={waveMechanics} />
+      {APERTURE_EXPERIMENT_MODES.includes(experimentMode) && <ExperimentDetector key={experimentMode} apertureField={apertureField} running={running} timeRef={timeRef} detectionTime={detectionTime} glowTime={glowTime} detectorBrightness={detectorBrightness} />}
       {orbitControlsVisible && <OrbitControls makeDefault enableDamping dampingFactor={0.08} minDistance={7} maxDistance={32} target={[0, 0, 0]} />}
     </>
   );
@@ -197,6 +401,21 @@ function WaveScene({ waves, waveCount, interferenceModes, running, particleCount
 
 function RangeControl({ label, value, min, max, step, onChange, suffix = '', editing = false, isDefault = true, onReset }) {
   return <NumericParamControl className="wave-range-control" label={label} value={value} min={min} max={max} step={step} suffix={suffix} editing={editing} isDefault={isDefault} onReset={onReset} onChange={onChange} />;
+}
+
+function WaveMechanicsOverlay({ value, onChange }) {
+  return (
+    <section className="wave-mechanics-overlay" aria-label="Optional wave mechanics">
+      <span className="wave-section-label">OPTIONAL MECHANICS</span>
+      <ParamSelect className="wave-select" label="Evolution" value={value.model} options={WAVE_EVOLUTION_OPTIONS} onChange={(model) => onChange({ ...value, model })} />
+      {value.model === 'gpe' && <>
+        <RangeControl label="Nonlinear coupling" value={value.nonlinearCoupling} min={0} max={1} step={0.01} onChange={(nonlinearCoupling) => onChange({ ...value, nonlinearCoupling })} />
+        <RangeControl label="Directional dispersion" value={value.dispersion} min={0} max={1} step={0.01} onChange={(dispersion) => onChange({ ...value, dispersion })} />
+        <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={value.showDifference} onChange={(event) => onChange({ ...value, showDifference: event.target.checked })} /><span>Color difference from linear</span></label>
+        <p className="wave-description">Response overlay only; not a time-integrated GPE solver.</p>
+      </>}
+    </section>
+  );
 }
 
 function VectorControl({ label, value, min, max, step, onChange, editing = false, isDefault = () => true, onReset = () => {} }) {
@@ -329,7 +548,7 @@ function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate
   );
 }
 
-function WavePanel({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, orbitControlsVisible, sourceVectorsVisible, sourcePreset, occlusionPreset, stateOptions, selectedState, stateDescription, stateName, stateMessage, paramsVisible, onSourcePreset, onOcclusionPreset, onStateChange, onStateName, onSaveState, onChange, onWaveCountChange, onInterferenceChange, onRunning, onReset, onDuplicate, onRemove, onDoubleSided, onParticleCount, onParticleSize, onParticleOpacity, onParticleShape, onParticleDerivativeOrder, onOrbitControls, onSourceVectors, onBack, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {}, isDefault = () => true, onResetPath = () => {} }) {
+function WavePanel({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, orbitControlsVisible, sourceVectorsVisible, sourcePreset, occlusionPreset, stateOptions, selectedState, stateDescription, stateName, stateMessage, paramsVisible, experimentMode, detectionTime, glowTime, apertureSettings, detectorBrightness, onExperimentModeChange, onDetectionTime, onGlowTime, onApertureSettingsChange, onDetectorBrightness, onSourcePreset, onOcclusionPreset, onStateChange, onStateName, onSaveState, onChange, onWaveCountChange, onInterferenceChange, onRunning, onReset, onDuplicate, onRemove, onDoubleSided, onParticleCount, onParticleSize, onParticleOpacity, onParticleShape, onParticleDerivativeOrder, onOrbitControls, onSourceVectors, onBack, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {}, isDefault = () => true, onResetPath = () => {} }) {
   const enabledCount = waves.slice(0, waveCount).filter((wave) => wave.enabled).length;
   const activeModeLabels = Object.entries(INTERFERENCE_MODES).filter(([mode]) => interferenceModes[mode]).map(([, details]) => details.label);
   return (
@@ -350,12 +569,41 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
         <ParamSelect className="wave-select wave-state-select" label="Source preset" value={sourcePreset} options={[{ value: '', label: 'Current field' }, ...SIGNAL_SOURCE_PRESETS.map((preset) => ({ value: preset.id, label: preset.name }))]} onChange={onSourcePreset} />
         {sourcePreset && <p className="wave-description wave-state-description">{SIGNAL_SOURCE_PRESETS.find((preset) => preset.id === sourcePreset)?.description}</p>}
       </section>
+      <section className="wave-control-section wave-state-section">
+        <span className="wave-section-label">EXPERIMENT MODE</span>
+        <ParamSelect className="wave-select wave-state-select" label="Experiment mode" value={experimentMode} options={[{ value: 'field', label: 'Wave field' }, { value: 'single-slit', label: 'Single-slit diffraction' }, { value: 'double-slit', label: 'Double-slit experiment' }, { value: 'pinhole', label: 'Pinhole diffraction' }, { value: 'grating', label: 'Diffraction grating' }, { value: 'two-source', label: 'Two coherent sources' }]} onChange={onExperimentModeChange} />
+        {APERTURE_EXPERIMENT_MODES.includes(experimentMode) && <>
+          <p className="wave-description">{experimentMode === 'single-slit'
+            ? 'A finite slit illuminates the full two-dimensional detector.'
+            : experimentMode === 'double-slit'
+              ? 'Coherent fields pass through two finite slits before the detector averages intensity.'
+              : experimentMode === 'pinhole'
+                ? 'A circular aperture is sampled across both transverse axes; the detector records its radial pattern.'
+                : experimentMode === 'grating'
+                  ? 'Five coherent slits produce narrow principal maxima on the detector.'
+                  : 'Two in-phase sources interfere across the detector without a barrier.'}</p>
+          <RangeControl label="Detection time" value={detectionTime} min={0.1} max={5} step={0.1} suffix=" s" editing={editing} isDefault={isDefault('detectionTime')} onReset={() => onResetPath('detectionTime')} onChange={onDetectionTime} />
+          <RangeControl label="Glow time" value={glowTime} min={0.2} max={10} step={0.1} suffix=" s" editing={editing} isDefault={isDefault('glowTime')} onReset={() => onResetPath('glowTime')} onChange={onGlowTime} />
+          {['single-slit', 'double-slit', 'grating'].includes(experimentMode) && <>
+            <RangeControl label="Slit position" value={apertureSettings.slitPosition} min={-3} max={3} step={0.05} suffix=" z u" editing={editing} isDefault={isDefault(['apertureSettings', 'slitPosition'])} onReset={() => onResetPath(['apertureSettings', 'slitPosition'])} onChange={(slitPosition) => onApertureSettingsChange({ ...apertureSettings, slitPosition })} />
+            {experimentMode === 'double-slit' && <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={apertureSettings.slitWidthsLinked} onChange={(event) => onApertureSettingsChange({ ...apertureSettings, slitWidthsLinked: event.target.checked, ...(event.target.checked ? { slitWidthB: apertureSettings.slitWidthA } : {}) })} /><span>Link slit widths</span></label>}
+            {experimentMode === 'double-slit' && !apertureSettings.slitWidthsLinked ? <>
+              <RangeControl label="Left slit width" value={apertureSettings.slitWidthA} min={0.2} max={2.4} step={0.05} suffix=" u" editing={editing} isDefault={isDefault(['apertureSettings', 'slitWidthA'])} onReset={() => onResetPath(['apertureSettings', 'slitWidthA'])} onChange={(slitWidthA) => onApertureSettingsChange({ ...apertureSettings, slitWidthA })} />
+              <RangeControl label="Right slit width" value={apertureSettings.slitWidthB} min={0.2} max={2.4} step={0.05} suffix=" u" editing={editing} isDefault={isDefault(['apertureSettings', 'slitWidthB'])} onReset={() => onResetPath(['apertureSettings', 'slitWidthB'])} onChange={(slitWidthB) => onApertureSettingsChange({ ...apertureSettings, slitWidthB })} />
+            </> : <RangeControl label={experimentMode === 'grating' ? 'Grating slit width' : 'Slit width'} value={apertureSettings.slitWidthA} min={0.2} max={experimentMode === 'grating' ? 1.4 : experimentMode === 'double-slit' ? 2.4 : 3.6} step={0.05} suffix=" u" editing={editing} isDefault={isDefault(['apertureSettings', 'slitWidthA'])} onReset={() => onResetPath(['apertureSettings', 'slitWidthA'])} onChange={(slitWidthA) => onApertureSettingsChange({ ...apertureSettings, slitWidthA, ...(experimentMode === 'double-slit' ? { slitWidthB: slitWidthA } : {}) })} />}
+          </>}
+          <RangeControl label="Detector brightness" value={detectorBrightness} min={0.25} max={2.5} step={0.05} editing={editing} isDefault={isDefault('detectorBrightness')} onReset={() => onResetPath('detectorBrightness')} onChange={onDetectorBrightness} />
+        </>}
+      </section>
+      <section className="wave-control-section">
+        <span className="wave-section-label">WAVE INTERFERENCE MODE</span>
+        <p className="wave-description">{APERTURE_EXPERIMENT_MODES.includes(experimentMode) ? 'Field layers affect the particle display; the detector always measures coherent intensity.' : activeModeLabels.length > 0 ? activeModeLabels.join(' + ') : 'No interference layers are active; the field is flat.'}</p>
+        <div className="wave-interference-modes">{Object.entries(INTERFERENCE_MODES).map(([mode, details]) => <label className="wave-toggle wave-interference-mode" key={mode}><input type="checkbox" checked={interferenceModes[mode]} onChange={(event) => onInterferenceChange(mode, event.target.checked)} /><span>{details.label}</span></label>)}</div>
+      </section>
       <section className="wave-control-section">
         <span className="wave-section-label">FIELD RESPONSE</span>
-        <RangeControl label="Wave slots" value={waveCount} min={1} max={MAX_WAVES} step={1} editing={editing} isDefault={isDefault('waveCount')} onReset={() => onResetPath('waveCount')} onChange={onWaveCountChange} />
-        <div className="wave-interference-modes">{Object.entries(INTERFERENCE_MODES).map(([mode, details]) => <label className="wave-toggle wave-interference-mode" key={mode}><input type="checkbox" checked={interferenceModes[mode]} onChange={(event) => onInterferenceChange(mode, event.target.checked)} /><span>{details.label}</span></label>)}</div>
-        <p className="wave-description">{activeModeLabels.length > 0 ? activeModeLabels.join(' + ') : 'No interference layers are active; the field is flat.'}</p>
         <div className="wave-actions"><button type="button" onClick={onRunning}>{running ? 'Pause field' : 'Run field'}</button><button type="button" onClick={onReset}>Reset waves</button></div>
+        <RangeControl label="Wave slots" value={waveCount} min={1} max={MAX_WAVES} step={1} editing={editing} isDefault={isDefault('waveCount')} onReset={() => onResetPath('waveCount')} onChange={onWaveCountChange} />
       </section>
       <section className="wave-control-section">
         <span className="wave-section-label">WAVE PARAMETERS</span>
@@ -396,13 +644,23 @@ export default function WaveInterferenceSim({ onBack }) {
     particleDerivativeOrder: 1,
     orbitControlsVisible: true,
     sourceVectorsVisible: true,
-    occlusionPreset: 'none'
+    occlusionPreset: 'none',
+    experimentMode: 'field',
+    detectionTime: 1,
+    glowTime: 3,
+    apertureSettings: { ...DEFAULT_APERTURE_SETTINGS },
+    detectorBrightness: 1
   };
   const [waves, setWaves] = useState(() => initialWaveState.waves);
   const [waveCount, setWaveCount] = useState(initialWaveState.waveCount);
   const [interferenceModes, setInterferenceModes] = useState(initialWaveState.interferenceModes);
   const [sourcePreset, setSourcePreset] = useState('');
   const [occlusionPreset, setOcclusionPresetState] = useState('none');
+  const [experimentMode, setExperimentModeState] = useState('field');
+  const [detectionTime, setDetectionTime] = useState(1);
+  const [glowTime, setGlowTime] = useState(3);
+  const [apertureSettings, setApertureSettings] = useState(() => ({ ...DEFAULT_APERTURE_SETTINGS }));
+  const [detectorBrightness, setDetectorBrightness] = useState(1);
   const [particleCount, setParticleCount] = useState(E2E_PARTICLE_COUNT ?? DEFAULT_PARTICLE_COUNT);
   const [savedStates, setSavedStates] = useState(() => readSavedWaveStates());
   const [selectedState, setSelectedState] = useState(initialState.name);
@@ -417,9 +675,10 @@ export default function WaveInterferenceSim({ onBack }) {
   const [particleDerivativeOrder, setParticleDerivativeOrder] = useState(1);
   const [orbitControlsVisible, setOrbitControlsVisible] = useState(true);
   const [sourceVectorsVisible, setSourceVectorsVisible] = useState(true);
+  const [waveMechanics, setWaveMechanics] = useState({ model: 'linear', nonlinearCoupling: 0.08, dispersion: 0.05, showDifference: false });
   const [paramsVisible, setParamsVisible] = useState(true);
   const [editing, setEditing] = useState(false);
-  const waveEditor = useSimulationEditor({ waves, waveCount, interferenceModes, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, orbitControlsVisible, sourceVectorsVisible, occlusionPreset });
+  const waveEditor = useSimulationEditor({ waves, waveCount, interferenceModes, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, orbitControlsVisible, sourceVectorsVisible, occlusionPreset, experimentMode, detectionTime, glowTime, apertureSettings, detectorBrightness });
   const { canUndo, canRedo, undo, redo } = waveEditor;
   useUndoRedoShortcuts({ undo, redo, canUndo, canRedo, isTextEditing: (target) => ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) });
   useEffect(() => {
@@ -436,15 +695,45 @@ export default function WaveInterferenceSim({ onBack }) {
     setOrbitControlsVisible(next.orbitControlsVisible);
     setSourceVectorsVisible(next.sourceVectorsVisible);
     setOcclusionPresetState(next.occlusionPreset);
+    setExperimentModeState(next.experimentMode);
+    setDetectionTime(next.detectionTime);
+    setGlowTime(next.glowTime);
+    setApertureSettings(next.apertureSettings);
+    setDetectorBrightness(next.detectorBrightness);
   }, [waveEditor.value]);
   const setOcclusionPreset = (value) => {
-    waveEditor.commit((current) => ({ ...current, occlusionPreset: value }));
+    const experimentMode = EXPERIMENT_MODE_BY_PRESET[value];
+    if (experimentMode) {
+      waveEditor.commit((current) => ({ ...current, occlusionPreset: value, experimentMode }));
+      markStateModified();
+      return;
+    }
+    waveEditor.commit((current) => ({ ...current, occlusionPreset: value, experimentMode: 'field' }));
     markStateModified();
   };
   const sourceFrame = calculateWaveFrame(waves.slice(0, waveCount).find((wave) => wave.enabled !== false) || waves[0]);
 
   const markStateModified = () => {
     setSourcePreset('');
+    setStateModified(true);
+    setStateMessage('Current field has unsaved changes.');
+  };
+  const setExperimentMode = (mode) => {
+    const experimentStateName = EXPERIMENT_STATE_NAMES[mode];
+    if (experimentStateName) {
+      const state = DEFAULT_WAVE_STATES.find((item) => item.name === experimentStateName);
+      if (!state) return;
+      const next = cloneWaveState(state);
+      waveEditor.load((current) => ({ ...current, waves: next.waves, waveCount: next.waveCount, interferenceModes: next.interferenceModes, occlusionPreset: EXPERIMENT_PRESET_IDS[mode] ?? 'none', experimentMode: mode }));
+      setSourcePreset('');
+      setSelectedState(state.name);
+      setStateModified(false);
+      setStateMessage(`Loaded ${state.name}.`);
+      return;
+    }
+    waveEditor.commit((current) => ({ ...current, occlusionPreset: 'none', experimentMode: 'field' }));
+    setSourcePreset('');
+    setSelectedState('');
     setStateModified(true);
     setStateMessage('Current field has unsaved changes.');
   };
@@ -458,6 +747,10 @@ export default function WaveInterferenceSim({ onBack }) {
   };
   const updateSetting = (key, value) => {
     waveEditor.commit((current) => ({ ...current, [key]: value }));
+    markStateModified();
+  };
+  const updateApertureSettings = (value) => {
+    waveEditor.commit((current) => ({ ...current, apertureSettings: normalizeApertureSettings(value) }));
     markStateModified();
   };
   const updateInterference = (mode, value) => {
@@ -485,7 +778,14 @@ export default function WaveInterferenceSim({ onBack }) {
   };
   const applyState = (state) => {
     const next = cloneWaveState(state);
-    waveEditor.load((current) => ({ ...current, waves: next.waves, waveCount: next.waveCount, interferenceModes: next.interferenceModes }));
+    const experimentMode = EXPERIMENT_MODE_BY_STATE[state.name];
+    waveEditor.load((current) => ({
+      ...current,
+      waves: next.waves,
+      waveCount: next.waveCount,
+      interferenceModes: next.interferenceModes,
+      ...(experimentMode ? { occlusionPreset: EXPERIMENT_PRESET_IDS[experimentMode] ?? 'none', experimentMode } : {})
+    }));
   };
   const onSourcePreset = (id) => {
     if (!id) {
@@ -544,10 +844,73 @@ export default function WaveInterferenceSim({ onBack }) {
 
   return (
     <main className="wave-app">
-      <div className="wave-scene" data-particle-count={particleCount} data-occlusion-preset={occlusionPreset} data-orbit-controls={orbitControlsVisible} data-source-vectors={sourceVectorsVisible} data-source-frame={JSON.stringify({ origin: sourceFrame.origin, direction: sourceFrame.direction })}><Canvas camera={{ position: [11, 8, 12], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><WaveScene waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} occlusionPreset={occlusionPreset} orbitControlsVisible={orbitControlsVisible} sourceVectorsVisible={sourceVectorsVisible} /></Canvas></div>
+      <div className="wave-scene" data-particle-count={particleCount} data-occlusion-preset={occlusionPreset} data-experiment-mode={experimentMode} data-detection-time={detectionTime} data-glow-time={glowTime} data-slit-position={apertureSettings.slitPosition} data-slit-width-a={apertureSettings.slitWidthA} data-slit-width-b={apertureSettings.slitWidthB} data-slit-widths-linked={apertureSettings.slitWidthsLinked} data-detector-brightness={detectorBrightness} data-orbit-controls={orbitControlsVisible} data-source-vectors={sourceVectorsVisible} data-source-frame={JSON.stringify({ origin: sourceFrame.origin, direction: sourceFrame.direction })}><Canvas camera={{ position: [11, 8, 12], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><WaveScene waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} occlusionPreset={occlusionPreset} orbitControlsVisible={orbitControlsVisible} sourceVectorsVisible={sourceVectorsVisible} waveMechanics={waveMechanics} experimentMode={experimentMode} detectionTime={detectionTime} glowTime={glowTime} apertureSettings={apertureSettings} detectorBrightness={detectorBrightness} /></Canvas></div>
       <header className="wave-topbar"><div className="wave-brand"><span className="wave-mark">WAV</span><span><b>WAVE FIELD LAB</b><em>Phase geometry / interference study</em></span></div><div className="wave-top-meta"><span>WEBGL / FIELD SYNTHESIS</span><button type="button" className="wave-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button><button type="button" className="wave-run-toggle" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></div></header>
       <section className="wave-title"><p>Animated phase experiment</p><h1>Shape the interference.</h1><span>Independent wavelength, amplitude, phase mode, and phase parameters for every active wave.</span></section>
-      <WavePanel waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} orbitControlsVisible={orbitControlsVisible} sourceVectorsVisible={sourceVectorsVisible} sourcePreset={sourcePreset} occlusionPreset={occlusionPreset} stateOptions={stateOptions} selectedState={selectedStateValue} stateDescription={stateModified ? '' : selectedStateDetails?.description} stateName={stateName} stateMessage={stateMessage} paramsVisible={paramsVisible} onSourcePreset={onSourcePreset} onOcclusionPreset={setOcclusionPreset} onStateChange={onStateChange} onStateName={setStateName} onSaveState={onSaveState} onChange={updateWave} onWaveCountChange={updateWaveCount} onInterferenceChange={(mode, value) => { setInterferenceModes((current) => ({ ...current, [mode]: value })); waveEditor.commit((current) => ({ ...current, interferenceModes: { ...current.interferenceModes, [mode]: value } })); markStateModified(); }} onRunning={() => setRunning((value) => !value)} onReset={reset} onDuplicate={duplicateWave} onRemove={removeWave} onDoubleSided={(value) => { setDoubleSided(value); waveEditor.commit((current) => ({ ...current, doubleSided: value })); }} onParticleCount={(value) => { setParticleCount(value); waveEditor.commit((current) => ({ ...current, particleCount: value })); }} onParticleSize={(value) => { setParticleSize(value); waveEditor.commit((current) => ({ ...current, particleSize: value })); }} onParticleOpacity={(value) => { setParticleOpacity(value); waveEditor.commit((current) => ({ ...current, particleOpacity: value })); }} onParticleShape={(value) => { setParticleShape(value); waveEditor.commit((current) => ({ ...current, particleShape: value })); }} onParticleDerivativeOrder={(value) => { setParticleDerivativeOrder(value); waveEditor.commit((current) => ({ ...current, particleDerivativeOrder: value })); }} onOrbitControls={(value) => { setOrbitControlsVisible(value); waveEditor.commit((current) => ({ ...current, orbitControlsVisible: value })); }} onSourceVectors={(value) => { setSourceVectorsVisible(value); waveEditor.commit((current) => ({ ...current, sourceVectorsVisible: value })); }} onBack={onBack} editing={editing} onEditing={setEditing} canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} />
+      <WavePanel
+        waves={waves}
+        waveCount={waveCount}
+        interferenceModes={interferenceModes}
+        running={running}
+        particleCount={particleCount}
+        doubleSided={doubleSided}
+        particleSize={particleSize}
+        particleOpacity={particleOpacity}
+        particleShape={particleShape}
+        particleDerivativeOrder={particleDerivativeOrder}
+        orbitControlsVisible={orbitControlsVisible}
+        sourceVectorsVisible={sourceVectorsVisible}
+        sourcePreset={sourcePreset}
+        occlusionPreset={occlusionPreset}
+        stateOptions={stateOptions}
+        selectedState={selectedStateValue}
+        stateDescription={stateModified ? '' : selectedStateDetails?.description}
+        stateName={stateName}
+        stateMessage={stateMessage}
+        paramsVisible={paramsVisible}
+        experimentMode={experimentMode}
+        detectionTime={detectionTime}
+        glowTime={glowTime}
+        apertureSettings={apertureSettings}
+        detectorBrightness={detectorBrightness}
+        onExperimentModeChange={setExperimentMode}
+        onDetectionTime={(value) => updateSetting('detectionTime', value)}
+        onGlowTime={(value) => updateSetting('glowTime', value)}
+        onApertureSettingsChange={updateApertureSettings}
+        onDetectorBrightness={(value) => updateSetting('detectorBrightness', value)}
+        onSourcePreset={onSourcePreset}
+        onOcclusionPreset={setOcclusionPreset}
+        onStateChange={onStateChange}
+        onStateName={setStateName}
+        onSaveState={onSaveState}
+        onChange={updateWave}
+        onWaveCountChange={updateWaveCount}
+        onInterferenceChange={(mode, value) => {
+          setInterferenceModes((current) => ({ ...current, [mode]: value }));
+          waveEditor.commit((current) => ({ ...current, interferenceModes: { ...current.interferenceModes, [mode]: value } }));
+          markStateModified();
+        }}
+        onRunning={() => setRunning((value) => !value)}
+        onReset={reset}
+        onDuplicate={duplicateWave}
+        onRemove={removeWave}
+        onDoubleSided={(value) => { setDoubleSided(value); waveEditor.commit((current) => ({ ...current, doubleSided: value })); }}
+        onParticleCount={(value) => { setParticleCount(value); waveEditor.commit((current) => ({ ...current, particleCount: value })); }}
+        onParticleSize={(value) => { setParticleSize(value); waveEditor.commit((current) => ({ ...current, particleSize: value })); }}
+        onParticleOpacity={(value) => { setParticleOpacity(value); waveEditor.commit((current) => ({ ...current, particleOpacity: value })); }}
+        onParticleShape={(value) => { setParticleShape(value); waveEditor.commit((current) => ({ ...current, particleShape: value })); }}
+        onParticleDerivativeOrder={(value) => { setParticleDerivativeOrder(value); waveEditor.commit((current) => ({ ...current, particleDerivativeOrder: value })); }}
+        onOrbitControls={(value) => { setOrbitControlsVisible(value); waveEditor.commit((current) => ({ ...current, orbitControlsVisible: value })); }}
+        onSourceVectors={(value) => { setSourceVectorsVisible(value); waveEditor.commit((current) => ({ ...current, sourceVectorsVisible: value })); }}
+        onBack={onBack}
+        editing={editing}
+        onEditing={setEditing}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        onUndo={undo}
+        onRedo={redo}
+      />
+      {!paramsVisible && !APERTURE_EXPERIMENT_MODES.includes(experimentMode) && <WaveMechanicsOverlay value={waveMechanics} onChange={setWaveMechanics} />}
       <footer className="wave-footer"><span>n WAVES / {Object.entries(INTERFERENCE_MODES).filter(([mode]) => interferenceModes[mode]).map(([, details]) => details.label.toUpperCase()).join(' + ') || 'NO INTERFERENCE'}</span><span>DRAG TO ORBIT / SCROLL TO ZOOM</span></footer>
     </main>
   );

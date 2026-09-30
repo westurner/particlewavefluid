@@ -333,3 +333,95 @@ test('source orbit control edits origin direction and rotation with pointer inpu
   assert.notEqual(await rotationInputs.nth(0).inputValue(), rotationBefore, 'rotation drag should change rotation X');
   assert.deepEqual(pageErrors, [], `wave simulator reported page errors: ${pageErrors.join('; ')}`);
 });
+
+test('double-slit experiment renders a detector and applies exposure and glow times', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => localStorage.clear());
+
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /01 \/ LOAD FIELD/ }).click();
+  await page.locator('.wave-panel').waitFor();
+  const canvas = page.locator('.wave-scene canvas');
+  const beforeExperiment = await canvas.screenshot();
+  await selectParam(page, 'Experiment mode', 'double-slit');
+  await page.waitForTimeout(500);
+
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-experiment-mode'), 'double-slit');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-occlusion-preset'), 'double-slit');
+  assert.equal(await page.getByRole('combobox', { name: 'Named state' }).textContent().then((text) => /Double-slit experiment/.test(text)), true);
+  assert.ok(countChangedPixels(beforeExperiment, await canvas.screenshot()) > 1000, 'screen and detector should change the rendered scene');
+  const constructiveMode = page.locator('.wave-interference-mode input').first();
+  assert.equal(await constructiveMode.isDisabled(), false);
+  await page.locator('.wave-run-toggle').click();
+  const beforeConstructive = await canvas.screenshot();
+  await constructiveMode.check();
+  assert.equal(await constructiveMode.isChecked(), true);
+  await page.waitForTimeout(120);
+  assert.ok(countChangedPixels(beforeConstructive, await canvas.screenshot()) > 100, 'constructive mode should change the double-slit field display');
+
+  const detectionTime = page.locator('.wave-range-control').filter({ hasText: 'Detection time' }).locator('input[type="range"]');
+  const glowTime = page.locator('.wave-range-control').filter({ hasText: 'Glow time' }).locator('input[type="range"]');
+  await detectionTime.fill('2.3');
+  await glowTime.fill('4.5');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-detection-time'), '2.3');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-glow-time'), '4.5');
+
+  const widthLink = page.getByLabel('Link slit widths');
+  assert.equal(await widthLink.isChecked(), true);
+  const linkedWidth = page.locator('.wave-range-control').filter({ hasText: 'Slit width' }).locator('input[type="range"]');
+  await linkedWidth.fill('1.35');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-slit-width-a'), '1.35');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-slit-width-b'), '1.35');
+  await widthLink.uncheck();
+  const leftWidth = page.locator('.wave-range-control').filter({ hasText: 'Left slit width' }).locator('input[type="range"]');
+  const rightWidth = page.locator('.wave-range-control').filter({ hasText: 'Right slit width' }).locator('input[type="range"]');
+  await leftWidth.fill('0.6');
+  await rightWidth.fill('1.2');
+  const slitPosition = page.locator('.wave-range-control').filter({ hasText: 'Slit position' }).locator('input[type="range"]');
+  await slitPosition.fill('0.65');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-slit-width-a'), '0.6');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-slit-width-b'), '1.2');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-slit-position'), '0.65');
+  const beforeBrightness = await canvas.screenshot();
+  const detectorBrightness = page.locator('.wave-range-control').filter({ hasText: 'Detector brightness' }).locator('input[type="range"]');
+  await detectorBrightness.fill('1.8');
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-detector-brightness'), '1.8');
+  assert.ok(countChangedPixels(beforeBrightness, await canvas.screenshot()) > 50, 'detector brightness should update the plate while paused');
+
+  await page.locator('.wave-run-toggle').click();
+  const beforePinhole = await canvas.screenshot();
+  await selectParam(page, 'Experiment mode', 'pinhole');
+  await page.waitForTimeout(500);
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-experiment-mode'), 'pinhole');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-occlusion-preset'), 'pinhole');
+  assert.equal(await page.getByRole('combobox', { name: 'Named state' }).textContent().then((text) => /Pinhole experiment/.test(text)), true);
+  assert.ok(countChangedPixels(beforePinhole, await canvas.screenshot()) > 1000, 'circular aperture and 2D detector should change the scene');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(200);
+  assert.ok(countParticlePixels(await canvas.screenshot()) > 50, 'pinhole diffraction should remain visible on mobile');
+  await page.setViewportSize({ width: 1440, height: 1000 });
+
+  await selectParam(page, 'Occlusion map', 'single-slit');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-experiment-mode'), 'single-slit');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-occlusion-preset'), 'single-slit');
+
+  await selectParam(page, 'Experiment mode', 'grating');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-experiment-mode'), 'grating');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-occlusion-preset'), 'diffraction-grating');
+  await selectParam(page, 'Experiment mode', 'two-source');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-experiment-mode'), 'two-source');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-occlusion-preset'), 'none');
+  await selectParam(page, 'Occlusion map', 'boulder');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-experiment-mode'), 'field');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-occlusion-preset'), 'boulder');
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(200);
+  assert.ok(countParticlePixels(await canvas.screenshot()) > 50, 'double-slit field and detector should remain visible on mobile');
+  assert.deepEqual(pageErrors, [], `wave simulator reported page errors: ${pageErrors.join('; ')}`);
+});

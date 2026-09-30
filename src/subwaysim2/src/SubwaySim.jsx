@@ -3,8 +3,9 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { ContactShadows, OrbitControls } from '@react-three/drei';
 import { AdditiveBlending, BackSide, Color, DoubleSide, ExtrudeGeometry, InstancedBufferAttribute, MathUtils, Shape, ShapeGeometry, ShaderMaterial, SphereGeometry, Vector3 } from 'three';
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
-import { HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle } from './lib/ParamControls.jsx';
+import { HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
+import { FLUID_MODEL_OPTIONS, fluidModelIndex } from './mechanicsModels.js';
 import {
   AIRFLOW_PARAMS,
   FLUID_BOUNDS,
@@ -51,6 +52,9 @@ const INITIALS = {
   density: 1.18,
   stiffness: 5,
   viscosity: 0.012,
+  constitutiveModel: 'baseline',
+  constitutiveStrength: 1,
+  constitutiveSpeedLimit: 8,
   train: true,
   ac: true,
   brakes: true,
@@ -249,6 +253,9 @@ const velocityShader = `
   uniform float uRestDensity;
   uniform float uStiffness;
   uniform float uViscosity;
+  uniform float uFluidModel;
+  uniform float uConstitutiveStrength;
+  uniform float uConstitutiveSpeedLimit;
   uniform float uTrainPosX;
   uniform float uTrainVelX;
   uniform float uShaftExchange;
@@ -310,6 +317,20 @@ const velocityShader = `
     float density = 0.0;
     vec3 pressureForce = vec3(0.0);
     vec3 viscosityForce = vec3(0.0);
+    float strainRate = length(particleVelocity) / max(uRadius, 0.05);
+    float localViscosity = uViscosity;
+    float thermalTransport = 1.0;
+    if (uFluidModel > 0.5 && uFluidModel < 1.5) {
+      float localTemperature = mix(60.0, 110.0, thermalIntensity);
+      float temperatureFactor = exp(-0.02 * (localTemperature - 72.0));
+      float shearFactor = pow(max(1.0, strainRate), -0.35 * uConstitutiveStrength);
+      localViscosity *= temperatureFactor * shearFactor;
+      thermalTransport = 1.45;
+    } else if (uFluidModel > 1.5) {
+      float beta = clamp(length(particleVelocity) / max(uConstitutiveSpeedLimit, 0.1), 0.0, 0.9999);
+      float lorentzFactor = inversesqrt(1.0 - beta * beta);
+      localViscosity *= 1.0 + uConstitutiveStrength * ((lorentzFactor - 1.0) + strainRate);
+    }
 
     for (float y = 0.0; y < resolution.y; y += 2.0) {
       for (float x = 0.0; x < resolution.x; x += 2.0) {
@@ -338,7 +359,7 @@ const velocityShader = `
           float kernelPosition = distanceToNeighbor / uRadius;
           float kernelWeight = cubicSplineKernel(kernelPosition);
           pressureForce += normalize(offset) * pressure * (1.0 - kernelPosition);
-          viscosityForce += uViscosity * (neighborVelocity - particleVelocity) * kernelWeight;
+          viscosityForce += localViscosity * (neighborVelocity - particleVelocity) * kernelWeight;
         }
       }
     }
@@ -348,7 +369,7 @@ const velocityShader = `
     float surfaceBand = 1.0 - smoothstep(0.0, 2.1, abs(particlePosition.y + 2.4));
     float surfaceThermalDelta = surfaceHeat - 0.42;
     acceleration.y += surfaceThermalDelta * surfaceBand * 0.55;
-    thermalIntensity = clamp(thermalIntensity + uDt * surfaceThermalDelta * surfaceBand * 0.25, 0.0, 1.0);
+    thermalIntensity = clamp(thermalIntensity + uDt * surfaceThermalDelta * surfaceBand * 0.25 * thermalTransport, 0.0, 1.0);
     float passengerInfluence = 0.0;
     ${PASSENGER_HEAT_SOURCES_GLSL}
     if (surfaceParticle < 0.5) {
@@ -364,7 +385,7 @@ const velocityShader = `
       * step(particlePosition.z, ${glslFloat(STREET_VOLUME.maxZ)});
     float roadThermalDelta = clamp((uRoadSurfaceTemperature - uAmbientAirTemperature) / 40.0, -1.0, 1.0);
     acceleration.y += roadThermalDelta * roadBand * 1.15;
-    thermalIntensity = clamp(thermalIntensity + uDt * roadThermalDelta * roadBand * 0.35, 0.0, 1.0);
+    thermalIntensity = clamp(thermalIntensity + uDt * roadThermalDelta * roadBand * 0.35 * thermalTransport, 0.0, 1.0);
     float ambientBand = surfaceParticle * smoothstep(uStreetY + 0.8, uStreetY + 2.4, particlePosition.y);
     float ambientHeat = clamp((uAmbientAirTemperature - 60.0) / 50.0, 0.0, 1.0);
     acceleration.y += (ambientHeat - 0.42) * ambientBand * 0.1;
@@ -688,6 +709,9 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
       velocityVariable.material.uniforms.uRestDensity = { value: INITIALS.density };
       velocityVariable.material.uniforms.uStiffness = { value: INITIALS.stiffness };
       velocityVariable.material.uniforms.uViscosity = { value: INITIALS.viscosity };
+      velocityVariable.material.uniforms.uFluidModel = { value: fluidModelIndex(INITIALS.constitutiveModel) };
+      velocityVariable.material.uniforms.uConstitutiveStrength = { value: INITIALS.constitutiveStrength };
+      velocityVariable.material.uniforms.uConstitutiveSpeedLimit = { value: INITIALS.constitutiveSpeedLimit };
       velocityVariable.material.uniforms.uTrainPosX = { value: 0 };
       velocityVariable.material.uniforms.uTrainVelX = { value: 0 };
       velocityVariable.material.uniforms.uShaftExchange = { value: INITIALS.shaftExchange };
@@ -782,6 +806,9 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
     velocityVariable.material.uniforms.uRestDensity.value = currentSettings.density;
     velocityVariable.material.uniforms.uStiffness.value = currentSettings.stiffness;
     velocityVariable.material.uniforms.uViscosity.value = currentSettings.viscosity;
+    velocityVariable.material.uniforms.uFluidModel.value = fluidModelIndex(currentSettings.constitutiveModel);
+    velocityVariable.material.uniforms.uConstitutiveStrength.value = currentSettings.constitutiveStrength;
+    velocityVariable.material.uniforms.uConstitutiveSpeedLimit.value = currentSettings.constitutiveSpeedLimit;
     velocityVariable.material.uniforms.uTrainPosX.value = trainState.positionX;
     velocityVariable.material.uniforms.uTrainVelX.value = trainState.velocityX;
     velocityVariable.material.uniforms.uShaftExchange.value = currentSettings.shaftExchange;
@@ -1812,6 +1839,9 @@ function TelemetryPanel({ settings, onSettingsChange, telemetry, gpuError, susta
         <summary>Fluid parameters</summary>
 
         <div className="controls-group">
+          <ParamSelect label="Constitutive model" value={settings.constitutiveModel} options={FLUID_MODEL_OPTIONS} onChange={(constitutiveModel) => onSettingsChange({ constitutiveModel })} />
+          <ControlSlider label="Constitutive strength" value={settings.constitutiveStrength} min={0} max={10} step={0.05} suffix="" description="Scales the selected experimental shear response." showDescription={showDescriptions} onChange={(constitutiveStrength) => onSettingsChange({ constitutiveStrength })} />
+          {settings.constitutiveModel === 'ddf' && <ControlSlider label="DDF speed limit" value={settings.constitutiveSpeedLimit} min={0.1} max={20} step={0.1} suffix=" m/s" description="Sets the dimensionless onset scale for the DDF viscosity increase." showDescription={showDescriptions} onChange={(constitutiveSpeedLimit) => onSettingsChange({ constitutiveSpeedLimit })} />}
           <ControlSlider label="Air density" value={settings.density} min={0.5} max={3} step={0.05} suffix=" kg/m³" description="Mass packed into each simulated air volume." showDescription={showDescriptions} onChange={(density) => onSettingsChange({ density })} />
           <ControlSlider label="Fluid stiffness" value={settings.stiffness} min={1} max={20} step={0.5} suffix="" description="How strongly nearby particles resist compression." showDescription={showDescriptions} onChange={(stiffness) => onSettingsChange({ stiffness })} />
           <ControlSlider label="Viscosity" value={settings.viscosity} min={0.001} max={0.05} step={0.001} suffix=" Pa·s" description="How quickly neighboring air velocities blend." showDescription={showDescriptions} onChange={(viscosity) => onSettingsChange({ viscosity })} />

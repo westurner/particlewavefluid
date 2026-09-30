@@ -10,7 +10,8 @@ const simulations = [
   { card: /02 \/ LOAD FIELD/, panel: '.attractor-panel' },
   { card: /03 \/ LOAD FIELD/, panel: '.attractor-panel' },
   { card: /04 \/ LOAD FIELD/, panel: '.frc-panel' },
-  { card: /05 \/ LOAD FIELD/, panel: '.telemetry-panel' }
+  { card: /05 \/ LOAD FIELD/, panel: '.attractor-panel' },
+  { card: /06 \/ LOAD FIELD/, panel: '.telemetry-panel' }
 ];
 
 test('Allow editing params shows text inputs in every simulation', async (t) => {

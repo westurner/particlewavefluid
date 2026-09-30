@@ -6,6 +6,7 @@ import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DoubleSide, E
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
 import { HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect, YamlTextArea } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
+import { compareFieldModels, DEFAULT_FIELD_MECHANICS, FIELD_MODEL_OPTIONS, fieldModelIndex, sanitizeFieldMechanics } from './mechanicsModels.js';
 
 const MAX_ATTRACTORS = 20;
 const PARTICLE_COUNT = 2 ** 18;
@@ -165,11 +166,38 @@ const MIXED_VELOCITY_SHADER = `
   uniform float uBlackHoleOrbitRadius[20];
   uniform float uBlackHoleOrbitVerticalAmplitude[20];
   uniform float uBlackHoleFractureIntensity[20];
+  uniform float uFieldModel;
+  uniform bool uMechanicsEnabled;
+  uniform bool uComparisonEnabled;
+  uniform float uComparisonModel;
+  uniform float uDifferenceScale;
+  uniform float uCoreRadius;
+  uniform float uQuantumPressure;
+  uniform float uCompressibility;
+  uniform float uDilatancy;
+  uniform float uSpeedLimit;
+  uniform float uBaseViscosity;
 
   const float GRAVITY_CONSTANT = 6.67e-11;
 
   float hash21(vec2 point) {
     return fract(sin(dot(point, vec2(127.1, 311.7))) * 43758.5453123);
+  }
+
+  vec4 fieldResponse(float model, float radius, float speed, float magnitude, float rotation) {
+    float inverseSquare = magnitude / (radius * radius);
+    if (model < 0.5) return vec4(-inverseSquare, 0.0, 0.0, 0.0);
+    float coreRatio = radius / max(uCoreRadius, 0.05);
+    float pressure = uQuantumPressure * exp(-(coreRatio * coreRatio)) / max(uCoreRadius, 0.05);
+    float sink = inverseSquare * (1.0 + uCompressibility / (1.0 + coreRatio));
+    float tangent = rotation * magnitude / radius;
+    if (model < 1.5) return vec4(-sink + pressure, tangent, uBaseViscosity, pressure);
+    float beta = clamp(speed / max(uSpeedLimit, 0.1), 0.0, 0.9999);
+    float lorentzFactor = inversesqrt(1.0 - beta * beta);
+    float strainRate = speed / radius;
+    float viscosity = uBaseViscosity * (1.0 + uDilatancy * ((lorentzFactor - 1.0) + strainRate));
+    float mobility = 1.0 / (1.0 + viscosity);
+    return vec4((-sink + pressure) * mobility, tangent * mobility, viscosity, pressure);
   }
 
   void main() {
@@ -181,6 +209,8 @@ const MIXED_VELOCITY_SHADER = `
     vec3 particleVelocity = velocityData.xyz;
     float particleMass = uParticleGlobalMass * positionData.w;
     float blackHoleStress = 0.0;
+    float modelDifference = 0.0;
+    float ddfViscosity = 0.0;
 
     for (int index = 0; index < 20; index += 1) {
       if (float(index) >= uAttractorCount) break;
@@ -219,8 +249,29 @@ const MIXED_VELOCITY_SHADER = `
         float thermalStress = hash21(uv + vec2(uTime * 0.03, uTime * 0.017)) * uBlackHoleThermalNoise[index];
         float localStress = shear / radius + wakeStress + thermalStress;
         blackHoleStress = max(blackHoleStress, localStress / threshold * uBlackHoleFractureIntensity[index]);
-        force += -radial * (shear * uAttractorMagnitudes[index] / (radius * radius)) * 0.035;
-        force += tangent * uBlackHoleRotationSpeed[index] * uAttractorMagnitudes[index] * 0.12 / radius;
+        float selectedModel = uMechanicsEnabled ? uFieldModel : 0.0;
+        vec4 response = fieldResponse(
+          selectedModel,
+          radius,
+          length(particleVelocity),
+          shear * uAttractorMagnitudes[index],
+          uBlackHoleRotationSpeed[index]
+        );
+        force += radial * response.x * 0.035;
+        force += tangent * response.y * 0.12;
+        ddfViscosity = max(ddfViscosity, selectedModel > 1.5 ? response.z : 0.0);
+        if (uComparisonEnabled) {
+          vec4 comparison = fieldResponse(
+            uComparisonModel,
+            radius,
+            length(particleVelocity),
+            shear * uAttractorMagnitudes[index],
+            uBlackHoleRotationSpeed[index]
+          );
+          float absoluteDifference = length(response.xy - comparison.xy);
+          float referenceAcceleration = max(length(comparison.xy), 0.000001);
+          modelDifference = max(modelDifference, clamp(absoluteDifference / referenceAcceleration * uDifferenceScale, 0.0, 1.0));
+        }
         if (distanceToStar < 2.5) force += normalize(particlePosition - starPosition) * wakeStress * 0.008;
       }
     }
@@ -228,8 +279,9 @@ const MIXED_VELOCITY_SHADER = `
     particleVelocity += force * uDt;
     float speed = length(particleVelocity);
     if (speed > uMaxSpeed) particleVelocity = particleVelocity / speed * uMaxSpeed;
+    particleVelocity *= exp(-ddfViscosity * uDt);
     particleVelocity *= (1.0 - uVelocityDamping);
-    gl_FragColor = vec4(particleVelocity, clamp(blackHoleStress, 0.0, 1.0));
+    gl_FragColor = vec4(particleVelocity, uComparisonEnabled ? modelDifference : clamp(blackHoleStress, 0.0, 1.0));
   }
 `;
 
@@ -293,6 +345,7 @@ const MIXED_VERTEX_SHADER = `
   uniform float uScale;
   uniform float uMaxSpeed;
   uniform bool uCameraFacing;
+  uniform bool uComparisonEnabled;
   attribute vec2 aSimulationUv;
   varying vec2 vPosition;
   varying float vSpeed;
@@ -306,7 +359,7 @@ const MIXED_VERTEX_SHADER = `
     vec3 velocity = texture2D(uVelocityTex, aSimulationUv).xyz;
     float stress = texture2D(uVelocityTex, aSimulationUv).w;
     float blackHole = step(0.0001, stress);
-    float snap = step(1.0, stress);
+    float snap = uComparisonEnabled ? 0.0 : step(1.0, stress);
     float angle = atan(positionData.z, positionData.x);
     vec3 tangent = vec3(-sin(angle), 0.0, cos(angle));
     float particleScale = uScale * (0.25 + positionData.w * 0.75);
@@ -341,6 +394,7 @@ const MIXED_VERTEX_SHADER = `
 const MIXED_FRAGMENT_SHADER = `
   uniform vec3 uColorA;
   uniform vec3 uColorB;
+  uniform bool uComparisonEnabled;
   varying vec2 vPosition;
   varying float vSpeed;
   varying float vMass;
@@ -350,7 +404,9 @@ const MIXED_FRAGMENT_SHADER = `
 
   void main() {
     float splat = 1.0 - smoothstep(0.1, 0.5, length(vPosition));
-    vec3 color = mix(uColorA, uColorB, max(vSpeed, max(vStress, vSnap)));
+    vec3 differenceColor = mix(vec3(0.12, 0.72, 0.95), vec3(1.0, 0.78, 0.2), vStress);
+    vec3 fieldColor = mix(uColorA, uColorB, max(vSpeed, max(vStress, vSnap)));
+    vec3 color = uComparisonEnabled ? differenceColor : fieldColor;
     float glow = mix(0.55 + vMass * 0.45, 0.65 + vStress * 0.8 + vSnap * 0.35, vBlackHole);
     float alpha = mix(0.88, 0.45 + vStress * 0.5, vBlackHole);
     gl_FragColor = vec4(color * glow, splat * alpha);
@@ -362,6 +418,7 @@ function clone(value) {
 }
 
 function createConfiguration(variant = 'simple') {
+  const hypothesisVariant = variant === 'blackhole' || variant === 'ddf';
   return {
     attractorMassExponent: 7,
     particleGlobalMassExponent: 4,
@@ -371,8 +428,8 @@ function createConfiguration(variant = 'simple') {
     spinningStrength: 2.75,
     scale: 0.008,
     boundHalfExtent: 8,
-    colorA: variant === 'blackhole' ? '#4de8ff' : '#33905f',
-    colorB: variant === 'blackhole' ? '#e74315' : '#55e699',
+    colorA: hypothesisVariant ? '#4de8ff' : '#33905f',
+    colorB: variant === 'ddf' ? '#f4c750' : hypothesisVariant ? '#e74315' : '#55e699',
     controlsColorX: '#e66b5d',
     controlsColorY: '#74d3c5',
     controlsColorZ: '#f2c14e',
@@ -415,9 +472,15 @@ function createConfiguration(variant = 'simple') {
     blackHoleOrbitVerticalAmplitude: 0.5,
     blackHoleFractureIntensity: 1,
     blackHoleStreamlines: true,
+    fieldMechanics: {
+      ...DEFAULT_FIELD_MECHANICS,
+      enabled: hypothesisVariant,
+      model: variant === 'ddf' ? 'ddf' : variant === 'blackhole' ? 'sqg' : 'newtonian',
+      comparisonModel: variant === 'ddf' ? 'sqg' : 'ddf'
+    },
     attractors: clone(INITIAL_ATTRACTORS).map((attractor) => ({
       ...attractor,
-      type: variant === 'blackhole' ? 'blackhole' : attractor.type
+      type: hypothesisVariant ? 'blackhole' : attractor.type
     }))
   };
 }
@@ -563,6 +626,7 @@ function sanitizeConfiguration(data, variant) {
   next.cameraZoomEnabled = Boolean(data.cameraZoomEnabled);
   next.cameraWheelMode = data.cameraWheelMode === 'dolly' ? 'dolly' : 'zoom';
   next.helperShowAttributes = Boolean(data.helperShowAttributes);
+  next.fieldMechanics = sanitizeFieldMechanics(data.fieldMechanics, base.fieldMechanics);
   const legacyBlackHole = {
     eventHorizonShear: data.blackHoleEventHorizonShear,
     fractureThreshold: data.blackHoleFractureThreshold,
@@ -601,7 +665,7 @@ function sanitizeConfiguration(data, variant) {
 
 function AttractorParticles({ configuration, onGpuError, variant, particleCount }) {
   const { gl } = useThree();
-  const useBlackHoleSeed = variant === 'blackhole';
+  const useBlackHoleSeed = variant === 'blackhole' || variant === 'ddf';
   const hasBlackHoles = configuration.attractors.some((attractor) => attractor.type === 'blackhole');
   const useMixedShader = useBlackHoleSeed || hasBlackHoles;
   const simulationKey = [
@@ -644,6 +708,7 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount 
       uScale: { value: configuration.scale },
       uMaxSpeed: { value: configuration.maxSpeed },
       uCameraFacing: { value: configuration.particleFacing === 'camera' },
+      uComparisonEnabled: { value: configuration.fieldMechanics.comparisonEnabled },
       uColorA: { value: new Color(configuration.colorA) },
       uColorB: { value: new Color(configuration.colorB) }
     },
@@ -724,6 +789,17 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount 
       velocityUniforms.uBlackHoleOrbitRadius = { value: new Float32Array(MAX_ATTRACTORS).fill(BLACK_HOLE_ATTRACTOR_DEFAULTS.orbitRadius) };
       velocityUniforms.uBlackHoleOrbitVerticalAmplitude = { value: new Float32Array(MAX_ATTRACTORS).fill(BLACK_HOLE_ATTRACTOR_DEFAULTS.orbitVerticalAmplitude) };
       velocityUniforms.uBlackHoleFractureIntensity = { value: new Float32Array(MAX_ATTRACTORS).fill(BLACK_HOLE_ATTRACTOR_DEFAULTS.fractureIntensity) };
+      velocityUniforms.uFieldModel = { value: fieldModelIndex(configurationRef.current.fieldMechanics.model) };
+      velocityUniforms.uMechanicsEnabled = { value: configurationRef.current.fieldMechanics.enabled };
+      velocityUniforms.uComparisonEnabled = { value: configurationRef.current.fieldMechanics.comparisonEnabled };
+      velocityUniforms.uComparisonModel = { value: fieldModelIndex(configurationRef.current.fieldMechanics.comparisonModel) };
+      velocityUniforms.uDifferenceScale = { value: configurationRef.current.fieldMechanics.differenceScale };
+      velocityUniforms.uCoreRadius = { value: configurationRef.current.fieldMechanics.coreRadius };
+      velocityUniforms.uQuantumPressure = { value: configurationRef.current.fieldMechanics.quantumPressure };
+      velocityUniforms.uCompressibility = { value: configurationRef.current.fieldMechanics.compressibility };
+      velocityUniforms.uDilatancy = { value: configurationRef.current.fieldMechanics.dilatancy };
+      velocityUniforms.uSpeedLimit = { value: configurationRef.current.fieldMechanics.speedLimit };
+      velocityUniforms.uBaseViscosity = { value: configurationRef.current.fieldMechanics.baseViscosity };
       velocityUniforms.uTime = { value: 0 };
       const initializationError = gpuCompute.init();
       if (initializationError) throw new Error(initializationError);
@@ -756,6 +832,17 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount 
     velocityUniforms.uSpinningStrength.value = current.spinningStrength;
     velocityUniforms.uMaxSpeed.value = current.maxSpeed;
     velocityUniforms.uVelocityDamping.value = current.velocityDamping;
+    velocityUniforms.uFieldModel.value = fieldModelIndex(current.fieldMechanics.model);
+    velocityUniforms.uMechanicsEnabled.value = current.fieldMechanics.enabled;
+    velocityUniforms.uComparisonEnabled.value = current.fieldMechanics.comparisonEnabled;
+    velocityUniforms.uComparisonModel.value = fieldModelIndex(current.fieldMechanics.comparisonModel);
+    velocityUniforms.uDifferenceScale.value = current.fieldMechanics.differenceScale;
+    velocityUniforms.uCoreRadius.value = current.fieldMechanics.coreRadius;
+    velocityUniforms.uQuantumPressure.value = current.fieldMechanics.quantumPressure;
+    velocityUniforms.uCompressibility.value = current.fieldMechanics.compressibility;
+    velocityUniforms.uDilatancy.value = current.fieldMechanics.dilatancy;
+    velocityUniforms.uSpeedLimit.value = current.fieldMechanics.speedLimit;
+    velocityUniforms.uBaseViscosity.value = current.fieldMechanics.baseViscosity;
     velocityUniforms.uAttractorCount.value = current.attractors.length;
     current.attractors.forEach((attractor, index) => {
       velocityUniforms.uAttractorPositions.value[index].fromArray(attractor.position);
@@ -780,6 +867,7 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount 
     material.uniforms.uScale.value = presentation.scale;
     material.uniforms.uMaxSpeed.value = current.maxSpeed;
     material.uniforms.uCameraFacing.value = presentation.particleFacing === 'camera';
+    material.uniforms.uComparisonEnabled.value = current.fieldMechanics.comparisonEnabled;
     material.uniforms.uColorA.value.set(presentation.colorA);
     material.uniforms.uColorB.value.set(presentation.colorB);
   });
@@ -1136,6 +1224,14 @@ function SelectControl({ label, value, options, onChange }) {
 
 function AttractorPanel({ variant, particleCount, configuration, presets, currentPreset, jsonText, setJsonText, showParamEditLog, onShowParamEditLog, paramEditLogYaml, onChange, onApplyPreset, onSavePreset, onReset, onExport, onLoad, onDeletePresets, journal, playing, playbackTime, onPlaybackTime, onTogglePlayback, onStop, recording, onRecording, onAddAttractor, onRemoveAttractor, onSetOrigin, onResetOrigin, onBack, paramsVisible, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {} }) {
   const hasBlackHoles = configuration.attractors.some((attractor) => attractor.type === 'blackhole');
+  const mechanics = configuration.fieldMechanics;
+  const comparison = compareFieldModels(
+    mechanics.model,
+    mechanics.comparisonModel,
+    { radius: mechanics.coreRadius * 2, speed: configuration.maxSpeed * 0.8, magnitude: 1, rotation: 1 },
+    mechanics
+  );
+  const updateMechanics = (field, value) => onChange({ fieldMechanics: { ...mechanics, [field]: value } }, `fieldMechanics.${field}`);
   return (
     <aside className={`attractor-panel ${paramsVisible ? '' : 'is-hidden'}`} aria-hidden={!paramsVisible} onPointerDown={(event) => event.stopPropagation()}>
       <ParamEditingProvider editing={editing}>
@@ -1162,8 +1258,25 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
       </details>
 
       {hasBlackHoles && <details className="attractor-details" open>
-        <summary>Black-hole display</summary>
+        <summary>Field hypothesis</summary>
+        <BooleanControl label="Enable model mechanics" value={mechanics.enabled} onChange={(value) => updateMechanics('enabled', value)} />
+        <SelectControl label="Active model" value={mechanics.model} options={FIELD_MODEL_OPTIONS} onChange={(value) => updateMechanics('model', value)} />
+        <RangeControl label="Core radius" value={mechanics.coreRadius} min={0.05} max={5} step={0.05} onChange={(value) => updateMechanics('coreRadius', value)} />
+        <RangeControl label="Quantum pressure" value={mechanics.quantumPressure} min={0} max={5} step={0.01} onChange={(value) => updateMechanics('quantumPressure', value)} />
+        <RangeControl label="Compressibility" value={mechanics.compressibility} min={0} max={4} step={0.01} onChange={(value) => updateMechanics('compressibility', value)} />
+        {mechanics.model === 'ddf' && <>
+          <RangeControl label="Dilatancy" value={mechanics.dilatancy} min={0} max={10} step={0.05} onChange={(value) => updateMechanics('dilatancy', value)} />
+          <RangeControl label="Speed limit" value={mechanics.speedLimit} min={0.1} max={10} step={0.1} onChange={(value) => updateMechanics('speedLimit', value)} />
+          <RangeControl label="Base viscosity" value={mechanics.baseViscosity} min={0} max={0.5} step={0.005} onChange={(value) => updateMechanics('baseViscosity', value)} />
+        </>}
+        <BooleanControl label="Show model difference" value={mechanics.comparisonEnabled} onChange={(value) => updateMechanics('comparisonEnabled', value)} />
+        {mechanics.comparisonEnabled && <>
+          <SelectControl label="Compare against" value={mechanics.comparisonModel} options={FIELD_MODEL_OPTIONS} onChange={(value) => updateMechanics('comparisonModel', value)} />
+          <RangeControl label="Difference gain" value={mechanics.differenceScale} min={0} max={10} step={0.1} onChange={(value) => updateMechanics('differenceScale', value)} />
+          <p className="attractor-model-difference">Reference delta at 2 core radii: <strong>{(comparison.relativeDifference * 100).toFixed(1)}%</strong></p>
+        </>}
         <BooleanControl label="Show stress streamlines" value={configuration.blackHoleStreamlines} onChange={(value) => onChange({ blackHoleStreamlines: value }, 'blackHoleStreamlines')} />
+        <p className="attractor-model-note">SQG and DDF are phenomenological hypotheses. These controls do not claim a derivation from QED, amplituhedra, or general relativity.</p>
       </details>}
 
       <details className="attractor-details" open>
@@ -1382,7 +1495,7 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
     }
     if (current.newAttractorPlacement === 'random') position.set((Math.random() - 0.5) * current.boundHalfExtent * 2, (Math.random() - 0.5) * current.boundHalfExtent * 2, (Math.random() - 0.5) * current.boundHalfExtent * 2);
     if (current.newAttractorPlacement === 'random within distance') position.add(new Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize().multiplyScalar(Math.cbrt(Math.random()) * current.newAttractorRandomDist));
-    onChange({ attractors: [...current.attractors, createAttractor({ position: position.toArray(), name: `Attractor ${index}` }, variant === 'blackhole' ? 'blackhole' : 'simple')] }, 'sys:addAttractor');
+    onChange({ attractors: [...current.attractors, createAttractor({ position: position.toArray(), name: `Attractor ${index}` }, variant === 'blackhole' || variant === 'ddf' ? 'blackhole' : 'simple')] }, 'sys:addAttractor');
   };
 
   const onRemoveAttractor = () => {
@@ -1481,14 +1594,15 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
     return () => window.removeEventListener('keydown', undo);
   }, []);
 
-  const reportTitle = variant === 'blackhole' ? 'Black hole particles' : 'Attractor particles';
+  const isHypothesisVariant = variant === 'blackhole' || variant === 'ddf';
+  const reportTitle = variant === 'ddf' ? 'DDF particles' : variant === 'blackhole' ? 'SQG particles' : 'Attractor particles';
   return (
-    <main className={`attractor-app ${variant === 'blackhole' ? 'blackhole-app' : ''}`}>
+    <main className={`attractor-app ${isHypothesisVariant ? 'blackhole-app' : ''}`}>
       <div className="attractor-scene"><Canvas frameloop={E2E_MODE ? 'demand' : 'always'} camera={{ position: [3, 5, 8], fov: 25, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AttractorWorld configuration={configuration} onAttractorChange={onAttractorChange} onGpuError={setGpuError} playing={playing} onCameraChange={(change) => onChange(change, 'sys:camera')} paramsVisible={paramsVisible} viewMode={viewMode} onManualChange={() => setViewMode(null)} variant={variant} /></Canvas></div>
-      <header className="attractor-topbar"><div><span className="sqg-mark">PAS</span><span><em>{variant === 'blackhole' ? 'Black hole attractor sandbox' : 'Particle dynamics lab'}</em></span></div><div className="attractor-top-actions"><span className="attractor-top-meta">WEBGL / GPGPU / {reportTitle.toUpperCase()}</span><button type="button" className="attractor-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button></div></header>
+      <header className="attractor-topbar"><div><span className="sqg-mark">PAS</span><span><em>{variant === 'ddf' ? 'Dilatant dark fluid sandbox' : variant === 'blackhole' ? 'SQG black-hole sandbox' : 'Particle dynamics lab'}</em></span></div><div className="attractor-top-actions"><span className="attractor-top-meta">WEBGL / GPGPU / {reportTitle.toUpperCase()}</span><button type="button" className="attractor-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button></div></header>
       <AttractorViewToolbar viewMode={viewMode} onViewChange={setViewMode} />
       <AttractorPanel variant={variant} particleCount={particleCount} configuration={configuration} presets={presets} currentPreset={currentPreset} jsonText={jsonText} setJsonText={setJsonText} showParamEditLog={showParamEditLog} onShowParamEditLog={setShowParamEditLog} paramEditLogYaml={paramEditLogYaml} onChange={onChange} onApplyPreset={onApplyPreset} onSavePreset={onSavePreset} onReset={onReset} onExport={(type) => setModal({ title: type === 'all' ? 'All presets' : type === 'saved' ? 'Saved presets' : 'Current parameters', value: type === 'current' ? configuration : presets })} onLoad={onLoad} onDeletePresets={onDeletePresets} journal={journal} playing={playing} playbackTime={playbackTime} onPlaybackTime={(value) => { setPlaybackTime(value); applyStateAt(value); }} onTogglePlayback={() => setPlaying((value) => !value)} onStop={() => { setPlaying(false); setPlaybackTime(0); applyStateAt(0); }} recording={recording} onRecording={setRecording} onAddAttractor={onAddAttractor} onRemoveAttractor={onRemoveAttractor} onSetOrigin={onSetOrigin} onResetOrigin={onResetOrigin} onBack={onBack} paramsVisible={paramsVisible} editing={editing} onEditing={setEditing} canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} />
-      <div className="attractor-title"><span>ACTIVE FIELD / {variant === 'blackhole' ? 'SQGBLACKHOLESIM' : 'SIMPLEATTRACTORSIM'}</span><h1>{variant === 'blackhole' ? 'Superfluid Quantum Gravity Attractor System' : 'Simple Particle Attractor System'}</h1><p>{variant === 'blackhole' ? 'SQG GPE Gross-Pitaevskii Equation Gaussian splat black holes and optionally also simple attractors' : 'Tune attractor mass, spin, and geometry within a field of particles.'}</p>{gpuError && <strong className="attractor-error">GPU offline: {gpuError}</strong>}</div>
+      <div className="attractor-title"><span>ACTIVE FIELD / {variant === 'ddf' ? 'DDFSIM' : variant === 'blackhole' ? 'SQGBLACKHOLESIM' : 'SIMPLEATTRACTORSIM'}</span><h1>{variant === 'ddf' ? 'Dilatant Dark Fluid System' : variant === 'blackhole' ? 'Superfluid Quantum Gravity System' : 'Simple Particle Attractor System'}</h1><p>{variant === 'ddf' ? 'Phenomenological compressible sink flow with speed-limited shear thickening.' : variant === 'blackhole' ? 'Phenomenological SQG sink flow with a finite quantum-pressure core.' : 'Tune attractor mass, spin, and geometry within a field of particles.'}</p>{gpuError && <strong className="attractor-error">GPU offline: {gpuError}</strong>}</div>
       {modal && <AttractorModal title={modal.title} value={modal.value} onClose={() => setModal(null)} />}
     </main>
   );

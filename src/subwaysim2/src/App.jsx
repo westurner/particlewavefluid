@@ -3,6 +3,8 @@ import { lazy, Suspense, useState } from 'react';
 const WaveInterferenceSim = lazy(() => import('./WaveInterferenceSim.jsx'));
 const SimpleAttractorSim = lazy(() => import('./SimpleAttractorSim.jsx').then(({ SimpleAttractorSim: component }) => ({ default: component })));
 const SqgBlackHoleSim = lazy(() => import('./SqgBlackHoleSim.jsx'));
+const DdfBlackHoleSim = lazy(() => import('./DdfBlackHoleSim.jsx'));
+const AmplitudeGravitySim = lazy(() => import('./AmplitudeGravitySim.jsx'));
 const FrcFusionSim = lazy(() => import('./FrcFusionSim.jsx'));
 const SubwaySim = lazy(() => import('./SubwaySim.jsx').then(({ SubwaySim: component }) => ({ default: component })));
 
@@ -44,13 +46,31 @@ const SIMULATION_MODES = [
     accent: 'orange'
   },
   {
-    id: 'subwaysim2',
+    id: 'ddfblackholesim',
     index: '05',
+    name: 'ddfblackholesim',
+    label: 'Dilatant dark fluid',
+    description: 'A bounded hypothesis model adding speed-limited shear thickening to the SQG sink-flow experiment.',
+    detail: 'DDF / DILATANCY / MODEL DELTA',
+    accent: 'teal'
+  },
+  {
+    id: 'subwaysim2',
+    index: '06',
     name: 'subwaysim2',
     label: 'Transit thermodynamics',
     description: 'A GPU airflow chamber where trains, shafts, stairs, and thermal sources shape a living station field.',
     detail: 'FLUID / SPH / INFRASTRUCTURE',
     accent: 'teal'
+  },
+  {
+    id: 'amplitudegravitysim',
+    index: '07',
+    name: 'amplitudegravitysim',
+    label: 'Amplitude geometry gravity',
+    description: 'Compare Newtonian motion with spin-2 EFT and positive-Grassmannian geometric correction proxies.',
+    detail: 'GR(2,4) / SPIN-2 / N-BODY',
+    accent: 'blue'
   }
 ];
 
@@ -65,8 +85,10 @@ function SimulationLoader() {
   if (selectedSimulation === 'waveinterferencesim') simulation = <WaveInterferenceSim onBack={onBack} />;
   if (selectedSimulation === 'simpleattractorsim') simulation = <SimpleAttractorSim onBack={onBack} />;
   if (selectedSimulation === 'sqgblackholesim') simulation = <SqgBlackHoleSim onBack={onBack} />;
+  if (selectedSimulation === 'ddfblackholesim') simulation = <DdfBlackHoleSim onBack={onBack} />;
   if (selectedSimulation === 'frcfusionsim') simulation = <FrcFusionSim onBack={onBack} />;
   if (selectedSimulation === 'subwaysim2') simulation = <SubwaySim onBack={onBack} />;
+  if (selectedSimulation === 'amplitudegravitysim') simulation = <AmplitudeGravitySim onBack={onBack} />;
   if (simulation) return <Suspense fallback={<LoadingScreen />}>{simulation}</Suspense>;
 
   return (
