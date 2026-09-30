@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateFrcModel, FRC_CONFIGURATIONS, FRC_INPUTS, FRC_RECOVERY_CONFIGURATIONS, FRC_SHAPES, getFrcVisualizationVisibility, searchArgonMhdParameterGrid } from './frcModel.js';
+import { calculateFrcModel, FRC_CONFIGURATIONS, FRC_EXCITATION_CONFIGURATIONS, FRC_INPUTS, FRC_RECOVERY_CONFIGURATIONS, FRC_SHAPES, getFrcVisualizationVisibility, searchArgonMhdParameterGrid } from './frcModel.js';
 import { advanceFlowProgress, createFlowPathPoints, createInputParticlePathPoints, FLOW_PARTICLE_STREAMS, getFlowParticleVisibility, getInputParticleVisibility, INPUT_PARTICLE_STREAMS } from './flowParticles.js';
+import { calculateFocusBeamDirection, calculatePlasmaFocusBeam, samplePlasmaFocusTrajectory } from './plasmaFocusModel.js';
 
 test('every FRC shape produces a contained plasma volume', () => {
   for (const shape of Object.keys(FRC_SHAPES)) {
@@ -14,13 +15,44 @@ test('every FRC shape produces a contained plasma volume', () => {
   }
 });
 
-test('all device configurations preserve field reversal', () => {
-  for (const configuration of Object.keys(FRC_CONFIGURATIONS)) {
+test('FRC configurations preserve reversal while toroidal studies use guide fields', () => {
+  for (const [configuration, definition] of Object.entries(FRC_CONFIGURATIONS)) {
     const model = calculateFrcModel({ configuration });
-    assert.equal(model.reversedField, true);
-    assert.ok(model.axialField < 0);
+    assert.equal(model.reversedField, !definition.deviceTopology);
+    assert.equal(model.axialField < 0, !definition.deviceTopology);
     assert.ok(model.confinement >= 0 && model.confinement <= 1);
     assert.ok(model.stability >= 0 && model.stability <= 1);
+  }
+});
+
+test('tokamak and stellarator shapes use torus volume and remain inside their vessels', () => {
+  for (const shape of ['tokamak', 'stellarator']) {
+    const model = calculateFrcModel({ shape });
+    const expectedVolume = 2 * Math.PI ** 2 * model.wallHalfLength * model.plasmaRadius ** 2;
+
+    assert.equal(model.geometry, shape);
+    assert.equal(model.toroidalMajorRadius, model.wallHalfLength);
+    assert.equal(model.plasmaVolume, expectedVolume);
+    assert.ok(model.plasmaRadius < model.wallRadius);
+    assert.ok(model.plasmaHalfLength < model.wallHalfLength);
+  }
+});
+
+test('toroidal device presets select their vessel and excitation topology', () => {
+  for (const [configuration, shape, excitationConfiguration] of [
+    ['tokamakStudy', 'tokamak', 'tokamakLoop'],
+    ['stellaratorStudy', 'stellarator', 'stellaratorLoop']
+  ]) {
+    const definition = FRC_CONFIGURATIONS[configuration];
+    const model = calculateFrcModel({
+      configuration,
+      shape: definition.shape,
+      excitationConfiguration: definition.excitationConfiguration
+    });
+
+    assert.equal(model.geometry, shape);
+    assert.equal(model.excitation.configuration, excitationConfiguration);
+    assert.equal(model.reversedField, false);
   }
 });
 
@@ -71,6 +103,218 @@ test('fusion gain Q uses explicit auxiliary heating and remains zero for Argon',
   assert.equal(lowHeating.fusionGainQ, lowHeating.fusionPowerMW / 6);
   assert.ok(lowHeating.fusionGainQ > highHeating.fusionGainQ);
   assert.equal(argon.fusionGainQ, 0);
+});
+
+test('axial excitation remains the unchanged reference for fusion Q', () => {
+  const implicit = calculateFrcModel({ input: 'DT' });
+  const explicit = calculateFrcModel({ input: 'DT', excitationConfiguration: 'axialReference' });
+
+  assert.equal(implicit.fusionGainQ, explicit.fusionGainQ);
+  assert.equal(explicit.excitation.referenceFusionGainQ, explicit.fusionGainQ);
+  assert.equal(explicit.excitation.fusionGainDelta, 0);
+  assert.equal(explicit.excitation.confinementMultiplier, 1);
+});
+
+test('gun rings resolve multiple launcher angles into radial and vortex components', () => {
+  const radial = calculateFrcModel({ excitationConfiguration: 'radialGunRings' });
+  const vortex = calculateFrcModel({ excitationConfiguration: 'vortexGunRings' });
+
+  assert.equal(radial.excitation.launcherCount, 16);
+  assert.equal(radial.excitation.launcherAnglesDegrees.length, 16);
+  assert.equal(radial.excitation.radialCoupling, 1);
+  assert.equal(radial.excitation.signedVorticity, 0);
+  assert.equal(vortex.excitation.launcherCount, 30);
+  assert.equal(vortex.excitation.launcherAnglesDegrees.length, 30);
+  assert.ok(vortex.excitation.radialCoupling > 0);
+  assert.ok(vortex.excitation.tangentialCoupling > 0);
+  assert.ok(vortex.excitation.signedVorticity > 0);
+});
+
+test('flow-relative cant follows or opposes the modeled plasma-flow tangent', () => {
+  const aligned = calculateFrcModel({
+    excitationConfiguration: 'vortexGunRings',
+    excitationConfigurations: { vortexGunRings: { flowRelativeCantDegrees: 32, angleSpreadDegrees: 0 } }
+  });
+  const opposed = calculateFrcModel({
+    excitationConfiguration: 'vortexGunRings',
+    excitationConfigurations: { vortexGunRings: { flowRelativeCantDegrees: -32, angleSpreadDegrees: 0 } }
+  });
+  const radial = calculateFrcModel({
+    excitationConfiguration: 'radialGunRings',
+    excitationConfigurations: { radialGunRings: { flowRelativeCantDegrees: 0 } }
+  });
+
+  assert.equal(aligned.excitation.flowRelativeCantDegrees, 32);
+  assert.equal(opposed.excitation.flowRelativeCantDegrees, -32);
+  assert.ok(aligned.excitation.signedVorticity > 0);
+  assert.ok(opposed.excitation.signedVorticity < 0);
+  assert.equal(radial.excitation.signedVorticity, 0);
+  assert.equal(radial.excitation.radialCoupling, 1);
+});
+
+test('tube-axis cant is retained independently from flow-relative beam cant', () => {
+  const positive = calculateFrcModel({
+    excitationConfiguration: 'vortexGunRings',
+    excitationConfigurations: { vortexGunRings: { flowRelativeCantDegrees: 24, tubeAxisCantDegrees: 30, angleSpreadDegrees: 0 } }
+  });
+  const negative = calculateFrcModel({
+    excitationConfiguration: 'vortexGunRings',
+    excitationConfigurations: { vortexGunRings: { flowRelativeCantDegrees: 24, tubeAxisCantDegrees: -30, angleSpreadDegrees: 0 } }
+  });
+  const noEndBias = calculateFrcModel({
+    excitationConfiguration: 'vortexGunRings',
+    excitationConfigurations: { vortexGunRings: { flowRelativeCantDegrees: 24, tubeAxisCantDegrees: 0, angleSpreadDegrees: 0 } }
+  });
+
+  assert.equal(positive.excitation.flowRelativeCantDegrees, 24);
+  assert.equal(negative.excitation.flowRelativeCantDegrees, 24);
+  assert.equal(positive.excitation.tubeAxisCantDegrees, 30);
+  assert.equal(negative.excitation.tubeAxisCantDegrees, -30);
+  assert.ok(positive.excitation.signedTubeAxisBias > 0);
+  assert.ok(negative.excitation.signedTubeAxisBias < 0);
+  assert.ok(positive.excitation.radialCoupling < noEndBias.excitation.radialCoupling);
+  assert.ok(positive.excitation.signedVorticity < noEndBias.excitation.signedVorticity);
+});
+
+test('tube-axis cant follows the toroidal centerline but remains axial on an FRC', () => {
+  const excitationConfigurations = {
+    vortexGunRings: { flowRelativeCantDegrees: 20, tubeAxisCantDegrees: 0, angleSpreadDegrees: 0 }
+  };
+  const toroidalBase = calculateFrcModel({
+    shape: 'tokamak',
+    configuration: 'tokamakStudy',
+    excitationConfiguration: 'vortexGunRings',
+    excitationConfigurations
+  });
+  const toroidalCanted = calculateFrcModel({
+    shape: 'tokamak',
+    configuration: 'tokamakStudy',
+    excitationConfiguration: 'vortexGunRings',
+    excitationConfigurations: { vortexGunRings: { ...excitationConfigurations.vortexGunRings, tubeAxisCantDegrees: 30 } }
+  });
+  const frcCanted = calculateFrcModel({
+    excitationConfiguration: 'vortexGunRings',
+    excitationConfigurations: { vortexGunRings: { ...excitationConfigurations.vortexGunRings, tubeAxisCantDegrees: 30 } }
+  });
+
+  assert.ok(toroidalCanted.excitation.signedVorticity > toroidalBase.excitation.signedVorticity);
+  assert.ok(frcCanted.excitation.signedVorticity < toroidalBase.excitation.signedVorticity);
+  assert.ok(toroidalCanted.excitation.radialCoupling < toroidalBase.excitation.radialCoupling);
+});
+
+test('plasma focus arrays expose independent pulsed-beam accelerator models', () => {
+  const excitationConfigurations = {
+    radialGunRings: { acceleratorVoltageKV: 48, totalBeamCurrentKA: 4 },
+    vortexGunRings: { acceleratorVoltageKV: 62, ionSpecies: 'alpha' }
+  };
+  const radial = calculateFrcModel({ excitationConfiguration: 'radialGunRings', excitationConfigurations });
+  const vortex = calculateFrcModel({ excitationConfiguration: 'vortexGunRings', excitationConfigurations });
+  const loops = calculateFrcModel({ excitationConfiguration: 'tokamakLoop' });
+
+  assert.equal(radial.excitation.focusBeam.acceleratorVoltageKV, 48);
+  assert.equal(radial.excitation.focusBeam.totalBeamCurrentKA, 4);
+  assert.equal(radial.excitation.focusBeam.ionEnergyKeV, 48);
+  assert.equal(vortex.excitation.focusBeam.ionEnergyKeV, 124);
+  assert.equal(loops.excitation.focusBeam, null);
+  assert.ok(radial.excitation.focusBeam.pulseEnergyJ > 0);
+  assert.ok(radial.excitation.focusBeam.ionSpeedMps > 0);
+});
+
+test('loop studies remain identified as analogues with bounded Q sensitivity', () => {
+  for (const excitationConfiguration of ['tokamakLoop', 'stellaratorLoop']) {
+    const model = calculateFrcModel({ excitationConfiguration });
+    const definition = FRC_EXCITATION_CONFIGURATIONS[excitationConfiguration];
+
+    assert.equal(model.excitation.topology, definition.topology);
+    assert.equal(model.excitation.launcherCount, 0);
+    assert.ok(model.excitation.confinementMultiplier >= 0.94);
+    assert.ok(model.excitation.confinementMultiplier <= 1.08);
+    assert.ok(Math.abs(model.excitation.fusionGainDelta) <= 0.08);
+  }
+});
+
+test('excitation architectures retain independent bounded parameters', () => {
+  const excitationConfigurations = {
+    radialGunRings: { driveAngleDegrees: -90, ringCount: 9, launchersPerRing: 30 },
+    vortexGunRings: { driveAngleDegrees: 17, angleSpreadDegrees: 7 }
+  };
+  const radial = calculateFrcModel({ excitationConfiguration: 'radialGunRings', excitationConfigurations });
+  const vortex = calculateFrcModel({ excitationConfiguration: 'vortexGunRings', excitationConfigurations });
+
+  assert.equal(radial.excitation.driveAngleDegrees, -75);
+  assert.equal(radial.excitation.ringCount, 6);
+  assert.equal(radial.excitation.launchersPerRing, 24);
+  assert.equal(vortex.excitation.driveAngleDegrees, 17);
+  assert.equal(vortex.excitation.angleSpreadDegrees, 7);
+  assert.deepEqual(excitationConfigurations.vortexGunRings, { driveAngleDegrees: 17, angleSpreadDegrees: 7 });
+});
+
+test('plasma focus arrays calculate qV energy, beam power, pulse energy, and ion velocity', () => {
+  const beam = calculatePlasmaFocusBeam({
+    acceleratorVoltageKV: 30,
+    totalBeamCurrentKA: 2,
+    pulseDurationMicroseconds: 20,
+    pulseRepetitionHz: 20,
+    ionSpecies: 'deuteron',
+    launcherCount: 16,
+    waveModulationDepth: 0
+  });
+
+  assert.equal(beam.ionEnergyKeV, 30);
+  assert.equal(beam.peakPowerMW, 60);
+  assert.equal(beam.pulseEnergyJ, 1200);
+  assert.ok(Math.abs(beam.averagePowerMW - 0.024) < 1e-12);
+  assert.equal(beam.currentPerLauncherKA, 0.125);
+  assert.ok(beam.ionSpeedMps > 1e6 && beam.ionSpeedMps < 2e6);
+  assert.ok(beam.ionSpeedFractionC > 0 && beam.ionSpeedFractionC < 0.01);
+});
+
+test('wave phase modulates focus voltage and accelerator voltage changes ion speed', () => {
+  const phaseZero = calculatePlasmaFocusBeam({
+    acceleratorVoltageKV: 30,
+    waveModulationDepth: 0.2,
+    waveWavelengthM: 4,
+    waveFrequencyKHz: 0,
+    wavePhaseRadians: Math.PI / 2,
+    wavePosition: { x: 0, y: 0, z: 0 }
+  });
+  const base = calculatePlasmaFocusBeam({ acceleratorVoltageKV: 30, waveModulationDepth: 0 });
+  const higherVoltage = calculatePlasmaFocusBeam({ acceleratorVoltageKV: 60, waveModulationDepth: 0 });
+
+  assert.ok(phaseZero.instantaneousVoltageKV > base.instantaneousVoltageKV);
+  assert.ok(higherVoltage.ionEnergyKeV > base.ionEnergyKeV);
+  assert.ok(higherVoltage.ionSpeedMps > base.ionSpeedMps);
+  assert.ok(phaseZero.wavePhaseSample > 0.99);
+});
+
+test('focus beam trajectory accelerates through the gap then coasts along its axis', () => {
+  const beam = calculatePlasmaFocusBeam({ acceleratorVoltageKV: 30, waveModulationDepth: 0, focusGapM: 0.3 });
+  const origin = { x: 1, y: 2, z: 3 };
+  const direction = { x: -1, y: 0, z: 0 };
+  const early = samplePlasmaFocusTrajectory({ origin, direction, beam, ageSeconds: beam.accelerationTimeMicroseconds * 0.5e-6, travelLengthM: 2 });
+  const late = samplePlasmaFocusTrajectory({ origin, direction, beam, ageSeconds: 0.7e-6, travelLengthM: 2 });
+
+  assert.ok(early.active);
+  assert.ok(late.active);
+  assert.ok(early.velocityMps < beam.ionSpeedMps);
+  assert.ok(late.distanceM > early.distanceM);
+  assert.ok(late.position.x < early.position.x);
+  assert.equal(late.position.y, origin.y);
+});
+
+test('focus-array tube-axis cant aims along or against the tube centerline', () => {
+  const base = { inward: [0, -1, 0], flowTangent: [0, 0, 1], tubeDirection: [1, 0, 0] };
+  const positive = calculateFocusBeamDirection({ ...base, flowRelativeCantDegrees: 20, tubeAxisCantDegrees: 30 });
+  const negative = calculateFocusBeamDirection({ ...base, flowRelativeCantDegrees: 20, tubeAxisCantDegrees: -30 });
+  const noBias = calculateFocusBeamDirection({ ...base, flowRelativeCantDegrees: 20, tubeAxisCantDegrees: 0 });
+
+  assert.ok(positive[0] > 0);
+  assert.ok(negative[0] < 0);
+  assert.equal(noBias[0], 0);
+  assert.ok(positive[2] > 0);
+  assert.ok(negative[2] > 0);
+  assert.ok(Math.abs(Math.hypot(...positive) - 1) < 1e-12);
+  assert.ok(Math.abs(Math.hypot(...negative) - 1) < 1e-12);
 });
 
 test('recovery configurations conserve allocated fusion energy and balance net electric power', () => {
@@ -370,6 +614,38 @@ test('gas and charge particles flow through their respective conduits', () => {
   assert.ok(advanceFlowProgress(0.9, FLOW_PARTICLE_STREAMS.gas.speed, 2) < 0.2);
 });
 
+test('toroidal accessory paths follow vessel centerlines instead of the FRC axis', () => {
+  for (const [geometry, fieldPeriods, helicalExcursion] of [
+    ['tokamak', 1, 0],
+    ['stellarator', 3, 0.34]
+  ]) {
+    const flowPaths = createFlowPathPoints({
+      wallHalfLength: 4.45,
+      wallRadius: 1.68,
+      geometry,
+      fieldPeriods,
+      helicalExcursion
+    });
+    const inputPaths = createInputParticlePathPoints({
+      plasmaHalfLength: 3.75,
+      plasmaRadius: 1.15,
+      geometry,
+      fieldPeriods,
+      helicalExcursion
+    });
+    for (const path of [...Object.values(flowPaths), ...Object.values(inputPaths)]) {
+      assert.ok(path.some(([x]) => x < 0) || path.some(([x]) => x > 0));
+      assert.ok(new Set(path.map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`)).size > 2);
+    }
+    assert.ok(flowPaths.nitrogenPath.some(([, y]) => y > 0));
+    assert.ok(flowPaths.nitrogenPath.some(([, y]) => y < 0));
+    assert.ok(inputPaths.DT.every(([, y]) => y > 0));
+    const inputHeights = inputPaths.DT.map(([, , z]) => z);
+    if (geometry === 'stellarator') assert.ok(Math.max(...inputHeights) - Math.min(...inputHeights) > 0.45);
+    else assert.equal(new Set(inputHeights).size, 1);
+  }
+});
+
 test('plasma input particles have distinct axial lanes and independent visibility', () => {
   const paths = createInputParticlePathPoints({ plasmaHalfLength: 5, plasmaRadius: 2 });
   const streamInputs = Object.keys(INPUT_PARTICLE_STREAMS);
@@ -394,10 +670,33 @@ test('selected plasma input controls active particles and reaction output channe
   const dHe3Visibility = getFrcVisualizationVisibility({ configuration: 'rotatingField', input: 'DHe_3' });
   const argonVisibility = getFrcVisualizationVisibility({ configuration: 'steadyState', input: 'Argon' });
 
+  assert.deepEqual(dtVisibility.ancillary, {
+    energyHarness: true,
+    outputManifold: true,
+    nitrogenGasFlow: true,
+    chargeFlow: true,
+    inputParticles: true
+  });
   assert.deepEqual(dtVisibility.input, { DT: true, DHe_3: false, Argon: false });
   assert.deepEqual(dtVisibility.output, { nitrogen: true, helium: true, neutrons: true });
   assert.deepEqual(dHe3Visibility.input, { DT: false, DHe_3: true, Argon: false });
   assert.deepEqual(dHe3Visibility.output, { nitrogen: true, helium: true, neutrons: true });
   assert.deepEqual(argonVisibility.input, { DT: false, DHe_3: false, Argon: true });
   assert.deepEqual(argonVisibility.output, { nitrogen: true, helium: false, neutrons: false });
+});
+
+test('toroidal devices support ancillary harnesses, outputs, and active input streams', () => {
+  for (const configuration of ['tokamakStudy', 'stellaratorStudy']) {
+    const visibility = getFrcVisualizationVisibility({ configuration, input: 'DT' });
+
+    assert.deepEqual(visibility.ancillary, {
+      energyHarness: true,
+      outputManifold: true,
+      nitrogenGasFlow: true,
+      chargeFlow: true,
+      inputParticles: true
+    });
+    assert.deepEqual(visibility.input, { DT: true, DHe_3: false, Argon: false });
+    assert.deepEqual(visibility.output, { nitrogen: true, helium: true, neutrons: true });
+  }
 });

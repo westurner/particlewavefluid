@@ -1,3 +1,5 @@
+import { calculatePlasmaFocusBeam } from './plasmaFocusModel.js';
+
 export const FRC_SHAPES = {
   elongated: {
     label: 'Elongated FRC',
@@ -34,6 +36,28 @@ export const FRC_SHAPES = {
     wallRadius: 4.4,
     wallHalfLength: 3.3,
     shapeFactor: 0.76
+  },
+  tokamak: {
+    label: 'Tokamak torus',
+    description: 'Axisymmetric toroidal vessel with a central bore and circular plasma cross-section.',
+    geometry: 'tokamak',
+    radius: 1.35,
+    halfLength: 3.4,
+    wallRadius: 1.85,
+    wallHalfLength: 4.15,
+    shapeFactor: 0.78
+  },
+  stellarator: {
+    label: 'Stellarator torus',
+    description: 'Non-axisymmetric toroidal vessel with a three-period helical centerline modulation.',
+    geometry: 'stellarator',
+    fieldPeriods: 3,
+    helicalExcursion: 0.34,
+    radius: 1.15,
+    halfLength: 3.75,
+    wallRadius: 1.68,
+    wallHalfLength: 4.45,
+    shapeFactor: 0.7
   }
 };
 
@@ -85,6 +109,36 @@ export const FRC_CONFIGURATIONS = {
     confinement: 0.61,
     energyCaptureEfficiency: 0.48,
     nitrogenPurgeSLM: 10
+  },
+  tokamakStudy: {
+    label: 'Tokamak magnetic-confinement study',
+    description: 'Reduced axisymmetric toroidal study with a plasma-current and loop-drive proxy; not a Grad-Shafranov equilibrium solver.',
+    shape: 'tokamak',
+    excitationConfiguration: 'tokamakLoop',
+    deviceTopology: 'tokamak',
+    magneticField: 3.6,
+    density: 1.45,
+    ionTemperature: 3.2,
+    axialFieldRatio: 0.38,
+    rotation: 0.34,
+    confinement: 0.82,
+    energyCaptureEfficiency: 0.56,
+    nitrogenPurgeSLM: 14
+  },
+  stellaratorStudy: {
+    label: 'Stellarator magnetic-confinement study',
+    description: 'Reduced non-axisymmetric toroidal study with prescribed helical field periods; not a coil-optimized stellarator equilibrium.',
+    shape: 'stellarator',
+    excitationConfiguration: 'stellaratorLoop',
+    deviceTopology: 'stellarator',
+    magneticField: 3.2,
+    density: 1.25,
+    ionTemperature: 3.5,
+    axialFieldRatio: 0.3,
+    rotation: 0.22,
+    confinement: 0.8,
+    energyCaptureEfficiency: 0.53,
+    nitrogenPurgeSLM: 13
   },
   argonMhdAxial: {
     label: 'Argon MHD / axial FRC',
@@ -243,6 +297,98 @@ export const FRC_INPUTS = {
   }
 };
 
+export const FRC_EXCITATION_CONFIGURATIONS = {
+  axialReference: {
+    label: 'Axial reference drive',
+    description: 'Baseline axial excitation with no inferred multi-angle benefit.',
+    topology: 'axial',
+    ringCount: 0,
+    launchersPerRing: 2,
+    driveAngleDegrees: 0,
+    angleSpreadDegrees: 0,
+    phaseOffsetDegrees: 180,
+    fieldPeriods: 1,
+    rotationalTransform: 0,
+    responseGain: 1
+  },
+  radialGunRings: {
+    label: 'Inward radial plasma focus arrays',
+    description: 'Pulsed ion focus arrays aimed inward for reduced radial-compression and beam-transport studies.',
+    topology: 'gun-rings',
+    ringCount: 2,
+    launchersPerRing: 8,
+    driveAngleDegrees: 0,
+    flowRelativeCantDegrees: 0,
+    tubeAxisCantDegrees: 0,
+    angleSpreadDegrees: 0,
+    phaseOffsetDegrees: 22.5,
+    acceleratorVoltageKV: 30,
+    totalBeamCurrentKA: 2,
+    pulseDurationMicroseconds: 20,
+    pulseRepetitionHz: 20,
+    ionSpecies: 'deuteron',
+    focusGapM: 0.35,
+    waveModulationDepth: 0.12,
+    waveWavelengthM: 2.4,
+    waveFrequencyKHz: 100,
+    wavePhaseRadians: 0,
+    fieldPeriods: 1,
+    rotationalTransform: 0,
+    responseGain: 1.04
+  },
+  vortexGunRings: {
+    label: 'Canted vortex plasma focus arrays',
+    description: 'Pulsed ion focus arrays with tangential cant for reduced vortex and beam-transport studies.',
+    topology: 'gun-rings',
+    ringCount: 3,
+    launchersPerRing: 10,
+    driveAngleDegrees: 28,
+    flowRelativeCantDegrees: 28,
+    tubeAxisCantDegrees: 0,
+    angleSpreadDegrees: 12,
+    phaseOffsetDegrees: 12,
+    acceleratorVoltageKV: 45,
+    totalBeamCurrentKA: 3,
+    pulseDurationMicroseconds: 15,
+    pulseRepetitionHz: 15,
+    ionSpecies: 'deuteron',
+    focusGapM: 0.35,
+    waveModulationDepth: 0.18,
+    waveWavelengthM: 2.4,
+    waveFrequencyKHz: 120,
+    wavePhaseRadians: 0,
+    fieldPeriods: 1,
+    rotationalTransform: 0,
+    responseGain: 1.08
+  },
+  tokamakLoop: {
+    label: 'Tokamak-like loop study',
+    description: 'Axisymmetric toroidal/poloidal loop-drive analogue around the FRC vessel; not a tokamak equilibrium.',
+    topology: 'tokamak-loop',
+    ringCount: 2,
+    launchersPerRing: 0,
+    driveAngleDegrees: 0,
+    angleSpreadDegrees: 0,
+    phaseOffsetDegrees: 0,
+    fieldPeriods: 1,
+    rotationalTransform: 0.18,
+    responseGain: 1.03
+  },
+  stellaratorLoop: {
+    label: 'Stellarator-like helical loop study',
+    description: 'Non-axisymmetric helical loop-drive analogue around the FRC vessel; not a stellarator equilibrium.',
+    topology: 'stellarator-loop',
+    ringCount: 3,
+    launchersPerRing: 0,
+    driveAngleDegrees: 34,
+    angleSpreadDegrees: 10,
+    phaseOffsetDegrees: 40,
+    fieldPeriods: 3,
+    rotationalTransform: 0.42,
+    responseGain: 1.05
+  }
+};
+
 export const FRC_RECOVERY_CONFIGURATIONS = {
   inductiveDirect: {
     label: 'Pulsed inductive + direct',
@@ -302,6 +448,116 @@ function nonNegative(value, fallback) {
   return Math.max(0, Number(value ?? fallback));
 }
 
+function boundedNumber(value, fallback, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, Number(value ?? fallback)));
+}
+
+function calculateExcitation(configuration, configurations, geometry = 'frc') {
+  const configurationKey = FRC_EXCITATION_CONFIGURATIONS[configuration]
+    ? configuration
+    : 'axialReference';
+  const defaults = FRC_EXCITATION_CONFIGURATIONS[configurationKey];
+  const overrides = configurations?.[configurationKey] ?? {};
+  const ringCount = Math.round(boundedNumber(overrides.ringCount, defaults.ringCount, 0, 6));
+  const launchersPerRing = Math.round(boundedNumber(overrides.launchersPerRing, defaults.launchersPerRing, 0, 24));
+  const flowRelativeCantDegrees = boundedNumber(
+    overrides.flowRelativeCantDegrees,
+    overrides.driveAngleDegrees ?? defaults.flowRelativeCantDegrees ?? defaults.driveAngleDegrees,
+    -75,
+    75
+  );
+  const driveAngleDegrees = flowRelativeCantDegrees;
+  const tubeAxisCantDegrees = boundedNumber(
+    overrides.tubeAxisCantDegrees,
+    overrides.endBiasDegrees ?? defaults.tubeAxisCantDegrees ?? defaults.endBiasDegrees ?? 0,
+    -60,
+    60
+  );
+  const angleSpreadDegrees = boundedNumber(overrides.angleSpreadDegrees, defaults.angleSpreadDegrees, 0, 45);
+  const phaseOffsetDegrees = boundedNumber(overrides.phaseOffsetDegrees, defaults.phaseOffsetDegrees, -180, 180);
+  const fieldPeriods = Math.round(boundedNumber(overrides.fieldPeriods, defaults.fieldPeriods, 1, 8));
+  const rotationalTransform = boundedNumber(overrides.rotationalTransform, defaults.rotationalTransform, 0, 1);
+  const launcherCount = ringCount * launchersPerRing;
+  const sampleCount = Math.max(1, launcherCount);
+  const launcherAnglesDegrees = Array.from({ length: sampleCount }, (_, index) => {
+    if (launcherCount === 0) return driveAngleDegrees;
+    const ringIndex = Math.floor(index / launchersPerRing);
+    const launcherIndex = index % launchersPerRing;
+    const phase = launcherIndex / launchersPerRing * Math.PI * 2
+      + ringIndex * phaseOffsetDegrees * Math.PI / 180;
+    return driveAngleDegrees + angleSpreadDegrees * Math.sin(phase);
+  });
+  const angleComponents = launcherAnglesDegrees.map((angle) => {
+    const radians = angle * Math.PI / 180;
+    const tubeAxisCantRadians = tubeAxisCantDegrees * Math.PI / 180;
+    const alongTube = geometry !== 'frc';
+    const radialComponent = Math.max(0, Math.cos(radians)) * Math.cos(tubeAxisCantRadians);
+    const tangentialComponent = alongTube
+      ? Math.sin(radians) * Math.cos(tubeAxisCantRadians) + Math.max(0, Math.cos(radians)) * Math.sin(tubeAxisCantRadians)
+      : Math.sin(radians) * Math.cos(tubeAxisCantRadians);
+    return {
+      radial: radialComponent,
+      tangential: tangentialComponent,
+      tubeAxis: Math.sin(tubeAxisCantRadians)
+    };
+  });
+  const hasGunRings = defaults.topology === 'gun-rings';
+  const radialCoupling = hasGunRings
+    ? angleComponents.reduce((sum, value) => sum + value.radial, 0) / sampleCount
+    : 0;
+  const tangentialCoupling = hasGunRings
+    ? angleComponents.reduce((sum, value) => sum + Math.abs(value.tangential), 0) / sampleCount
+    : 0;
+  const signedVorticity = hasGunRings
+    ? angleComponents.reduce((sum, value) => sum + value.tangential, 0) / sampleCount
+    : 0;
+  const signedTubeAxisBias = hasGunRings
+    ? angleComponents.reduce((sum, value) => sum + value.tubeAxis, 0) / sampleCount
+    : 0;
+  const coverage = defaults.topology === 'gun-rings'
+    ? 1 - Math.exp(-launcherCount / 12)
+    : Math.min(1, 0.62 + fieldPeriods * 0.07 + ringCount * 0.04);
+  const spreadCoherence = 1 - angleSpreadDegrees / 180;
+  const topologyResponse = defaults.topology === 'axial'
+    ? 1
+    : defaults.topology === 'gun-rings'
+      ? defaults.responseGain * (0.62 + radialCoupling * 0.2 + tangentialCoupling * 0.1 + coverage * 0.08) * spreadCoherence
+      : defaults.responseGain * (0.72 + coverage * 0.14 + rotationalTransform * 0.14);
+  const couplingScore = Math.min(1.12, Math.max(0.75, topologyResponse));
+  const confinementMultiplier = defaults.topology === 'axial'
+    ? 1
+    : Math.min(1.08, Math.max(0.94, 0.88 + couplingScore * 0.14));
+  const focusBeam = defaults.topology === 'gun-rings'
+    ? calculatePlasmaFocusBeam({ ...defaults, ...overrides, launcherCount })
+    : null;
+
+  return {
+    configuration: configurationKey,
+    topology: defaults.topology,
+    ringCount,
+    launchersPerRing,
+    launcherCount,
+    driveAngleDegrees,
+    flowRelativeCantDegrees,
+    tubeAxisCantDegrees,
+    endBiasDegrees: tubeAxisCantDegrees,
+    angleSpreadDegrees,
+    phaseOffsetDegrees,
+    fieldPeriods,
+    rotationalTransform,
+    launcherAnglesDegrees,
+    focusBeam,
+    radialCoupling,
+    tangentialCoupling,
+    signedVorticity,
+    signedTubeAxisBias,
+    signedEndBias: signedTubeAxisBias,
+    coverage,
+    couplingScore,
+    confinementMultiplier
+  };
+}
+
 export function getFrcVisualizationVisibility({ configuration = 'thetaPinch', input = 'DT' } = {}) {
   const configurationModel = FRC_CONFIGURATIONS[configuration] || FRC_CONFIGURATIONS.thetaPinch;
   const inputKey = FRC_INPUTS[input] ? input : 'DT';
@@ -309,6 +565,13 @@ export function getFrcVisualizationVisibility({ configuration = 'thetaPinch', in
   const hasCaptureStage = configurationModel.energyCaptureEfficiency > 0;
 
   return {
+    ancillary: {
+      energyHarness: true,
+      outputManifold: true,
+      nitrogenGasFlow: true,
+      chargeFlow: true,
+      inputParticles: true
+    },
     input: Object.fromEntries(Object.keys(FRC_INPUTS).map((key) => [key, key === inputKey])),
     output: {
       nitrogen: configurationModel.nitrogenPurgeSLM > 0,
@@ -332,7 +595,7 @@ const OUTPUT_FREQUENCY_HZ = 60;
 const ARGON_ION_MASS_KG = 39.948 * 1.66053906660e-27;
 const ADIABATIC_INDEX = 5 / 3;
 
-export function calculateFrcModel({ shape = 'elongated', configuration = 'thetaPinch', input = 'DT', magneticField, density, ionTemperature, rotation, auxiliaryHeatingMW = 12, recoveryConfiguration = 'inductiveDirect', recoveryConfigurations = {}, piezoDriveFrequencyKHz, piezoStrainPpm, longitudinalDriveFrequencyKHz, longitudinalDriveAmplitude, wavePacketWidth, driveCoupling } = {}) {
+export function calculateFrcModel({ shape = 'elongated', configuration = 'thetaPinch', input = 'DT', magneticField, density, ionTemperature, rotation, auxiliaryHeatingMW = 12, excitationConfiguration = 'axialReference', excitationConfigurations = {}, recoveryConfiguration = 'inductiveDirect', recoveryConfigurations = {}, piezoDriveFrequencyKHz, piezoStrainPpm, longitudinalDriveFrequencyKHz, longitudinalDriveAmplitude, wavePacketWidth, driveCoupling } = {}) {
   const shapeModel = FRC_SHAPES[shape] || FRC_SHAPES.elongated;
   const configurationModel = FRC_CONFIGURATIONS[configuration] || FRC_CONFIGURATIONS.thetaPinch;
   const inputKey = FRC_INPUTS[input] ? input : 'DT';
@@ -346,10 +609,16 @@ export function calculateFrcModel({ shape = 'elongated', configuration = 'thetaP
   const beta = Math.min(0.98, plasmaPressureKPa / magneticPressureKPa);
   const plasmaRadius = shapeModel.radius * (0.7 + beta * 0.28);
   const plasmaHalfLength = shapeModel.halfLength * (0.84 + beta * 0.2);
-  const plasmaVolume = 2 * Math.PI * plasmaRadius ** 2 * plasmaHalfLength;
+  const toroidal = Boolean(shapeModel.geometry);
+  const toroidalMajorRadius = toroidal ? shapeModel.wallHalfLength : null;
+  const plasmaVolume = toroidal
+    ? 2 * Math.PI ** 2 * toroidalMajorRadius * plasmaRadius ** 2
+    : 2 * Math.PI * plasmaRadius ** 2 * plasmaHalfLength;
   const plasmaCurrentMA = field * plasmaRadius * 0.52 / MU_0 / 1e6;
   const axialField = field * configurationModel.axialFieldRatio;
-  const confinement = Math.min(1, Math.max(0, configurationModel.confinement * (0.82 + beta * 0.28) * (1 - rotationRate * 0.08)));
+  const excitation = calculateExcitation(excitationConfiguration, excitationConfigurations, shapeModel.geometry ?? 'frc');
+  const referenceConfinement = Math.min(1, Math.max(0, configurationModel.confinement * (0.82 + beta * 0.28) * (1 - rotationRate * 0.08)));
+  const confinement = Math.min(1, referenceConfinement * excitation.confinementMultiplier);
   const stability = Math.min(1, Math.max(0, 0.48 + beta * 0.38 + confinement * 0.25 - Math.abs(axialField / field) * 0.18));
   const fusionTemperatureFactor = 1 - Math.exp(-temperature / 2.5);
   const fusionPowerMW = particleDensity ** 2 * fusionTemperatureFactor * plasmaVolume * 0.24 * confinement * shapeModel.shapeFactor * inputModel.reactionRateFactor;
@@ -373,6 +642,10 @@ export function calculateFrcModel({ shape = 'elongated', configuration = 'thetaP
   const electricPowerMW = capturedPowerMW * electricConversionEfficiency;
   const auxiliaryPowerMW = Math.max(0.01, Number(auxiliaryHeatingMW));
   const fusionGainQ = fusionPowerMW / auxiliaryPowerMW;
+  const referenceFusionPowerMW = confinement > 0 ? fusionPowerMW * referenceConfinement / confinement : 0;
+  const referenceFusionGainQ = referenceFusionPowerMW / auxiliaryPowerMW;
+  excitation.referenceFusionGainQ = referenceFusionGainQ;
+  excitation.fusionGainDelta = referenceFusionGainQ > 0 ? fusionGainQ / referenceFusionGainQ - 1 : 0;
   const recoveryConfigurationKey = FRC_RECOVERY_CONFIGURATIONS[recoveryConfiguration]
     ? recoveryConfiguration
     : 'inductiveDirect';
@@ -418,6 +691,10 @@ export function calculateFrcModel({ shape = 'elongated', configuration = 'thetaP
     input: inputKey,
     wallRadius: shapeModel.wallRadius,
     wallHalfLength: shapeModel.wallHalfLength,
+    geometry: shapeModel.geometry ?? 'frc',
+    toroidalMajorRadius,
+    fieldPeriods: shapeModel.fieldPeriods ?? 1,
+    helicalExcursion: shapeModel.helicalExcursion ?? 0,
     shapeFactor: shapeModel.shapeFactor,
     magneticField: field,
     density: particleDensity,
@@ -450,6 +727,7 @@ export function calculateFrcModel({ shape = 'elongated', configuration = 'thetaP
     electricPowerMW,
     auxiliaryHeatingMW: auxiliaryPowerMW,
     fusionGainQ,
+    excitation,
     recovery: {
       configuration: recoveryConfigurationKey,
       drivePowerMW,

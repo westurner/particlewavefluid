@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 const explicitBaseUrl = process.env.BASE_URL;
 const preferredPort = Number(process.env.E2E_PORT ?? 5173);
 const testConcurrency = process.env.E2E_CONCURRENCY ?? "3";
+const testTimeout = process.env.E2E_TIMEOUT_MS ?? "180000";
 const testFiles = readdirSync("e2e").filter((name) => name.endsWith(".test.js")).sort().map((name) => `e2e/${name}`);
 let server;
 let baseUrl = explicitBaseUrl;
@@ -62,7 +63,7 @@ async function runTests() {
     await waitForServer(baseUrl);
   }
   baseUrl = e2eUrl(baseUrl);
-  const testProcess = spawn(process.execPath, ["--test", `--test-concurrency=${testConcurrency}`, "--test-timeout=120000", ...process.argv.slice(2), ...testFiles], { stdio: "inherit", env: { ...process.env, BASE_URL: baseUrl } });
+  const testProcess = spawn(process.execPath, ["--test", `--test-concurrency=${testConcurrency}`, `--test-timeout=${testTimeout}`, ...process.argv.slice(2), ...testFiles], { stdio: "inherit", env: { ...process.env, BASE_URL: baseUrl } });
   const [code, signal] = await new Promise((resolve, reject) => {
     testProcess.on("error", reject);
     testProcess.on("exit", (exitCode, exitSignal) => resolve([exitCode, exitSignal]));

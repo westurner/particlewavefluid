@@ -49,9 +49,41 @@ export const INPUT_PARTICLE_STREAMS = {
   }
 };
 
-export function createFlowPathPoints({ wallHalfLength, wallRadius, scale = 1, outputSpread = 1.8 }) {
+export function toroidalPoint({ angle, majorRadius, minorOffset = 0, verticalOffset = 0, helicalExcursion = 0, fieldPeriods = 1 }) {
+  const helicalPhase = fieldPeriods * angle;
+  const centerRadius = majorRadius + helicalExcursion * Math.cos(helicalPhase);
+  const centerZ = helicalExcursion * Math.sin(helicalPhase);
+  const radius = centerRadius + minorOffset;
+  return [Math.cos(angle) * radius, Math.sin(angle) * radius, centerZ + verticalOffset];
+}
+
+export function createFlowPathPoints({ wallHalfLength, wallRadius, scale = 1, outputSpread = 1.8, geometry = 'frc', fieldPeriods = 1, helicalExcursion = 0 }) {
   const halfLength = wallHalfLength * scale;
   const radius = wallRadius * scale;
+  if (geometry !== 'frc') {
+    const point = (angle, minorOffset, verticalOffset = 0) => toroidalPoint({
+      angle,
+      majorRadius: halfLength,
+      minorOffset: minorOffset * scale,
+      verticalOffset: verticalOffset * scale,
+      helicalExcursion: helicalExcursion * scale,
+      fieldPeriods
+    });
+    const outputPath = (verticalOffset) => [
+      point(-0.22, wallRadius * 0.72, verticalOffset * 0.15),
+      point(0.05, wallRadius + 0.28, verticalOffset * 0.35),
+      point(0.36, wallRadius + 0.95, verticalOffset * 0.7),
+      point(0.72, wallRadius + 1.7, verticalOffset)
+    ];
+    return {
+      nitrogenPath: outputPath(Number(outputSpread)),
+      chargePath: [-1.2, -0.72, -0.24, 0.24, 0.72].map((angle, index) => (
+        point(angle, wallRadius + 0.55, (index - 2) * 0.12)
+      )),
+      heliumPath: outputPath(0),
+      neutronPath: outputPath(-Number(outputSpread))
+    };
+  }
   const outputPath = (outputY) => [
     [halfLength * 0.92, 0, radius * 0.82],
     [halfLength + 0.7, outputY * 0.3, radius + 0.45],
@@ -71,9 +103,26 @@ export function createFlowPathPoints({ wallHalfLength, wallRadius, scale = 1, ou
   };
 }
 
-export function createInputParticlePathPoints({ plasmaHalfLength, plasmaRadius, scale = 1 }) {
+export function createInputParticlePathPoints({ plasmaHalfLength, plasmaRadius, scale = 1, geometry = 'frc', fieldPeriods = 1, helicalExcursion = 0 }) {
   const halfLength = plasmaHalfLength * scale;
   const radius = plasmaRadius * scale;
+  if (geometry !== 'frc') {
+    const lanes = {
+      DT: [-0.14 * plasmaRadius, -0.32 * plasmaRadius],
+      DHe_3: [0.18 * plasmaRadius, 0.24 * plasmaRadius],
+      Argon: [-0.2 * plasmaRadius, 0.22 * plasmaRadius]
+    };
+    return Object.fromEntries(Object.entries(lanes).map(([input, [radialLane, verticalLane]]) => [input,
+      [2.2, 1.7, 1.1, 0.5].map((angle, index) => toroidalPoint({
+        angle,
+        majorRadius: halfLength,
+        minorOffset: ([plasmaRadius + 1.25, plasmaRadius * 0.86, plasmaRadius * 0.55, plasmaRadius * 0.3][index] + radialLane) * scale,
+        verticalOffset: verticalLane * scale,
+        helicalExcursion: helicalExcursion * scale,
+        fieldPeriods
+      }))
+    ]));
+  }
   const lanes = {
     DT: [0, -radius * 0.34],
     DHe_3: [radius * 0.34, radius * 0.16],

@@ -1770,9 +1770,12 @@ function TelemetryPanel({ settings, onSettingsChange, telemetry, gpuError, susta
     <aside className="telemetry-panel panel">
       <ParamEditingProvider editing={editing}>
       <div className="panel-topline">
-      <div className="subway-editor-toolbar"><ParamEditingToggle checked={editing} onChange={onEditing} /><HistoryControls canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} /></div>
         <div className="panel-kicker"><span className={`status-dot ${gpuError ? 'status-error' : ''}`} />LIVE / TEST CHAMBER</div>
         <button className="panel-hide" type="button" onClick={onHide}>Hide</button>
+      </div>
+      <div className="subway-editor-toolbar">
+        <ParamEditingToggle checked={editing} onChange={onEditing} />
+        <HistoryControls canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} />
       </div>
       <div className="telemetry-heading"><span>Ambient field</span><strong>{temperature.toFixed(1)}°F</strong></div>
       <Sparkline values={temperatureHistory} />

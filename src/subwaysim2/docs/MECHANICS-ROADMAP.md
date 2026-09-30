@@ -76,6 +76,10 @@ The ordinary low-frequency ion-acoustic branch is primarily a parallel-compressi
 
 There is no universal optimal angle. An FRC has curved field lines, a field reversal, and a magnetic null, so one laboratory angle cannot remain parallel everywhere. The implementation should use local flux coordinates and optimize a measured objective such as absorbed power, coherent density response, driven current, or damping rate subject to wall loading and stability constraints. Frequency must be scanned with angle rather than held at a nominal acoustic value. A starting dispersion check is
 
+The launcher studies add a second, distinct angle: plasma-gun cant relative to the local inward radial direction. A radial ring has zero cant and emphasizes convergent compression. Giving every launcher the same signed cant adds net angular momentum and a vortex-like mean flow; alternating signs can add shear while canceling net circulation. Multiple angles are therefore useful experimental degrees of freedom, but they are not automatically superior. The relevant objective must include compression symmetry, absorbed power, angular-momentum transfer, shear stability, wall interception, and gun-to-gun phase error.
+
+The tokamak-like and stellarator-like loop selections remain external-drive topology analogues when applied to an FRC vessel. Matching device presets add an axisymmetric torus and a prescribed three-period helical torus, seed particles in those toroidal domains, and apply a reduced guide-field transport direction. These are geometry and visualization studies only. They do not solve Grad-Shafranov or three-dimensional MHD equilibrium, construct nested flux surfaces, model a tokamak plasma-current transformer, or calculate an optimized stellarator coil set and rotational transform. Their displayed $Q$ change is deliberately capped as a reduced sensitivity factor and must not be interpreted as a predictive comparison among FRC, tokamak, and stellarator reactors.
+
 $$
 \omega_r\simeq\frac{k_\parallel c_s}{\sqrt{1+k^2\lambda_D^2}},
 $$
@@ -88,6 +92,8 @@ Acceptance criteria:
 - [ ] Angle-frequency scans report launched, reflected, absorbed, and wall-coupled power rather than selecting an angle from field amplitude alone.
 - [ ] The parallel limit reproduces a cited ion-acoustic dispersion and damping benchmark; the perpendicular limit is not labeled ion-acoustic without a branch-identification test.
 - [ ] Nonlinear runs report $e\Phi/(k_B T_e)$, $\delta n/n_0$, Mach number, trapped-particle fraction, and harmonic energy.
+- [ ] Gun-ring scans conserve injected energy and angular momentum and report radial compression, tangential momentum, phase balance, and wall loading separately.
+- [ ] Tokamak and stellarator labels remain topology analogues until device-specific equilibrium, orbit, stability, and transport benchmarks are implemented.
 
 ##### DDF as a constitutive stress, not a confinement source
 

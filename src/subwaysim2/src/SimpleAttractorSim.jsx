@@ -323,7 +323,7 @@ const ATTRACTOR_FRAGMENT_SHADER = `
   void main() {
     vec3 color = mix(uColorA, uColorB, smoothstep(0.0, 0.65, vSpeed));
     float glow = 0.55 + vMass * 0.45;
-    gl_FragColor = vec4(color * glow, 0.88);
+    gl_FragColor = vec4(color * glow, 0.46);
   }
 `;
 
@@ -410,7 +410,7 @@ const MIXED_FRAGMENT_SHADER = `
     vec3 fieldColor = mix(uColorA, uColorB, max(vSpeed, max(vStress, vSnap)));
     vec3 color = uComparisonEnabled ? differenceColor : fieldColor;
     float glow = mix(0.55 + vMass * 0.45, 0.65 + vStress * 0.8 + vSnap * 0.35, vBlackHole);
-    float alpha = mix(0.88, 0.45 + vStress * 0.5, vBlackHole);
+    float alpha = mix(0.46, 0.24 + vStress * 0.34, vBlackHole);
     gl_FragColor = vec4(color * glow, splat * alpha);
   }
 `;
@@ -428,7 +428,7 @@ function createConfiguration(variant = 'simple') {
     maxSpeed: 8,
     velocityDamping: 0.1,
     spinningStrength: 2.75,
-    scale: 0.008,
+    scale: 0.06,
     boundHalfExtent: 8,
     colorA: hypothesisVariant ? '#4de8ff' : '#33905f',
     colorB: variant === 'ddf' ? '#f4c750' : hypothesisVariant ? '#e74315' : '#55e699',
