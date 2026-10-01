@@ -1,19 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
-import { BufferAttribute, BufferGeometry, Color, Vector3 } from 'three';
+import { BufferAttribute, BufferGeometry, Vector3 } from 'three';
 import {
+  AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY,
+  AMPLITUDE_GRAVITY_PATH_SAMPLE_RATE,
+  AMPLITUDE_GRAVITY_STREAMLINE_SEGMENTS,
+  AMPLITUDE_GRAVITY_STREAMLINES_PER_BODY,
   AMPLITUDE_GRAVITY_MODES,
   calculateSystemInvariants,
   calculateWeakFieldObservables,
   compareSystemInvariants,
   createPositiveGrassmannianCell,
   DEFAULT_AMPLITUDE_GRAVITY,
+  appendAmplitudeGravityPathSample,
   evaluateAmplitudeChannels,
   evaluateNBodyAmplitudeGravity,
-  sanitizeAmplitudeGravity
+  sanitizeAmplitudeGravity,
+  writeAmplitudeGravityPathSegments,
+  updateAmplitudeGravityStreamlines
 } from './amplitudeGravityModel.js';
-import { NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
+import { ColorParamControl, NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
 
 const BODY_COLORS = ['#f5c65d', '#68d5cc', '#e98567', '#8f9ff2', '#d7e77b'];
 const INITIAL_BODIES = [
@@ -71,11 +78,59 @@ function NBodyField({ configuration, running, resetToken, onTelemetry }) {
   const bodiesRef = useRef(cloneBodies());
   const invariantBaselineRef = useRef(null);
   const telemetryTimerRef = useRef(0);
+  const pathHistoryRef = useRef(new Float32Array(INITIAL_BODIES.length * AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY * 3));
+  const pathNextIndexRef = useRef(0);
+  const pathSampleCountRef = useRef(0);
+  const pathSampleTimerRef = useRef(0);
+  const pathNeedsUpdateRef = useRef(true);
+  const streamlineRefreshRef = useRef(0);
+  const streamlineNeedsUpdateRef = useRef(true);
+  const pathGeometry = useMemo(() => {
+    const geometry = new BufferGeometry();
+    const maximumSegments = INITIAL_BODIES.length * (AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY - 1);
+    geometry.setAttribute('position', new BufferAttribute(new Float32Array(maximumSegments * 6), 3));
+    geometry.setDrawRange(0, 0);
+    return geometry;
+  }, []);
+  const streamlineGeometry = useMemo(() => {
+    const geometry = new BufferGeometry();
+    const positionCount = INITIAL_BODIES.length * AMPLITUDE_GRAVITY_STREAMLINES_PER_BODY * AMPLITUDE_GRAVITY_STREAMLINE_SEGMENTS * 2;
+    geometry.setAttribute('position', new BufferAttribute(new Float32Array(positionCount * 3), 3));
+    return geometry;
+  }, []);
 
   useEffect(() => {
     bodiesRef.current = cloneBodies();
     invariantBaselineRef.current = null;
+    pathHistoryRef.current.fill(0);
+    pathNextIndexRef.current = 0;
+    pathSampleCountRef.current = 0;
+    pathSampleTimerRef.current = 0;
+    pathNeedsUpdateRef.current = true;
   }, [configuration.coupling, configuration.mode, configuration.softening, resetToken]);
+
+  useEffect(() => {
+    streamlineNeedsUpdateRef.current = true;
+  }, [configuration.coupling, configuration.mode, configuration.softening, configuration.cellGaps[0], configuration.cellGaps[1], configuration.cellGaps[2], configuration.fourthColumnWeight, configuration.streamlineLength, configuration.showStreamlines, resetToken]);
+
+  useEffect(() => {
+    if (configuration.showAttractorPaths) {
+      pathHistoryRef.current.fill(0);
+      pathNextIndexRef.current = 0;
+      pathSampleCountRef.current = 0;
+      pathSampleTimerRef.current = 0;
+    }
+    pathNeedsUpdateRef.current = true;
+  }, [configuration.showAttractorPaths, resetToken]);
+
+  useEffect(() => {
+    pathNeedsUpdateRef.current = true;
+  }, [configuration.attractorPathLength]);
+
+  useEffect(() => () => {
+    pathGeometry.dispose();
+    streamlineGeometry.dispose();
+  }, [pathGeometry, streamlineGeometry]);
 
   useFrame((_, delta) => {
     const bodies = bodiesRef.current;
@@ -110,6 +165,41 @@ function NBodyField({ configuration, running, resetToken, onTelemetry }) {
       }
     });
 
+    if (configuration.showStreamlines) {
+      streamlineRefreshRef.current += delta;
+      if (streamlineNeedsUpdateRef.current || (running && streamlineRefreshRef.current >= 0.12)) {
+        updateAmplitudeGravityStreamlines(streamlineGeometry.attributes.position.array, bodies, configuration);
+        streamlineGeometry.attributes.position.needsUpdate = true;
+        streamlineRefreshRef.current = 0;
+        streamlineNeedsUpdateRef.current = false;
+      }
+    }
+
+    if (configuration.showAttractorPaths) {
+      pathSampleTimerRef.current += delta;
+      let sampled = false;
+      if (pathSampleCountRef.current === 0 || (running && pathSampleTimerRef.current >= 1 / AMPLITUDE_GRAVITY_PATH_SAMPLE_RATE)) {
+        pathNextIndexRef.current = appendAmplitudeGravityPathSample(pathHistoryRef.current, bodies, pathNextIndexRef.current);
+        pathSampleCountRef.current = Math.min(pathSampleCountRef.current + 1, AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY);
+        pathSampleTimerRef.current = 0;
+        sampled = true;
+      }
+      if (pathNeedsUpdateRef.current || sampled) {
+        const visiblePointCount = Math.round(configuration.attractorPathLength * AMPLITUDE_GRAVITY_PATH_SAMPLE_RATE) + 1;
+        const vertexCount = writeAmplitudeGravityPathSegments(
+          pathGeometry.attributes.position.array,
+          pathHistoryRef.current,
+          pathNextIndexRef.current,
+          pathSampleCountRef.current,
+          bodies.length,
+          visiblePointCount
+        );
+        pathGeometry.setDrawRange(0, vertexCount);
+        pathGeometry.attributes.position.needsUpdate = true;
+        pathNeedsUpdateRef.current = false;
+      }
+    }
+
     telemetryTimerRef.current += delta;
     if (telemetryTimerRef.current > 0.2) {
       telemetryTimerRef.current = 0;
@@ -138,6 +228,12 @@ function NBodyField({ configuration, running, resetToken, onTelemetry }) {
           </mesh>
         </group>
       ))}
+      <lineSegments name="amplitude-gravity-streamlines" geometry={streamlineGeometry} visible={configuration.showStreamlines} frustumCulled={false}>
+        <lineBasicMaterial color={configuration.streamlineColor} transparent opacity={configuration.streamlineOpacity} depthWrite={false} />
+      </lineSegments>
+      <lineSegments name="amplitude-gravity-attractor-paths" geometry={pathGeometry} visible={configuration.showAttractorPaths} frustumCulled={false}>
+        <lineBasicMaterial color={configuration.streamlineColor} transparent opacity={configuration.streamlineOpacity} depthWrite={false} />
+      </lineSegments>
     </group>
   );
 }
@@ -158,8 +254,8 @@ function AmplitudeScene({ configuration, running, resetToken, onTelemetry }) {
   );
 }
 
-function Slider({ label, value, min, max, step, onChange }) {
-  return <NumericParamControl className="amplitude-range" label={label} value={value} min={min} max={max} step={step} onChange={onChange} />;
+function Slider({ label, value, min, max, step, onChange, suffix = '' }) {
+  return <NumericParamControl className="amplitude-range" label={label} value={value} min={min} max={max} step={step} onChange={onChange} suffix={suffix} />;
 }
 
 export default function AmplitudeGravitySim({ onBack }) {
@@ -185,6 +281,12 @@ export default function AmplitudeGravitySim({ onBack }) {
         <p className="amplitude-warning">QED photon exchange does not itself produce gravity. The gravity channel here is a spin-2 EFT proxy; “gravituhedron” is a testable visualization hypothesis.</p>
         <ParamSelect className="amplitude-select" label="Gravity model" value={settings.mode} options={AMPLITUDE_GRAVITY_MODES} onChange={(mode) => update({ mode })} />
         <label className="amplitude-toggle"><input type="checkbox" checked={settings.showDifference} onChange={(event) => update({ showDifference: event.target.checked })} /><span>Show acceleration difference from Newtonian</span></label>
+        <label className="amplitude-toggle"><input type="checkbox" checked={settings.showStreamlines} onChange={(event) => update({ showStreamlines: event.target.checked })} /><span>Show gravitational streamlines</span></label>
+        <Slider label="Streamline length" value={settings.streamlineLength} min={1} max={24} step={0.1} onChange={(streamlineLength) => update({ streamlineLength })} />
+        <label className="amplitude-toggle"><input type="checkbox" checked={settings.showAttractorPaths} onChange={(event) => update({ showAttractorPaths: event.target.checked })} /><span>Show attractor paths</span></label>
+        <Slider label="Attractor path duration" value={settings.attractorPathLength} min={1} max={12} step={0.1} onChange={(attractorPathLength) => update({ attractorPathLength })} suffix="s" />
+        <ColorParamControl label="Field and path color" value={settings.streamlineColor} onChange={(streamlineColor) => update({ streamlineColor })} />
+        <Slider label="Field and path opacity" value={settings.streamlineOpacity} min={0} max={1} step={0.01} onChange={(streamlineOpacity) => update({ streamlineOpacity })} />
         <Slider label="Geometric coupling" value={settings.coupling} min={0} max={4} step={0.01} onChange={(coupling) => update({ coupling })} />
         <Slider label="Correction range" value={settings.correctionRange} min={0.2} max={12} step={0.1} onChange={(correctionRange) => update({ correctionRange })} />
         <Slider label="Softening" value={settings.softening} min={0.01} max={1} step={0.01} onChange={(softening) => update({ softening })} />

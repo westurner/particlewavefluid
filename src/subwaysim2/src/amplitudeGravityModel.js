@@ -13,8 +13,19 @@ export const DEFAULT_AMPLITUDE_GRAVITY = Object.freeze({
   softening: 0.18,
   gravitationalConstant: 1,
   speedOfLight: 20,
-  showDifference: false
+  showDifference: false,
+  showStreamlines: false,
+  streamlineLength: 9,
+  streamlineColor: '#59dbe0',
+  streamlineOpacity: 0.55,
+  showAttractorPaths: false,
+  attractorPathLength: 6
 });
+
+export const AMPLITUDE_GRAVITY_STREAMLINES_PER_BODY = 8;
+export const AMPLITUDE_GRAVITY_STREAMLINE_SEGMENTS = 40;
+export const AMPLITUDE_GRAVITY_PATH_SAMPLE_RATE = 24;
+export const AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY = AMPLITUDE_GRAVITY_PATH_SAMPLE_RATE * 12 + 1;
 
 const MODE_IDS = new Set(AMPLITUDE_GRAVITY_MODES.map(({ value }) => value));
 
@@ -41,8 +52,119 @@ export function sanitizeAmplitudeGravity(value = {}) {
     softening: clamp(finiteOr(value.softening, DEFAULT_AMPLITUDE_GRAVITY.softening), 0.001, 10),
     gravitationalConstant: clamp(finiteOr(value.gravitationalConstant, DEFAULT_AMPLITUDE_GRAVITY.gravitationalConstant), 0, 100),
     speedOfLight: clamp(finiteOr(value.speedOfLight, DEFAULT_AMPLITUDE_GRAVITY.speedOfLight), 1, 1e6),
-    showDifference: Boolean(value.showDifference)
+    showDifference: Boolean(value.showDifference),
+    showStreamlines: Boolean(value.showStreamlines),
+    streamlineLength: clamp(finiteOr(value.streamlineLength, DEFAULT_AMPLITUDE_GRAVITY.streamlineLength), 1, 24),
+    streamlineColor: typeof value.streamlineColor === 'string' && /^#[\da-f]{6}$/i.test(value.streamlineColor)
+      ? value.streamlineColor.toLowerCase()
+      : DEFAULT_AMPLITUDE_GRAVITY.streamlineColor,
+    streamlineOpacity: clamp(finiteOr(value.streamlineOpacity, DEFAULT_AMPLITUDE_GRAVITY.streamlineOpacity), 0, 1),
+    showAttractorPaths: Boolean(value.showAttractorPaths),
+    attractorPathLength: clamp(finiteOr(value.attractorPathLength, DEFAULT_AMPLITUDE_GRAVITY.attractorPathLength), 1, 12)
   };
+}
+
+export function updateAmplitudeGravityStreamlines(target, bodies, configuration = DEFAULT_AMPLITUDE_GRAVITY) {
+  const settings = sanitizeAmplitudeGravity(configuration);
+  const poleWeight = settings.mode === 'gravituhedron'
+    ? createPositiveGrassmannianCell(settings).canonicalPoleWeight
+    : 0;
+  const sourceMasses = bodies.map((body) => positive(body.mass, 1));
+  const field = new Float64Array(3);
+  const segmentLength = settings.streamlineLength / AMPLITUDE_GRAVITY_STREAMLINE_SEGMENTS;
+  const softeningSquared = settings.softening * settings.softening;
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+
+  for (let bodyIndex = 0; bodyIndex < bodies.length; bodyIndex += 1) {
+    const body = bodies[bodyIndex];
+    const seedRadius = Math.max(finiteOr(body.radius, 0.2) * 1.6, 0.42);
+    for (let seedIndex = 0; seedIndex < AMPLITUDE_GRAVITY_STREAMLINES_PER_BODY; seedIndex += 1) {
+      const vertical = 1 - 2 * (seedIndex + 0.5) / AMPLITUDE_GRAVITY_STREAMLINES_PER_BODY;
+      const radial = Math.sqrt(1 - vertical * vertical);
+      const angle = seedIndex * goldenAngle + bodyIndex * 0.37;
+      let x = body.position[0] + Math.cos(angle) * radial * seedRadius;
+      let y = body.position[1] + vertical * seedRadius;
+      let z = body.position[2] + Math.sin(angle) * radial * seedRadius;
+      const streamlineIndex = bodyIndex * AMPLITUDE_GRAVITY_STREAMLINES_PER_BODY + seedIndex;
+
+      for (let segmentIndex = 0; segmentIndex < AMPLITUDE_GRAVITY_STREAMLINE_SEGMENTS; segmentIndex += 1) {
+        const outputOffset = (streamlineIndex * AMPLITUDE_GRAVITY_STREAMLINE_SEGMENTS + segmentIndex) * 6;
+        target[outputOffset] = x;
+        target[outputOffset + 1] = y;
+        target[outputOffset + 2] = z;
+        field[0] = 0;
+        field[1] = 0;
+        field[2] = 0;
+
+        for (let sourceIndex = 0; sourceIndex < bodies.length; sourceIndex += 1) {
+          const sourcePosition = bodies[sourceIndex].position;
+          const dx = sourcePosition[0] - x;
+          const dy = sourcePosition[1] - y;
+          const dz = sourcePosition[2] - z;
+          const distanceSquared = dx * dx + dy * dy + dz * dz;
+          if (distanceSquared < 1e-12) continue;
+          const distance = Math.sqrt(distanceSquared);
+          const radius = Math.sqrt(distanceSquared + softeningSquared);
+          let kernel = settings.gravitationalConstant * sourceMasses[sourceIndex] / (radius * radius);
+          if (settings.mode === 'spin2-tree') kernel *= 1 + settings.coupling / radius;
+          if (settings.mode === 'gravituhedron') {
+            kernel *= 1 + settings.coupling * poleWeight * Math.exp(-radius / settings.correctionRange);
+          }
+          const fieldScale = kernel / distance;
+          field[0] += dx * fieldScale;
+          field[1] += dy * fieldScale;
+          field[2] += dz * fieldScale;
+        }
+
+        const fieldMagnitude = Math.hypot(field[0], field[1], field[2]);
+        if (fieldMagnitude > 1e-12) {
+          x -= field[0] / fieldMagnitude * segmentLength;
+          y -= field[1] / fieldMagnitude * segmentLength;
+          z -= field[2] / fieldMagnitude * segmentLength;
+        }
+        target[outputOffset + 3] = x;
+        target[outputOffset + 4] = y;
+        target[outputOffset + 5] = z;
+      }
+    }
+  }
+  return target;
+}
+
+export function appendAmplitudeGravityPathSample(history, bodies, nextIndex) {
+  const sampleIndex = nextIndex % AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY;
+  for (let bodyIndex = 0; bodyIndex < bodies.length; bodyIndex += 1) {
+    const outputOffset = (bodyIndex * AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY + sampleIndex) * 3;
+    history[outputOffset] = bodies[bodyIndex].position[0];
+    history[outputOffset + 1] = bodies[bodyIndex].position[1];
+    history[outputOffset + 2] = bodies[bodyIndex].position[2];
+  }
+  return (sampleIndex + 1) % AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY;
+}
+
+export function writeAmplitudeGravityPathSegments(target, history, nextIndex, sampleCount, bodyCount, visiblePointCount) {
+  const pointCount = Math.min(sampleCount, visiblePointCount, AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY);
+  if (pointCount < 2) return 0;
+  const firstSample = (nextIndex - pointCount + AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY) % AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY;
+  let outputOffset = 0;
+
+  for (let bodyIndex = 0; bodyIndex < bodyCount; bodyIndex += 1) {
+    const historyOffset = bodyIndex * AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY * 3;
+    for (let pointIndex = 1; pointIndex < pointCount; pointIndex += 1) {
+      const previousSample = (firstSample + pointIndex - 1) % AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY;
+      const currentSample = (firstSample + pointIndex) % AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY;
+      const previousOffset = historyOffset + previousSample * 3;
+      const currentOffset = historyOffset + currentSample * 3;
+      target[outputOffset] = history[previousOffset];
+      target[outputOffset + 1] = history[previousOffset + 1];
+      target[outputOffset + 2] = history[previousOffset + 2];
+      target[outputOffset + 3] = history[currentOffset];
+      target[outputOffset + 4] = history[currentOffset + 1];
+      target[outputOffset + 5] = history[currentOffset + 2];
+      outputOffset += 6;
+    }
+  }
+  return outputOffset / 3;
 }
 
 export function createPositiveGrassmannianCell(configuration = DEFAULT_AMPLITUDE_GRAVITY) {
