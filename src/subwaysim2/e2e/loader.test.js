@@ -45,6 +45,23 @@ test('DDF loads as a distinct hypothesis model with comparison controls', async 
   assert.equal(await comparison.isChecked(), false);
   await comparison.click();
   await page.getByText(/Reference delta at 2 core radii:/).waitFor();
+
+  const starVisibility = page.getByRole('checkbox', { name: 'Show black-hole star splats' });
+  assert.equal(await starVisibility.isChecked(), true);
+  await starVisibility.click();
+  assert.equal(await starVisibility.isChecked(), false);
+  await starVisibility.click();
+  assert.equal(await starVisibility.isChecked(), true);
+
+  const starColor = page.getByRole('textbox', { name: 'Black-hole star color hex' });
+  await starColor.fill('#ff55cc');
+  await starColor.press('Enter');
+  assert.equal(await starColor.inputValue(), '#ff55cc');
+
+  const starOpacity = page.getByRole('slider', { name: /Black-hole star opacity/ });
+  await starOpacity.focus();
+  await starOpacity.press('End');
+  assert.equal(await starOpacity.inputValue(), '1');
 });
 
 test('amplitude gravity lab exposes positive-cell and model-difference diagnostics', async (t) => {

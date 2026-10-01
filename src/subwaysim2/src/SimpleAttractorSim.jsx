@@ -7,6 +7,7 @@ import { createGpuParticleField, createSimulationUvs } from './simulations/gpuPa
 import { HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect, YamlTextArea } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 import { compareFieldModels, DEFAULT_FIELD_MECHANICS, FIELD_MODEL_DETAILS, FIELD_MODEL_OPTIONS, fieldModelIndex, sanitizeFieldMechanics } from './mechanicsModels.js';
+import { advanceBlackHoleStarField, createBlackHoleStarField } from './blackHoleStarModel.js';
 
 const MAX_ATTRACTORS = 20;
 const PARTICLE_COUNT = 2 ** 18;
@@ -24,6 +25,13 @@ const ATTRACTOR_CAMERA_VIEWS = [
   { id: 'ortho2', label: 'Ortho 2', position: [-14, 12, -20] },
   { id: 'orbital', label: 'Orbital tracking', position: null }
 ];
+
+function createBlackHoleStarRuntimeState() {
+  return {
+    positions: Array.from({ length: MAX_ATTRACTORS }, () => new Vector3()),
+    massFractions: new Float32Array(MAX_ATTRACTORS)
+  };
+}
 const TRANSFORM_MODE_OPTIONS = [
   { value: 'translate', label: 'Translate' },
   { value: 'rotate', label: 'Rotate' },
@@ -161,11 +169,10 @@ const MIXED_VELOCITY_SHADER = `
   uniform float uBlackHoleEventHorizonShear[20];
   uniform float uBlackHoleFractureThreshold[20];
   uniform float uBlackHoleRotationSpeed[20];
-  uniform float uBlackHoleTestStarEccentricity[20];
   uniform float uBlackHoleThermalNoise[20];
-  uniform float uBlackHoleOrbitRadius[20];
-  uniform float uBlackHoleOrbitVerticalAmplitude[20];
   uniform float uBlackHoleFractureIntensity[20];
+  uniform vec3 uBlackHoleStarPositions[20];
+  uniform float uBlackHoleStarMassFractions[20];
   uniform float uFieldModel;
   uniform bool uMechanicsEnabled;
   uniform bool uComparisonEnabled;
@@ -234,19 +241,16 @@ const MIXED_VELOCITY_SHADER = `
         vec3 tangent = normalize(cross(vec3(0.0, 1.0, 0.0), radial) + vec3(0.0001, 0.0, 0.0));
         float shear = uBlackHoleEventHorizonShear[index];
         float threshold = max(uBlackHoleFractureThreshold[index], 0.001);
-        float semiMajorAxis = max(uBlackHoleOrbitRadius[index], 0.0);
-        float eccentricity = clamp(uBlackHoleTestStarEccentricity[index], 0.0, 0.99);
-        float semiMinorAxis = semiMajorAxis * sqrt(max(0.0, 1.0 - eccentricity * eccentricity));
-        float orbitAngle = uTime * uBlackHoleRotationSpeed[index] * 0.5;
-        float linearEccentricity = sqrt(max(0.0, semiMajorAxis * semiMajorAxis - semiMinorAxis * semiMinorAxis));
-        vec3 starPosition = uAttractorPositions[index] + vec3(
-          cos(orbitAngle) * semiMajorAxis - linearEccentricity,
-          sin(orbitAngle * 2.0) * uBlackHoleOrbitVerticalAmplitude[index],
-          sin(orbitAngle) * semiMinorAxis
-        );
-        float distanceToStar = distance(particlePosition, starPosition);
-        float wakeStress = distanceToStar < 2.5
-          ? (2.5 - distanceToStar) / (length(starPosition - uAttractorPositions[index]) + 0.1) * 50.0
+        vec3 starPosition = uBlackHoleStarPositions[index];
+        vec3 toStar = starPosition - particlePosition;
+        float distanceToStar = max(length(toStar), 0.08);
+        float starMassFraction = uBlackHoleStarMassFractions[index];
+        float starGravity = uAttractorMass * particleMass * starMassFraction * GRAVITY_CONSTANT
+          * uAttractorMagnitudes[index] / (distanceToStar * distanceToStar);
+        if (starMassFraction > 0.0001) force += toStar / distanceToStar * starGravity;
+        float remainingStarMass = clamp(starMassFraction / 96.0, 0.0, 1.0);
+        float wakeStress = starMassFraction > 0.0001 && distanceToStar < 2.5
+          ? (2.5 - distanceToStar) / (length(starPosition - uAttractorPositions[index]) + 0.1) * 50.0 * remainingStarMass
           : 0.0;
         float thermalStress = hash21(uv + vec2(uTime * 0.03, uTime * 0.017)) * uBlackHoleThermalNoise[index];
         float localStress = shear / radius + wakeStress + thermalStress;
@@ -474,6 +478,9 @@ function createConfiguration(variant = 'simple') {
     blackHoleOrbitVerticalAmplitude: 0.5,
     blackHoleFractureIntensity: 1,
     blackHoleStreamlines: true,
+    blackHoleStarsVisible: true,
+    blackHoleStarColor: '#fff4d6',
+    blackHoleStarOpacity: 0.72,
     fieldMechanics: {
       ...DEFAULT_FIELD_MECHANICS,
       enabled: hypothesisVariant,
@@ -629,6 +636,12 @@ function sanitizeConfiguration(data, variant) {
   next.cameraWheelMode = data.cameraWheelMode === 'dolly' ? 'dolly' : 'zoom';
   next.helperShowAttributes = Boolean(data.helperShowAttributes);
   next.fieldMechanics = sanitizeFieldMechanics(data.fieldMechanics, base.fieldMechanics);
+  next.blackHoleStarsVisible = data.blackHoleStarsVisible === undefined ? base.blackHoleStarsVisible : Boolean(data.blackHoleStarsVisible);
+  next.blackHoleStarColor = typeof data.blackHoleStarColor === 'string' && /^#[\da-f]{6}$/i.test(data.blackHoleStarColor)
+    ? data.blackHoleStarColor.toLowerCase()
+    : base.blackHoleStarColor;
+  const starOpacity = Number(data.blackHoleStarOpacity ?? base.blackHoleStarOpacity);
+  next.blackHoleStarOpacity = Number.isFinite(starOpacity) ? Math.min(1, Math.max(0, starOpacity)) : base.blackHoleStarOpacity;
   const legacyBlackHole = {
     eventHorizonShear: data.blackHoleEventHorizonShear,
     fractureThreshold: data.blackHoleFractureThreshold,
@@ -665,7 +678,7 @@ function sanitizeConfiguration(data, variant) {
   return next;
 }
 
-function AttractorParticles({ configuration, onGpuError, variant, particleCount }) {
+function AttractorParticles({ configuration, onGpuError, variant, particleCount, blackHoleStarStateRef }) {
   const { gl } = useThree();
   const useBlackHoleSeed = variant === 'blackhole' || variant === 'ddf';
   const hasBlackHoles = configuration.attractors.some((attractor) => attractor.type === 'blackhole');
@@ -779,6 +792,8 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount 
       velocityUniforms.uAttractorCount = { value: configurationRef.current.attractors.length };
       velocityUniforms.uAttractorPositions = { value: Array.from({ length: MAX_ATTRACTORS }, () => new Vector3()) };
       velocityUniforms.uAttractorRotationAxes = { value: Array.from({ length: MAX_ATTRACTORS }, () => new Vector3(0, 1, 0)) };
+      velocityUniforms.uBlackHoleStarPositions = { value: blackHoleStarStateRef.current.positions };
+      velocityUniforms.uBlackHoleStarMassFractions = { value: blackHoleStarStateRef.current.massFractions };
       velocityUniforms.uAttractorMagnitudes = { value: new Float32Array(MAX_ATTRACTORS).fill(1) };
       velocityUniforms.uAttractorTypes = { value: new Float32Array(MAX_ATTRACTORS) };
       velocityUniforms.uSimpleMassMultipliers = { value: new Float32Array(MAX_ATTRACTORS).fill(1) };
@@ -786,10 +801,7 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount 
       velocityUniforms.uBlackHoleEventHorizonShear = { value: new Float32Array(MAX_ATTRACTORS) };
       velocityUniforms.uBlackHoleFractureThreshold = { value: new Float32Array(MAX_ATTRACTORS).fill(25) };
       velocityUniforms.uBlackHoleRotationSpeed = { value: new Float32Array(MAX_ATTRACTORS) };
-      velocityUniforms.uBlackHoleTestStarEccentricity = { value: new Float32Array(MAX_ATTRACTORS) };
       velocityUniforms.uBlackHoleThermalNoise = { value: new Float32Array(MAX_ATTRACTORS) };
-      velocityUniforms.uBlackHoleOrbitRadius = { value: new Float32Array(MAX_ATTRACTORS).fill(BLACK_HOLE_ATTRACTOR_DEFAULTS.orbitRadius) };
-      velocityUniforms.uBlackHoleOrbitVerticalAmplitude = { value: new Float32Array(MAX_ATTRACTORS).fill(BLACK_HOLE_ATTRACTOR_DEFAULTS.orbitVerticalAmplitude) };
       velocityUniforms.uBlackHoleFractureIntensity = { value: new Float32Array(MAX_ATTRACTORS).fill(BLACK_HOLE_ATTRACTOR_DEFAULTS.fractureIntensity) };
       velocityUniforms.uFieldModel = { value: fieldModelIndex(configurationRef.current.fieldMechanics.model) };
       velocityUniforms.uMechanicsEnabled = { value: configurationRef.current.fieldMechanics.enabled };
@@ -814,7 +826,7 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount 
       velocityVariableRef.current = null;
       gpuCompute?.dispose();
     };
-  }, [geometry, gl, onGpuError, material, resolution, useBlackHoleSeed, useMixedShader]);
+  }, [geometry, gl, onGpuError, material, resolution, useBlackHoleSeed, useMixedShader, blackHoleStarStateRef]);
 
   useFrame((state, delta) => {
     const compute = computeRef.current;
@@ -846,6 +858,7 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount 
     velocityUniforms.uSpeedLimit.value = current.fieldMechanics.speedLimit;
     velocityUniforms.uBaseViscosity.value = current.fieldMechanics.baseViscosity;
     velocityUniforms.uAttractorCount.value = current.attractors.length;
+    velocityUniforms.uBlackHoleStarMassFractions.value.fill(0);
     current.attractors.forEach((attractor, index) => {
       velocityUniforms.uAttractorPositions.value[index].fromArray(attractor.position);
       velocityUniforms.uAttractorRotationAxes.value[index].set(0, 1, 0).applyEuler(new Euler(...attractor.rotation)).normalize();
@@ -856,10 +869,7 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount 
       velocityUniforms.uBlackHoleEventHorizonShear.value[index] = attractor.blackHole.eventHorizonShear;
       velocityUniforms.uBlackHoleFractureThreshold.value[index] = attractor.blackHole.fractureThreshold;
       velocityUniforms.uBlackHoleRotationSpeed.value[index] = attractor.blackHole.rotationSpeed;
-      velocityUniforms.uBlackHoleTestStarEccentricity.value[index] = attractor.blackHole.testStarEccentricity;
       velocityUniforms.uBlackHoleThermalNoise.value[index] = attractor.blackHole.thermalNoise;
-      velocityUniforms.uBlackHoleOrbitRadius.value[index] = attractor.blackHole.orbitRadius;
-      velocityUniforms.uBlackHoleOrbitVerticalAmplitude.value[index] = attractor.blackHole.orbitVerticalAmplitude;
       velocityUniforms.uBlackHoleFractureIntensity.value[index] = attractor.blackHole.fractureIntensity;
     });
     velocityUniforms.uTime.value = state.clock.getElapsedTime();
@@ -1103,31 +1113,79 @@ function AttractorCamera({ configuration, onCameraChange, playing, paramsVisible
   return <OrbitControls ref={controlsRef} makeDefault enableDamping enableZoom={configuration.cameraZoomEnabled && configuration.cameraWheelMode === 'dolly'} touches={{ ONE: TOUCH.ROTATE, TWO: TOUCH.DOLLY_PAN }} dampingFactor={0.08} minDistance={0.25} maxDistance={50} onStart={handleManualChange} onEnd={handleControlEnd} />;
 }
 
-function BlackHoleEffect({ attractor, showStreamlines }) {
-  const starRef = useRef();
+function BlackHoleEffect({ attractor, configuration, showStreamlines, starStateRef, attractorIndex }) {
+  const starLightRef = useRef();
+  const starField = useMemo(() => createBlackHoleStarField(attractor, configuration), [
+    attractor.blackHole.orbitRadius,
+    attractor.blackHole.testStarEccentricity,
+    attractor.magnitude,
+    configuration.attractorMassExponent,
+    configuration.particleGlobalMassExponent,
+    configuration.maxSpeed
+  ]);
   const lineGeometry = useMemo(() => {
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new BufferAttribute(new Float32Array(96 * 2 * 3), 3));
     return geometry;
   }, []);
-  const starPosition = useMemo(() => new Vector3(), []);
+  const starGeometry = useMemo(() => {
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new BufferAttribute(starField.positions, 3));
+    geometry.setAttribute('aStarMass', new BufferAttribute(starField.masses, 1));
+    return geometry;
+  }, [starField]);
+  const starMaterial = useMemo(() => new ShaderMaterial({
+    uniforms: {
+      uColor: { value: new Color(configuration.blackHoleStarColor) },
+      uOpacity: { value: configuration.blackHoleStarOpacity },
+      uPointSize: { value: configuration.scale * 1400 }
+    },
+    vertexShader: `
+      attribute float aStarMass;
+      uniform float uPointSize;
+      varying float vStarMass;
+      void main() {
+        vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * viewPosition;
+        gl_PointSize = max(1.25, uPointSize * (0.4 + aStarMass * 0.8) / max(-viewPosition.z, 1.0));
+        vStarMass = aStarMass;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uColor;
+      uniform float uOpacity;
+      varying float vStarMass;
+      void main() {
+        float radius = length(gl_PointCoord - 0.5);
+        if (radius > 0.5 || vStarMass < 0.015) discard;
+        float glow = 1.0 - smoothstep(0.08, 0.5, radius);
+        gl_FragColor = vec4(uColor * (0.65 + vStarMass * 0.55), glow * uOpacity * vStarMass);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: AdditiveBlending
+  }), []);
   const center = useMemo(() => new Vector3(), []);
 
-  useEffect(() => () => lineGeometry.dispose(), [lineGeometry]);
+  useEffect(() => () => {
+    lineGeometry.dispose();
+    starGeometry.dispose();
+    starMaterial.dispose();
+  }, [lineGeometry, starGeometry, starMaterial]);
 
-  useFrame(({ clock }) => {
+  useFrame((_, delta) => {
     const parameters = attractor.blackHole;
+    advanceBlackHoleStarField(starField, attractor, configuration, delta);
+    starStateRef.current.positions[attractorIndex].fromArray(starField.center);
+    starStateRef.current.massFractions[attractorIndex] = starField.massFraction;
+    starGeometry.attributes.position.needsUpdate = true;
+    starGeometry.attributes.aStarMass.needsUpdate = true;
+    starMaterial.uniforms.uColor.value.set(configuration.blackHoleStarColor);
+    starMaterial.uniforms.uOpacity.value = configuration.blackHoleStarOpacity;
+    starMaterial.uniforms.uPointSize.value = configuration.scale * 1400;
+    if (starLightRef.current) starLightRef.current.position.fromArray(starField.center);
     center.fromArray(attractor.position);
-    const orbitAngle = clock.getElapsedTime() * parameters.rotationSpeed * 0.5;
-    const semiMajorAxis = parameters.orbitRadius;
-    const semiMinorAxis = semiMajorAxis * Math.sqrt(Math.max(0, 1 - parameters.testStarEccentricity ** 2));
-    const linearEccentricity = Math.sqrt(Math.max(0, semiMajorAxis ** 2 - semiMinorAxis ** 2));
-    starPosition.set(
-      Math.cos(orbitAngle) * semiMajorAxis - linearEccentricity,
-      Math.sin(orbitAngle * 2) * parameters.orbitVerticalAmplitude,
-      Math.sin(orbitAngle) * semiMinorAxis
-    ).add(center);
-    if (starRef.current) starRef.current.position.copy(starPosition);
 
     const positions = lineGeometry.attributes.position.array;
     for (let index = 0; index < 96; index += 1) {
@@ -1152,11 +1210,14 @@ function BlackHoleEffect({ attractor, showStreamlines }) {
 
   return (
     <group>
-      <mesh ref={starRef}>
-        <sphereGeometry args={[0.2, 16, 16]} />
-        <meshBasicMaterial color="#ffffff" />
-        <pointLight intensity={2} distance={10} color="#aaddff" />
-      </mesh>
+      <points
+        name={`black-hole-star-splats-${attractorIndex}`}
+        geometry={starGeometry}
+        material={starMaterial}
+        visible={configuration.blackHoleStarsVisible && configuration.scale > 0}
+        frustumCulled={false}
+      />
+      <pointLight ref={starLightRef} intensity={2 * configuration.blackHoleStarOpacity} distance={10} color={configuration.blackHoleStarColor} visible={configuration.blackHoleStarsVisible} />
       <lineSegments visible={showStreamlines} geometry={lineGeometry}>
         <lineBasicMaterial color="#ff0055" transparent opacity={0.3} blending={AdditiveBlending} />
       </lineSegments>
@@ -1164,8 +1225,8 @@ function BlackHoleEffect({ attractor, showStreamlines }) {
   );
 }
 
-function BlackHoleEffects({ configuration }) {
-  return <>{configuration.attractors.map((attractor, index) => attractor.type === 'blackhole' && <BlackHoleEffect key={`${index}:${attractor.name}`} attractor={attractor} showStreamlines={configuration.blackHoleStreamlines} />)}</>;
+function BlackHoleEffects({ configuration, starStateRef }) {
+  return <>{configuration.attractors.map((attractor, index) => attractor.type === 'blackhole' && <BlackHoleEffect key={`${index}:${attractor.name}`} attractor={attractor} configuration={configuration} showStreamlines={configuration.blackHoleStreamlines} starStateRef={starStateRef} attractorIndex={index} />)}</>;
 }
 
 function AttractorViewToolbar({ viewMode, onViewChange }) {
@@ -1183,6 +1244,8 @@ function AttractorViewToolbar({ viewMode, onViewChange }) {
 }
 
 function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing, onCameraChange, paramsVisible, viewMode, onManualChange, variant }) {
+  const blackHoleStarStateRef = useRef(null);
+  if (!blackHoleStarStateRef.current) blackHoleStarStateRef.current = createBlackHoleStarRuntimeState();
   const particleCount = E2E_PARTICLE_COUNT ?? configuration.particleCount;
   return (
     <>
@@ -1192,8 +1255,8 @@ function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing,
       <directionalLight color="#fff2d4" intensity={1.5} position={[4, 5, 2]} />
       <pointLight color="#ff885e" intensity={2.2} distance={18} position={[0, 0, 0]} />
       <gridHelper args={[16, 16, '#25304c', '#101827']} />
-      {!E2E_MODE && <AttractorParticles key={particleCount} configuration={configuration} onGpuError={onGpuError} variant={variant} particleCount={particleCount} />}
-      <BlackHoleEffects configuration={configuration} />
+      {!E2E_MODE && <AttractorParticles key={particleCount} configuration={configuration} onGpuError={onGpuError} variant={variant} particleCount={particleCount} blackHoleStarStateRef={blackHoleStarStateRef} />}
+      <BlackHoleEffects configuration={configuration} starStateRef={blackHoleStarStateRef} />
       {configuration.attractors.map((attractor, index) => (
         <AttractorHandle key={`${index}:${attractor.name}`} attractor={attractor} index={index} configuration={configuration} onChange={onAttractorChange} />
       ))}
@@ -1281,6 +1344,9 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
           <p className="attractor-model-difference">Reference delta at 2 core radii: <strong>{(comparison.relativeDifference * 100).toFixed(1)}%</strong></p>
         </>}
         <BooleanControl label="Show stress streamlines" value={configuration.blackHoleStreamlines} onChange={(value) => onChange({ blackHoleStreamlines: value }, 'blackHoleStreamlines')} />
+        <BooleanControl label="Show black-hole star splats" value={configuration.blackHoleStarsVisible} onChange={(value) => onChange({ blackHoleStarsVisible: value }, 'blackHoleStarsVisible')} />
+        <ColorControl label="Black-hole star color" value={configuration.blackHoleStarColor} onChange={(value) => onChange({ blackHoleStarColor: value }, 'blackHoleStarColor')} />
+        <RangeControl label="Black-hole star opacity" value={configuration.blackHoleStarOpacity} min={0} max={1} step={0.01} onChange={(value) => onChange({ blackHoleStarOpacity: value }, 'blackHoleStarOpacity')} />
         <p className="attractor-model-note">GPU particles sample reduced response fields, not a full shock-capturing or pressure-Poisson NS solver. SQG and DDF remain phenomenological hypotheses with no claimed derivation from QED, amplituhedra, or general relativity.</p>
       </details>}
 
