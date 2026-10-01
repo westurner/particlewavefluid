@@ -2,12 +2,29 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html, OrbitControls, TransformControls } from '@react-three/drei';
 import { stringify as stringifyYaml } from "yaml";
-import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DoubleSide, Euler, InstancedBufferAttribute, PlaneGeometry, ShaderMaterial, TOUCH, Vector3 } from 'three';
+import { AdditiveBlending, BufferAttribute, BufferGeometry, Camera, Color, DoubleSide, Euler, FloatType, HalfFloatType, InstancedBufferAttribute, Mesh, NearestFilter, NoBlending, PlaneGeometry, RGBAFormat, Scene, ShaderMaterial, TOUCH, Vector3, WebGLRenderTarget } from 'three';
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
 import { HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect, YamlTextArea } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 import { compareFieldModels, DEFAULT_FIELD_MECHANICS, FIELD_MODEL_DETAILS, FIELD_MODEL_OPTIONS, fieldModelIndex, sanitizeFieldMechanics } from './mechanicsModels.js';
 import { advanceBlackHoleStarField, createBlackHoleStarField } from './blackHoleStarModel.js';
+import {
+  ATTRACTOR_PATH_HISTORY_CAPACITY,
+  ATTRACTOR_PATH_SAMPLE_RATE,
+  DEFAULT_ATTRACTOR_PATH_SETTINGS,
+  appendAttractorPathSample,
+  createAttractorPathHistory,
+  sanitizeAttractorPathSettings,
+  writeAttractorPathSegments
+} from './attractorPathModel.js';
+import {
+  DEFAULT_PARTICLE_PATH_SETTINGS,
+  PARTICLE_PATH_HISTORY_CAPACITY,
+  PARTICLE_PATH_SAMPLE_COUNT,
+  PARTICLE_PATH_SAMPLE_RATE,
+  particlePathWindow,
+  sanitizeParticlePathSettings
+} from './particlePathModel.js';
 
 const MAX_ATTRACTORS = 20;
 const PARTICLE_COUNT = 2 ** 18;
@@ -419,6 +436,171 @@ const MIXED_FRAGMENT_SHADER = `
   }
 `;
 
+const PARTICLE_PATH_GATHER_VERTEX_SHADER = `
+  varying vec2 vUv;
+  void main() {
+    vUv = position.xy * 0.5 + 0.5;
+    gl_Position = vec4(position.xy, 0.0, 1.0);
+  }
+`;
+
+const PARTICLE_PATH_GATHER_FRAGMENT_SHADER = `
+  uniform sampler2D uPositionTex;
+  uniform sampler2D uHistoryTex;
+  uniform float uResolution;
+  uniform float uParticleCount;
+  uniform float uSampleCount;
+  uniform float uWriteRow;
+  varying vec2 vUv;
+
+  void main() {
+    float outputColumn = floor(gl_FragCoord.x);
+    float outputRow = floor(gl_FragCoord.y);
+    if (abs(outputRow - uWriteRow) < 0.5) {
+      float particleIndex = min(uParticleCount - 1.0, floor((outputColumn + 0.5) * uParticleCount / uSampleCount));
+      vec2 particleUv = (vec2(mod(particleIndex, uResolution), floor(particleIndex / uResolution)) + 0.5) / uResolution;
+      gl_FragColor = texture2D(uPositionTex, particleUv);
+    } else {
+      gl_FragColor = texture2D(uHistoryTex, vUv);
+    }
+  }
+`;
+
+const PARTICLE_PATH_VERTEX_SHADER = `
+  uniform sampler2D uPathHistory;
+  uniform float uPathFirstRow;
+  uniform float uPathHistoryCapacity;
+  uniform float uPathSampleCount;
+  attribute float aPathParticle;
+  attribute float aPathStep;
+
+  void main() {
+    float historyRow = mod(uPathFirstRow + aPathStep, uPathHistoryCapacity);
+    vec2 historyUv = vec2((aPathParticle + 0.5) / uPathSampleCount, (historyRow + 0.5) / uPathHistoryCapacity);
+    vec3 worldPosition = texture2D(uPathHistory, historyUv).xyz;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(worldPosition, 1.0);
+  }
+`;
+
+const PARTICLE_PATH_FRAGMENT_SHADER = `
+  uniform vec3 uPathColor;
+  uniform float uPathOpacity;
+  void main() {
+    gl_FragColor = vec4(uPathColor, uPathOpacity);
+  }
+`;
+
+function createParticlePathRenderResources(gl) {
+  const historyGeometry = new BufferGeometry();
+  const maximumSegments = PARTICLE_PATH_SAMPLE_COUNT * (PARTICLE_PATH_HISTORY_CAPACITY - 1);
+  const vertexCount = maximumSegments * 2;
+  const positions = new Float32Array(vertexCount * 3);
+  const pathParticles = new Float32Array(vertexCount);
+  const pathSteps = new Float32Array(vertexCount);
+  let vertexIndex = 0;
+  for (let stepIndex = 0; stepIndex < PARTICLE_PATH_HISTORY_CAPACITY - 1; stepIndex += 1) {
+    for (let particleIndex = 0; particleIndex < PARTICLE_PATH_SAMPLE_COUNT; particleIndex += 1) {
+      pathParticles[vertexIndex] = particleIndex;
+      pathSteps[vertexIndex] = stepIndex;
+      vertexIndex += 1;
+      pathParticles[vertexIndex] = particleIndex;
+      pathSteps[vertexIndex] = stepIndex + 1;
+      vertexIndex += 1;
+    }
+  }
+  historyGeometry.setAttribute('position', new BufferAttribute(positions, 3));
+  historyGeometry.setAttribute('aPathParticle', new BufferAttribute(pathParticles, 1));
+  historyGeometry.setAttribute('aPathStep', new BufferAttribute(pathSteps, 1));
+  historyGeometry.setDrawRange(0, 0);
+
+  const historyTargets = [0, 1].map(() => new WebGLRenderTarget(PARTICLE_PATH_SAMPLE_COUNT, PARTICLE_PATH_HISTORY_CAPACITY, {
+    format: RGBAFormat,
+    type: gl.capabilities.isWebGL2 ? FloatType : HalfFloatType,
+    minFilter: NearestFilter,
+    magFilter: NearestFilter,
+    depthBuffer: false,
+    stencilBuffer: false
+  }));
+  historyTargets.forEach((target) => {
+    target.texture.generateMipmaps = false;
+    target.texture.colorSpace = '';
+  });
+
+  const gatherGeometry = new BufferGeometry();
+  gatherGeometry.setAttribute('position', new BufferAttribute(new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]), 3));
+  const gatherMaterial = new ShaderMaterial({
+    uniforms: {
+      uPositionTex: { value: null },
+      uHistoryTex: { value: null },
+      uResolution: { value: 1 },
+      uParticleCount: { value: 1 },
+      uSampleCount: { value: PARTICLE_PATH_SAMPLE_COUNT },
+      uWriteRow: { value: 0 }
+    },
+    vertexShader: PARTICLE_PATH_GATHER_VERTEX_SHADER,
+    fragmentShader: PARTICLE_PATH_GATHER_FRAGMENT_SHADER,
+    depthTest: false,
+    depthWrite: false,
+    blending: NoBlending,
+    toneMapped: false
+  });
+  const gatherScene = new Scene();
+  gatherScene.add(new Mesh(gatherGeometry, gatherMaterial));
+  const gatherCamera = new Camera();
+  const pathMaterial = new ShaderMaterial({
+    uniforms: {
+      uPathHistory: { value: historyTargets[0].texture },
+      uPathFirstRow: { value: 0 },
+      uPathHistoryCapacity: { value: PARTICLE_PATH_HISTORY_CAPACITY },
+      uPathSampleCount: { value: PARTICLE_PATH_SAMPLE_COUNT },
+      uPathColor: { value: new Color(DEFAULT_PARTICLE_PATH_SETTINGS.particlePathColor) },
+      uPathOpacity: { value: DEFAULT_PARTICLE_PATH_SETTINGS.particlePathOpacity }
+    },
+    vertexShader: PARTICLE_PATH_VERTEX_SHADER,
+    fragmentShader: PARTICLE_PATH_FRAGMENT_SHADER,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+    toneMapped: false
+  });
+
+  return {
+    historyGeometry,
+    historyTargets,
+    gatherGeometry,
+    gatherMaterial,
+    gatherScene,
+    gatherCamera,
+    pathMaterial,
+    historyIndex: 0,
+    nextRow: 0,
+    sampleCount: 0,
+    sampleTimer: 0,
+    enabled: false,
+    particleCount: 0,
+    dispose() {
+      historyGeometry.dispose();
+      historyTargets.forEach((target) => target.dispose());
+      gatherGeometry.dispose();
+      gatherMaterial.dispose();
+      pathMaterial.dispose();
+    }
+  };
+}
+
+function clearParticlePathHistory(gl, resources) {
+  const currentTarget = gl.getRenderTarget();
+  resources.historyTargets.forEach((target) => {
+    gl.setRenderTarget(target);
+    gl.clear(true, false, false);
+  });
+  gl.setRenderTarget(currentTarget);
+  resources.historyIndex = 0;
+  resources.nextRow = 0;
+  resources.sampleCount = 0;
+  resources.sampleTimer = 0;
+}
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -478,6 +660,8 @@ function createConfiguration(variant = 'simple') {
     blackHoleOrbitVerticalAmplitude: 0.5,
     blackHoleFractureIntensity: 1,
     blackHoleStreamlines: true,
+    ...DEFAULT_ATTRACTOR_PATH_SETTINGS,
+    ...DEFAULT_PARTICLE_PATH_SETTINGS,
     blackHoleStarsVisible: true,
     blackHoleStarColor: '#fff4d6',
     blackHoleStarOpacity: 0.72,
@@ -642,6 +826,8 @@ function sanitizeConfiguration(data, variant) {
     : base.blackHoleStarColor;
   const starOpacity = Number(data.blackHoleStarOpacity ?? base.blackHoleStarOpacity);
   next.blackHoleStarOpacity = Number.isFinite(starOpacity) ? Math.min(1, Math.max(0, starOpacity)) : base.blackHoleStarOpacity;
+  Object.assign(next, sanitizeAttractorPathSettings(data));
+  Object.assign(next, sanitizeParticlePathSettings(data));
   const legacyBlackHole = {
     eventHorizonShear: data.blackHoleEventHorizonShear,
     fractureThreshold: data.blackHoleFractureThreshold,
@@ -734,11 +920,22 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount,
     side: DoubleSide,
     blending: AdditiveBlending
   }), [useMixedShader]);
+  const particlePathResources = useMemo(() => createParticlePathRenderResources(gl), [gl]);
 
   useEffect(() => () => {
     geometry.dispose();
     material.dispose();
   }, [geometry, material]);
+
+  useEffect(() => {
+    const currentTarget = gl.getRenderTarget();
+    particlePathResources.historyTargets.forEach((target) => {
+      gl.setRenderTarget(target);
+      gl.clear(true, false, false);
+    });
+    gl.setRenderTarget(currentTarget);
+    return () => particlePathResources.dispose();
+  }, [gl, particlePathResources]);
 
   useEffect(() => {
     let gpuCompute;
@@ -874,17 +1071,68 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount,
     });
     velocityUniforms.uTime.value = state.clock.getElapsedTime();
     compute.compute();
-    material.uniforms.uPositionTex.value = compute.getCurrentRenderTarget(positionVariable).texture;
-    material.uniforms.uVelocityTex.value = compute.getCurrentRenderTarget(velocityVariable).texture;
+    const positionTarget = compute.getCurrentRenderTarget(positionVariable);
+    const velocityTarget = compute.getCurrentRenderTarget(velocityVariable);
+    material.uniforms.uPositionTex.value = positionTarget.texture;
+    material.uniforms.uVelocityTex.value = velocityTarget.texture;
     material.uniforms.uScale.value = presentation.scale;
     material.uniforms.uMaxSpeed.value = current.maxSpeed;
     material.uniforms.uCameraFacing.value = presentation.particleFacing === 'camera';
     material.uniforms.uComparisonEnabled.value = current.fieldMechanics.comparisonEnabled;
     material.uniforms.uColorA.value.set(presentation.colorA);
     material.uniforms.uColorB.value.set(presentation.colorB);
+
+    if (presentation.particlePathsVisible) {
+      if (!particlePathResources.enabled || particlePathResources.particleCount !== particleCount) {
+        clearParticlePathHistory(gl, particlePathResources);
+        particlePathResources.enabled = true;
+        particlePathResources.particleCount = particleCount;
+      }
+      particlePathResources.sampleTimer += frameDelta;
+      const sampleInterval = 1 / PARTICLE_PATH_SAMPLE_RATE;
+      if (particlePathResources.sampleCount === 0 || particlePathResources.sampleTimer >= sampleInterval) {
+        const sourceTarget = particlePathResources.historyTargets[particlePathResources.historyIndex];
+        const targetIndex = 1 - particlePathResources.historyIndex;
+        const destinationTarget = particlePathResources.historyTargets[targetIndex];
+        const gatherUniforms = particlePathResources.gatherMaterial.uniforms;
+        gatherUniforms.uPositionTex.value = positionTarget.texture;
+        gatherUniforms.uHistoryTex.value = sourceTarget.texture;
+        gatherUniforms.uResolution.value = resolution;
+        gatherUniforms.uParticleCount.value = particleCount;
+        gatherUniforms.uWriteRow.value = particlePathResources.nextRow;
+        const currentTarget = gl.getRenderTarget();
+        try {
+          gl.setRenderTarget(destinationTarget);
+          gl.render(particlePathResources.gatherScene, particlePathResources.gatherCamera);
+        } finally {
+          gl.setRenderTarget(currentTarget);
+        }
+        particlePathResources.historyIndex = targetIndex;
+        particlePathResources.nextRow = (particlePathResources.nextRow + 1) % PARTICLE_PATH_HISTORY_CAPACITY;
+        particlePathResources.sampleCount = Math.min(particlePathResources.sampleCount + 1, PARTICLE_PATH_HISTORY_CAPACITY);
+        particlePathResources.sampleTimer %= sampleInterval;
+      }
+
+      const pathWindow = particlePathWindow(
+        particlePathResources.nextRow,
+        particlePathResources.sampleCount,
+        presentation.particlePathDuration
+      );
+      particlePathResources.historyGeometry.setDrawRange(0, pathWindow.vertexCount);
+      particlePathResources.pathMaterial.uniforms.uPathHistory.value = particlePathResources.historyTargets[particlePathResources.historyIndex].texture;
+      particlePathResources.pathMaterial.uniforms.uPathFirstRow.value = pathWindow.firstRow;
+      particlePathResources.pathMaterial.uniforms.uPathColor.value.set(presentation.particlePathColor);
+      particlePathResources.pathMaterial.uniforms.uPathOpacity.value = presentation.particlePathOpacity;
+    } else {
+      particlePathResources.enabled = false;
+      particlePathResources.historyGeometry.setDrawRange(0, 0);
+    }
   });
 
-  return <instancedMesh args={[geometry, material, particleCount]} frustumCulled={false} />;
+  return <>
+    <instancedMesh args={[geometry, material, particleCount]} frustumCulled={false} />
+    <lineSegments name="particle-motion-paths" geometry={particlePathResources.historyGeometry} material={particlePathResources.pathMaterial} visible={configuration.particlePathsVisible} frustumCulled={false} />
+  </>;
 }
 
 function applyTransformControlColors(controls, axisColors) {
@@ -1229,6 +1477,78 @@ function BlackHoleEffects({ configuration, starStateRef }) {
   return <>{configuration.attractors.map((attractor, index) => attractor.type === 'blackhole' && <BlackHoleEffect key={`${index}:${attractor.name}`} attractor={attractor} configuration={configuration} showStreamlines={configuration.blackHoleStreamlines} starStateRef={starStateRef} attractorIndex={index} />)}</>;
 }
 
+function AttractorPaths({ configuration }) {
+  const geometry = useMemo(() => {
+    const nextGeometry = new BufferGeometry();
+    const maximumSegments = MAX_ATTRACTORS * (ATTRACTOR_PATH_HISTORY_CAPACITY - 1);
+    nextGeometry.setAttribute('position', new BufferAttribute(new Float32Array(maximumSegments * 6), 3));
+    nextGeometry.setDrawRange(0, 0);
+    return nextGeometry;
+  }, []);
+  const historyRef = useRef(createAttractorPathHistory(MAX_ATTRACTORS));
+  const nextIndexRef = useRef(0);
+  const sampleCountRef = useRef(0);
+  const sampleTimerRef = useRef(0);
+  const needsUpdateRef = useRef(true);
+  const positionNeedsSampleRef = useRef(true);
+  const attractorIdentity = configuration.attractors.map((attractor) => `${attractor.name}:${attractor.type}`).join('|');
+  const positionSignature = configuration.attractors.map((attractor) => attractor.position.join(',')).join('|');
+
+  useEffect(() => {
+    historyRef.current.fill(0);
+    nextIndexRef.current = 0;
+    sampleCountRef.current = 0;
+    sampleTimerRef.current = 0;
+    needsUpdateRef.current = true;
+    positionNeedsSampleRef.current = true;
+  }, [attractorIdentity, configuration.attractorPathsVisible]);
+
+  useEffect(() => {
+    needsUpdateRef.current = true;
+  }, [configuration.attractorPathLength]);
+
+  useEffect(() => {
+    positionNeedsSampleRef.current = true;
+  }, [positionSignature]);
+
+  useEffect(() => () => geometry.dispose(), [geometry]);
+
+  useFrame((_, delta) => {
+    if (!configuration.attractorPathsVisible) return;
+
+    sampleTimerRef.current += delta;
+    let sampled = false;
+    if (sampleCountRef.current === 0 || positionNeedsSampleRef.current || sampleTimerRef.current >= 1 / ATTRACTOR_PATH_SAMPLE_RATE) {
+      nextIndexRef.current = appendAttractorPathSample(historyRef.current, configuration.attractors, nextIndexRef.current);
+      sampleCountRef.current = Math.min(sampleCountRef.current + 1, ATTRACTOR_PATH_HISTORY_CAPACITY);
+      sampleTimerRef.current %= 1 / ATTRACTOR_PATH_SAMPLE_RATE;
+      positionNeedsSampleRef.current = false;
+      sampled = true;
+    }
+
+    if (needsUpdateRef.current || sampled) {
+      const visiblePointCount = Math.round(configuration.attractorPathLength * ATTRACTOR_PATH_SAMPLE_RATE) + 1;
+      const vertexCount = writeAttractorPathSegments(
+        geometry.attributes.position.array,
+        historyRef.current,
+        nextIndexRef.current,
+        sampleCountRef.current,
+        configuration.attractors.length,
+        visiblePointCount
+      );
+      geometry.setDrawRange(0, vertexCount);
+      geometry.attributes.position.needsUpdate = true;
+      needsUpdateRef.current = false;
+    }
+  });
+
+  return (
+    <lineSegments name="attractor-motion-paths" geometry={geometry} visible={configuration.attractorPathsVisible} frustumCulled={false}>
+      <lineBasicMaterial color={configuration.attractorPathColor} transparent opacity={configuration.attractorPathOpacity} depthTest={false} depthWrite={false} />
+    </lineSegments>
+  );
+}
+
 function AttractorViewToolbar({ viewMode, onViewChange }) {
   return (
     <nav className="attractor-view-toolbar" aria-label="Camera views">
@@ -1257,6 +1577,7 @@ function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing,
       <gridHelper args={[16, 16, '#25304c', '#101827']} />
       {!E2E_MODE && <AttractorParticles key={particleCount} configuration={configuration} onGpuError={onGpuError} variant={variant} particleCount={particleCount} blackHoleStarStateRef={blackHoleStarStateRef} />}
       <BlackHoleEffects configuration={configuration} starStateRef={blackHoleStarStateRef} />
+      <AttractorPaths configuration={configuration} />
       {configuration.attractors.map((attractor, index) => (
         <AttractorHandle key={`${index}:${attractor.name}`} attractor={attractor} index={index} configuration={configuration} onChange={onAttractorChange} />
       ))}
@@ -1321,6 +1642,22 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
         <RangeControl label="Particle scale" value={configuration.scale} min={0} max={0.1} step={0.001} onChange={(value) => onChange({ scale: value }, 'scale')} />
         <RangeControl label="Bound half extent" value={configuration.boundHalfExtent} min={0.5} max={20} step={0.01} onChange={(value) => onChange({ boundHalfExtent: value }, 'boundHalfExtent')} />
         <SelectControl label="Particle facing" value={configuration.particleFacing} options={['world', 'camera']} onChange={(value) => onChange({ particleFacing: value }, 'particleFacing')} />
+      </details>
+
+      <details className="attractor-details" open>
+        <summary>Particle paths</summary>
+        <BooleanControl label="Show particle paths" value={configuration.particlePathsVisible} onChange={(value) => onChange({ particlePathsVisible: value }, 'particlePathsVisible')} />
+        <RangeControl label="Path duration" value={configuration.particlePathDuration} min={1} max={12} step={0.1} onChange={(value) => onChange({ particlePathDuration: value }, 'particlePathDuration')} />
+        <ColorControl label="Particle path color" value={configuration.particlePathColor} onChange={(value) => onChange({ particlePathColor: value }, 'particlePathColor')} />
+        <RangeControl label="Particle path opacity" value={configuration.particlePathOpacity} min={0} max={1} step={0.01} onChange={(value) => onChange({ particlePathOpacity: value }, 'particlePathOpacity')} />
+      </details>
+
+      <details className="attractor-details" open>
+        <summary>Attractor paths</summary>
+        <BooleanControl label="Show attractor paths" value={configuration.attractorPathsVisible} onChange={(value) => onChange({ attractorPathsVisible: value }, 'attractorPathsVisible')} />
+        <RangeControl label="Path duration" value={configuration.attractorPathLength} min={1} max={12} step={0.1} onChange={(value) => onChange({ attractorPathLength: value }, 'attractorPathLength')} />
+        <ColorControl label="Path color" value={configuration.attractorPathColor} onChange={(value) => onChange({ attractorPathColor: value }, 'attractorPathColor')} />
+        <RangeControl label="Path opacity" value={configuration.attractorPathOpacity} min={0} max={1} step={0.01} onChange={(value) => onChange({ attractorPathOpacity: value }, 'attractorPathOpacity')} />
       </details>
 
       {hasBlackHoles && <details className="attractor-details" open>
