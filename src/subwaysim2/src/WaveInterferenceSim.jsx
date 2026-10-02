@@ -117,12 +117,12 @@ function createDetectorGeometry() {
       const right = left + binWidth;
       const bin = yBin * DETECTOR_BINS_PER_AXIS + zBin;
       const vertices = [
-        DOUBLE_SLIT_DETECTOR_X + 0.025, bottom, left,
-        DOUBLE_SLIT_DETECTOR_X + 0.025, top, left,
-        DOUBLE_SLIT_DETECTOR_X + 0.025, top, right,
-        DOUBLE_SLIT_DETECTOR_X + 0.025, bottom, left,
-        DOUBLE_SLIT_DETECTOR_X + 0.025, top, right,
-        DOUBLE_SLIT_DETECTOR_X + 0.025, bottom, right
+        0.025, bottom, left,
+        0.025, top, left,
+        0.025, top, right,
+        0.025, bottom, left,
+        0.025, top, right,
+        0.025, bottom, right
       ];
       positions.set(vertices, bin * 18);
     }
@@ -245,15 +245,15 @@ function ExperimentDetector({ apertureField, running, timeRef, detectionTime, gl
     geometry.attributes.color.needsUpdate = true;
   });
 
-  return <>
-    <mesh position={[DOUBLE_SLIT_DETECTOR_X, 0, 0]} rotation={[0, Math.PI / 2, 0]}>
+  return <group position={[DOUBLE_SLIT_DETECTOR_X, 0, 0]} rotation={[0, 0, Math.PI]}>
+    <mesh rotation={[0, Math.PI / 2, 0]}>
       <planeGeometry args={[DETECTOR_TRANSVERSE_SPAN, DETECTOR_TRANSVERSE_SPAN]} />
       <meshBasicMaterial color="#10242d" transparent opacity={0.88} side={DoubleSide} depthWrite={false} />
     </mesh>
     <mesh geometry={geometry}>
       <meshBasicMaterial vertexColors transparent opacity={0.98} side={DoubleSide} toneMapped={false} />
     </mesh>
-  </>;
+  </group>;
 }
 
 function WaveField({ waves, waveCount, interferenceModes, running, timeRef, experimentMode, apertureField, apertureSettings, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, occlusionPreset, waveMechanics }) {
