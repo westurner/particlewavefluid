@@ -5,6 +5,8 @@ import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DataTexture, 
 import { advanceDetectorResponse, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacementAndTensorGaussian, calculateWaveFrame, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_APERTURE_SETTINGS, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, DOUBLE_SLIT_SCREEN_THICKNESS, DOUBLE_SLIT_SCREEN_X, DOUBLE_SLIT_WIDTH, APERTURE_SCREEN_DEPTH, APERTURE_SCREEN_HEIGHT, DETECTOR_TRANSVERSE_SPAN, detectorDistanceForSlitScreenPosition, getSlitGeometry, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, GRATING_SLIT_WIDTH, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, readSavedWaveStates, sampleApertureField, SIGNAL_SOURCE_PRESETS, SINGLE_SLIT_WIDTH, TWO_SOURCE_CENTERS, writeSavedWaveStates } from './waveModel.js';
 import { HistoryControls, NumericParamControl, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
+import { SimulatorBase, SimulatorExportModal, SimulatorIOJournal, SimulatorPresetControls, useSimulatorJournal } from './lib/SimulatorBase.jsx';
+import { buildParameterReplayJournal, deletePresetLibrary, parseParameterEditLogYaml, parseSimulatorJson, readPresetLibrary, serializeParameterEditLog, writePresetLibrary } from './lib/simulator-base.js';
 import { evaluateGpeResponse, WAVE_EVOLUTION_OPTIONS } from './mechanicsModels.js';
 
 const FIELD_SIZE = 18;
@@ -15,6 +17,8 @@ const E2E_DETECTOR_MAX_DIMENSION = 128;
 const MIN_PARTICLE_COUNT = 1024;
 //const MAX_PARTICLE_COUNT = 9216;
 const MAX_PARTICLE_COUNT = 2 ** 14;
+const WAVE_PRESET_STORAGE_KEY = 'sqgsim-wave-snapshots';
+const DEFAULT_WAVE_MECHANICS = { model: 'linear', nonlinearCoupling: 0.08, dispersion: 0.05, showDifference: false };
 const DETECTOR_UPDATE_INTERVAL = 1 / 12;
 const CLASSIC_DETECTOR_BINS_PER_AXIS = 48;
 const DETECTOR_MAX_EMITTERS = 1400;
@@ -31,6 +35,24 @@ const DETECTOR_PALETTES = [
   { value: 'black-red', label: 'Black & red', stops: ['#030405', '#26050a', '#a10e1c', '#ff3948'] }
 ];
 const DETECTOR_PALETTE_COLORS = Object.fromEntries(DETECTOR_PALETTES.map(({ value, stops }) => [value, stops.map((stop) => new Color(stop))]));
+
+function normalizeWaveSnapshot(snapshot, defaults) {
+  if (!Array.isArray(snapshot.waves) || snapshot.waves.length !== MAX_WAVES) {
+    throw new TypeError(`A wave preset must contain exactly ${MAX_WAVES} wave slots.`);
+  }
+  const waveCount = Number(snapshot.waveCount ?? defaults.waveCount);
+  return {
+    ...defaults,
+    ...snapshot,
+    waves: snapshot.waves,
+    running: Boolean(snapshot.running ?? defaults.running),
+    waveCount: Number.isFinite(waveCount) ? Math.min(MAX_WAVES, Math.max(1, Math.round(waveCount))) : defaults.waveCount,
+    interferenceModes: { ...defaults.interferenceModes, ...snapshot.interferenceModes },
+    apertureSettings: normalizeApertureSettings({ ...defaults.apertureSettings, ...snapshot.apertureSettings }),
+    waveMechanics: { ...defaults.waveMechanics, ...snapshot.waveMechanics }
+  };
+}
+
 const DETECTOR_RESPONSE_VERTEX_SHADER = `
   varying vec2 vUv;
   void main() {
@@ -904,7 +926,7 @@ function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate
   );
 }
 
-function WavePanel({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, orbitControlsVisible, sourceVectorsVisible, sourcePreset, occlusionPreset, stateOptions, selectedState, stateDescription, stateName, stateMessage, paramsVisible, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation, onExperimentModeChange, onDetectionTime, onGlowTime, onApertureSettingsChange, onDetectorVisible, onDetectorBrightness, onDetectorPalette, onDetectorMaskEnabled, onDetectorPixelDensity, onDetectorImplementation, onSourcePreset, onOcclusionPreset, onStateChange, onStateName, onSaveState, onChange, onWaveCountChange, onInterferenceChange, onRunning, onReset, onDuplicate, onRemove, onDoubleSided, onParticleCount, onParticleSize, onParticleOpacity, onParticleShape, onParticleDerivativeOrder, onOrbitControls, onSourceVectors, onBack, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {}, isDefault = () => true, onResetPath = () => {} }) {
+function WavePanel({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, orbitControlsVisible, sourceVectorsVisible, sourcePreset, occlusionPreset, stateOptions, selectedState, stateDescription, stateName, stateMessage, paramsVisible, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation, onExperimentModeChange, onDetectionTime, onGlowTime, onApertureSettingsChange, onDetectorVisible, onDetectorBrightness, onDetectorPalette, onDetectorMaskEnabled, onDetectorPixelDensity, onDetectorImplementation, onSourcePreset, onOcclusionPreset, onStateChange, onStateName, onSaveState, onChange, onWaveCountChange, onInterferenceChange, onRunning, onReset, onDuplicate, onRemove, onDoubleSided, onParticleCount, onParticleSize, onParticleOpacity, onParticleShape, onParticleDerivativeOrder, onOrbitControls, onSourceVectors, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {}, isDefault = () => true, onResetPath = () => {}, simulatorPresets = {}, currentSimulatorPreset = 'Default', simulatorPresetName = '', onSimulatorPresetName = () => {}, onApplySimulatorPreset = () => {}, onSaveSimulatorPreset = () => {}, currentValue = {}, jsonText = '', onJsonText = () => {}, onLoadJson = () => {}, onExport = () => {}, onDeleteSimulatorPresets = () => {}, showEditLog = false, onShowEditLog = () => {}, editLogYaml = '[]\n', onReplayLog = () => {}, replayMessage = '', replaying = false, journal = [], recording = false, onRecording = () => {}, playing = false, onTogglePlayback = () => {}, onStop = () => {}, playbackTime = 0, onPlaybackTime = () => {}, playbackSpeed = 1, onPlaybackSpeed = () => {} }) {
   const enabledCount = waves.slice(0, waveCount).filter((wave) => wave.enabled).length;
   const activeModeLabels = Object.entries(INTERFERENCE_MODES).filter(([mode]) => interferenceModes[mode]).map(([, details]) => details.label);
   const defaultSlitCount = experimentMode === 'single-slit' ? 1 : experimentMode === 'grating' ? GRATING_SLIT_CENTERS.length : DOUBLE_SLIT_CENTERS.length;
@@ -940,10 +962,11 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
   };
   return (
     <aside className={`wave-panel ${paramsVisible ? '' : 'is-hidden'}`} aria-hidden={!paramsVisible} onPointerDown={(event) => event.stopPropagation()}>
-      <div className="wave-panel-topline"><span className="wave-panel-kicker"><i /> WAVE FIELD / PHASE 01</span><button type="button" className="wave-hide-button" onClick={onBack}>Lab menu</button></div>
+      <div className="wave-panel-topline"><span className="wave-panel-kicker"><i /> WAVE FIELD / PHASE 01</span></div>
       <h2>Wave interference</h2>
       <p className="wave-intro">Compose one or more travelling, circular, and helical waves across a live field.</p>
       <div className="wave-status"><span><i /> {enabledCount} enabled / {waveCount} {waveCount === 1 ? 'wave slot' : 'wave slots'}</span><strong>{running ? 'RUNNING' : 'PAUSED'}</strong></div><div className="wave-editor-toolbar"><ParamEditingToggle checked={editing} onChange={onEditing} /><HistoryControls canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} /></div>
+      <SimulatorPresetControls className="wave-control-section wave-state-section" selectClassName="wave-select wave-state-select" name={simulatorPresetName} onNameChange={onSimulatorPresetName} presets={simulatorPresets} currentPreset={currentSimulatorPreset} onApply={onApplySimulatorPreset} onSave={onSaveSimulatorPreset} />
       <section className="wave-control-section wave-state-section">
         <span className="wave-section-label">WAVE STATES</span>
         <ParamSelect className="wave-select wave-state-select" label="Named state" value={selectedState} options={[...(selectedState === '' ? [{ value: '', label: 'Current field / unsaved' }] : []), ...stateOptions.map((state) => ({ value: state.name, label: state.name }))]} onChange={onStateChange} />
@@ -1059,6 +1082,7 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
         <ParamSelect className="wave-select wave-state-select" label="Occlusion map" value={occlusionPreset} options={OCCLUSION_PRESETS.map((preset) => ({ value: preset.id, label: preset.name }))} onChange={onOcclusionPreset} />
         <p className="wave-description wave-state-description">{OCCLUSION_PRESETS.find((preset) => preset.id === occlusionPreset)?.description}</p>
       </section>
+      <SimulatorIOJournal className="wave-io-journal" currentValue={currentValue} presets={simulatorPresets} jsonText={jsonText} onJsonText={onJsonText} onLoad={onLoadJson} onExport={onExport} onDeletePresets={onDeleteSimulatorPresets} showEditLog={showEditLog} onShowEditLog={onShowEditLog} editLogYaml={editLogYaml} onReplayLog={onReplayLog} replayMessage={replayMessage} replaying={replaying} journal={journal} recording={recording} onRecording={onRecording} playing={playing} onTogglePlayback={onTogglePlayback} onStop={onStop} playbackTime={playbackTime} onPlaybackTime={onPlaybackTime} playbackSpeed={playbackSpeed} onPlaybackSpeed={onPlaybackSpeed} />
     </aside>
   );
 }
@@ -1070,7 +1094,7 @@ export default function WaveInterferenceSim({ onBack }) {
     waves: initialWaveState.waves,
     waveCount: initialWaveState.waveCount,
     interferenceModes: initialWaveState.interferenceModes,
-    particleCount: DEFAULT_PARTICLE_COUNT,
+    particleCount: E2E_PARTICLE_COUNT ?? DEFAULT_PARTICLE_COUNT,
     doubleSided: true,
     particleSize: 0.075,
     particleOpacity: 0.9,
@@ -1088,8 +1112,18 @@ export default function WaveInterferenceSim({ onBack }) {
     detectorPalette: 'thermal',
     detectorMaskEnabled: false,
     detectorPixelDensity: 1,
-    detectorImplementation: 'classic'
+    detectorImplementation: 'classic',
+    running: true,
+    waveMechanics: { ...DEFAULT_WAVE_MECHANICS }
   };
+  const [simulatorPresets, setSimulatorPresets] = useState(() => readPresetLibrary(localStorage, WAVE_PRESET_STORAGE_KEY, { Default: initialSnapshot }));
+  const [currentSimulatorPreset, setCurrentSimulatorPreset] = useState('Default');
+  const [simulatorPresetName, setSimulatorPresetName] = useState('');
+  const [jsonText, setJsonText] = useState(() => JSON.stringify(initialSnapshot, null, 2));
+  const [showEditLog, setShowEditLog] = useState(false);
+  const [replayMessage, setReplayMessage] = useState('');
+  const [exportModal, setExportModal] = useState(null);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [waves, setWaves] = useState(() => initialWaveState.waves);
   const [waveCount, setWaveCount] = useState(initialWaveState.waveCount);
   const [interferenceModes, setInterferenceModes] = useState(initialWaveState.interferenceModes);
@@ -1112,7 +1146,7 @@ export default function WaveInterferenceSim({ onBack }) {
   const [stateModified, setStateModified] = useState(false);
   const [stateName, setStateName] = useState('');
   const [stateMessage, setStateMessage] = useState('');
-  const [running, setRunning] = useState(true);
+  const [running, setRunningState] = useState(initialSnapshot.running);
   const [doubleSided, setDoubleSided] = useState(true);
   const [particleSize, setParticleSize] = useState(0.075);
   const [particleOpacity, setParticleOpacity] = useState(0.9);
@@ -1120,14 +1154,37 @@ export default function WaveInterferenceSim({ onBack }) {
   const [particleDerivativeOrder, setParticleDerivativeOrder] = useState(1);
   const [orbitControlsVisible, setOrbitControlsVisible] = useState(true);
   const [sourceVectorsVisible, setSourceVectorsVisible] = useState(true);
-  const [waveMechanics, setWaveMechanics] = useState({ model: 'linear', nonlinearCoupling: 0.08, dispersion: 0.05, showDifference: false });
+  const [waveMechanics, setWaveMechanicsState] = useState(() => ({ ...initialSnapshot.waveMechanics }));
   const [paramsVisible, setParamsVisible] = useState(true);
   const [editing, setEditing] = useState(false);
-  const waveEditor = useSimulationEditor({ waves, waveCount, interferenceModes, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, orbitControlsVisible, sourceVectorsVisible, occlusionPreset, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation });
-  const { canUndo, canRedo, undo, redo } = waveEditor;
+  const waveEditor = useSimulationEditor({ waves, waveCount, interferenceModes, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, orbitControlsVisible, sourceVectorsVisible, occlusionPreset, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation, running, waveMechanics }, { recordParameterEdits: true });
+  const setRunning = (nextValue) => {
+    const next = typeof nextValue === 'function' ? nextValue(running) : nextValue;
+    setRunningState(next);
+    waveEditor.commit((current) => ({ ...current, running: next }));
+  };
+  const setWaveMechanics = (next) => {
+    setWaveMechanicsState(next);
+    waveEditor.commit((current) => ({ ...current, waveMechanics: next }));
+  };
+  const { canUndo, canRedo, undo, redo, log } = waveEditor;
+  const journal = useSimulatorJournal({ initialSnapshot, playbackSpeed, onApplySnapshot: (snapshot) => waveEditor.replace(normalizeWaveSnapshot(snapshot, initialSnapshot)) });
+  const previousSnapshotRef = useRef(waveEditor.value);
+  const previousLogSequenceRef = useRef(log.at(-1)?.sequence ?? 0);
   useUndoRedoShortcuts({ undo, redo, canUndo, canRedo, isTextEditing: (target) => ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) });
   useEffect(() => {
     const next = waveEditor.value;
+    setJsonText(JSON.stringify(next, null, 2));
+    if (previousSnapshotRef.current !== next) {
+      previousSnapshotRef.current = next;
+      const latestEvent = log.at(-1);
+      const replayResult = journal.record(next, latestEvent?.path || latestEvent?.type || 'configuration', latestEvent?.value);
+      if (replayResult !== 'replay') {
+        const sequence = latestEvent?.sequence ?? 0;
+        if (sequence <= previousLogSequenceRef.current) waveEditor.record({ type: 'parameter-edit', path: 'configuration' });
+        else previousLogSequenceRef.current = sequence;
+      }
+    }
     setWaves(next.waves);
     setWaveCount(next.waveCount);
     setInterferenceModes(next.interferenceModes);
@@ -1150,6 +1207,8 @@ export default function WaveInterferenceSim({ onBack }) {
     setDetectorMaskEnabled(next.detectorMaskEnabled ?? false);
     setDetectorPixelDensity(next.detectorPixelDensity ?? 1);
     setDetectorImplementation(next.detectorImplementation ?? 'classic');
+    setRunningState(next.running ?? true);
+    setWaveMechanicsState({ ...DEFAULT_WAVE_MECHANICS, ...next.waveMechanics });
   }, [waveEditor.value]);
   const setOcclusionPreset = (value) => {
     const experimentMode = EXPERIMENT_MODE_BY_PRESET[value];
@@ -1253,6 +1312,7 @@ export default function WaveInterferenceSim({ onBack }) {
   const stateOptions = [...DEFAULT_WAVE_STATES, ...Object.values(savedStates)];
   const selectedStateValue = stateModified ? '' : selectedState;
   const selectedStateDetails = stateOptions.find((state) => state.name === selectedState);
+  const paramEditLogYaml = useMemo(() => serializeParameterEditLog(log), [log]);
   const onStateChange = (name) => {
     const next = stateOptions.find((state) => state.name === name);
     if (!next) return;
@@ -1285,18 +1345,75 @@ export default function WaveInterferenceSim({ onBack }) {
   };
   const reset = () => {
     waveEditor.load(initialSnapshot);
+    journal.reset(initialSnapshot);
     setSourcePreset('');
     setSelectedState(initialState.name);
     setStateModified(false);
     setStateMessage(`Loaded ${initialState.name}.`);
     setParamsVisible(true);
   };
+  const applySimulatorPreset = (name) => {
+    try {
+      const next = normalizeWaveSnapshot(simulatorPresets[name], initialSnapshot);
+      waveEditor.load(next, next, { type: 'preset-load', name });
+      setCurrentSimulatorPreset(name);
+      setSourcePreset('');
+      setSelectedState('');
+      setStateModified(true);
+      setStateMessage(`Loaded ${name}.`);
+    } catch (error) {
+      setStateMessage(`Could not load snapshot: ${error.message}`);
+    }
+  };
+  const saveSimulatorPreset = () => {
+    const name = simulatorPresetName.trim();
+    if (!name) return;
+    const nextPresets = { ...simulatorPresets, [name]: waveEditor.value };
+    setSimulatorPresets(nextPresets);
+    setCurrentSimulatorPreset(name);
+    setSimulatorPresetName('');
+    waveEditor.record({ type: 'preset-save', name });
+    setStateMessage(writePresetLibrary(localStorage, WAVE_PRESET_STORAGE_KEY, nextPresets) ? `Saved ${name}.` : 'Snapshot could not be saved locally.');
+  };
+  const loadSimulatorJson = () => {
+    try {
+      const next = normalizeWaveSnapshot(parseSimulatorJson(jsonText), initialSnapshot);
+      waveEditor.load(next, next, { type: 'preset-load', name: 'JSON import' });
+      setCurrentSimulatorPreset('JSON draft');
+      setSourcePreset('');
+      setSelectedState('');
+      setStateModified(true);
+      setStateMessage('Loaded JSON snapshot.');
+    } catch (error) {
+      setStateMessage(`Could not load JSON snapshot: ${error.message}`);
+    }
+  };
+  const deleteSimulatorPresets = () => {
+    deletePresetLibrary(localStorage, WAVE_PRESET_STORAGE_KEY);
+    setSimulatorPresets({ Default: initialSnapshot });
+    setCurrentSimulatorPreset('Default');
+    setStateMessage('Local snapshots deleted.');
+  };
+  const replayParameterLog = (text, options) => {
+    try {
+      const entries = buildParameterReplayJournal(initialSnapshot, parseParameterEditLogYaml(text), options);
+      if (!journal.replayJournal(entries)) throw new Error('No replayable parameter edits were found.');
+      setReplayMessage(`Replaying ${entries.length - 1} parameter edits.`);
+    } catch (error) {
+      setReplayMessage(`Could not replay parameter log: ${error.message}`);
+    }
+  };
+  const exportSimulatorData = (type, value) => {
+    setExportModal({
+      title: type === 'all' ? 'All snapshots' : type === 'saved' ? 'Saved snapshots' : 'Current parameters',
+      value: type === 'current' ? waveEditor.value : value
+    });
+  };
 
   return (
     <DetectorVisibilityContext.Provider value={detectorVisible}>
-    <main className="wave-app">
+    <SimulatorBase className="wave-app" headerClassName="wave-topbar" brandClassName="wave-brand" markClassName="wave-mark" mark="WAV" title="WAVE FIELD LAB" subtitle="Phase geometry / interference study" meta="WEBGL / FIELD SYNTHESIS" metaClassName="wave-top-meta" homeUrl="/" onHome={onBack} homeClassName="wave-hide-button" actions={<><button type="button" className="wave-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button><button type="button" className="wave-run-toggle" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></>}>
       <div className="wave-scene" data-particle-count={particleCount} data-occlusion-preset={occlusionPreset} data-experiment-mode={experimentMode} data-detection-time={detectionTime} data-glow-time={glowTime} data-slit-position={apertureSettings.slitPosition} data-slit-width-a={apertureSettings.slitWidthA} data-slit-width-b={apertureSettings.slitWidthB} data-slit-widths-linked={apertureSettings.slitWidthsLinked} data-detector-brightness={detectorBrightness} data-detector-palette={detectorPalette} data-detector-mask={detectorMaskEnabled} data-detector-pixel-density={detectorPixelDensity} data-detector-implementation={detectorImplementation} data-detector-resolution={detectorResolution} data-orbit-controls={orbitControlsVisible} data-source-vectors={sourceVectorsVisible} data-source-frame={JSON.stringify({ origin: sourceFrame.origin, direction: sourceFrame.direction })}><Canvas camera={{ position: [11, 8, 12], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><WaveScene waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} occlusionPreset={occlusionPreset} orbitControlsVisible={orbitControlsVisible} sourceVectorsVisible={sourceVectorsVisible} waveMechanics={waveMechanics} experimentMode={experimentMode} detectionTime={detectionTime} glowTime={glowTime} apertureSettings={apertureSettings} detectorBrightness={detectorBrightness} detectorPalette={detectorPalette} detectorMaskEnabled={detectorMaskEnabled} detectorPixelDensity={detectorPixelDensity} detectorImplementation={detectorImplementation} onDetectorResolutionChange={setDetectorResolution} /></Canvas></div>
-      <header className="wave-topbar"><div className="wave-brand"><span className="wave-mark">WAV</span><span><b>WAVE FIELD LAB</b><em>Phase geometry / interference study</em></span></div><div className="wave-top-meta"><span>WEBGL / FIELD SYNTHESIS</span><button type="button" className="wave-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button><button type="button" className="wave-run-toggle" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></div></header>
       <section className="wave-title"><p>Animated phase experiment</p><h1>Shape the interference.</h1><span>Independent wavelength, amplitude, phase mode, and phase parameters for every active wave.</span></section>
       <WavePanel
         waves={waves}
@@ -1316,6 +1433,34 @@ export default function WaveInterferenceSim({ onBack }) {
         stateOptions={stateOptions}
         selectedState={selectedStateValue}
         stateDescription={stateModified ? '' : selectedStateDetails?.description}
+        simulatorPresets={simulatorPresets}
+        currentSimulatorPreset={currentSimulatorPreset}
+        simulatorPresetName={simulatorPresetName}
+        onSimulatorPresetName={setSimulatorPresetName}
+        onApplySimulatorPreset={applySimulatorPreset}
+        onSaveSimulatorPreset={saveSimulatorPreset}
+        currentValue={waveEditor.value}
+        jsonText={jsonText}
+        onJsonText={setJsonText}
+        onLoadJson={loadSimulatorJson}
+        onExport={exportSimulatorData}
+        onDeleteSimulatorPresets={deleteSimulatorPresets}
+        showEditLog={showEditLog}
+        onShowEditLog={setShowEditLog}
+        editLogYaml={paramEditLogYaml}
+        onReplayLog={replayParameterLog}
+        replayMessage={replayMessage}
+        replaying={journal.playing}
+        journal={journal.journal}
+        recording={journal.recording}
+        onRecording={journal.setRecording}
+        playing={journal.playing}
+        onTogglePlayback={() => journal.setPlaying((value) => !value)}
+        onStop={journal.stop}
+        playbackTime={journal.playbackTime}
+        onPlaybackTime={journal.seek}
+        playbackSpeed={playbackSpeed}
+        onPlaybackSpeed={setPlaybackSpeed}
         stateName={stateName}
         stateMessage={stateMessage}
         paramsVisible={paramsVisible}
@@ -1363,7 +1508,6 @@ export default function WaveInterferenceSim({ onBack }) {
         onParticleDerivativeOrder={(value) => { setParticleDerivativeOrder(value); waveEditor.commit((current) => ({ ...current, particleDerivativeOrder: value })); }}
         onOrbitControls={(value) => { setOrbitControlsVisible(value); waveEditor.commit((current) => ({ ...current, orbitControlsVisible: value })); }}
         onSourceVectors={(value) => { setSourceVectorsVisible(value); waveEditor.commit((current) => ({ ...current, sourceVectorsVisible: value })); }}
-        onBack={onBack}
         editing={editing}
         onEditing={setEditing}
         canUndo={canUndo}
@@ -1373,7 +1517,8 @@ export default function WaveInterferenceSim({ onBack }) {
       />
       {!paramsVisible && !APERTURE_EXPERIMENT_MODES.includes(experimentMode) && <WaveMechanicsOverlay value={waveMechanics} onChange={setWaveMechanics} />}
       <footer className="wave-footer"><span>n WAVES / {Object.entries(INTERFERENCE_MODES).filter(([mode]) => interferenceModes[mode]).map(([, details]) => details.label.toUpperCase()).join(' + ') || 'NO INTERFERENCE'}</span><span>DRAG TO ORBIT / SCROLL TO ZOOM</span></footer>
-    </main>
+      {exportModal && <SimulatorExportModal title={exportModal.title} value={exportModal.value} onClose={() => setExportModal(null)} />}
+    </SimulatorBase>
     </DetectorVisibilityContext.Provider>
   );
 }

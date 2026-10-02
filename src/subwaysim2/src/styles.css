@@ -439,6 +439,10 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
 .sqg-loader-footer { display: flex; justify-content: space-between; max-width: 1420px; margin-top: 78px; padding-top: 17px; border-top: 1px solid rgba(var(--color-rgb-b7d6ca), 0.18); }
 
 .attractor-app { position: relative; width: 100%; height: 100%; overflow: hidden; color: rgb(var(--color-rgb-eef2ec)); background: rgb(var(--color-rgb-050810)); }
+.simulator-base-brand { display: flex; align-items: center; gap: 12px; }
+.simulator-base-brand b, .simulator-base-brand em { display: block; font-family: 'DM Mono', monospace; font-style: normal; }
+.simulator-base-home { display: inline-flex; align-items: center; color: inherit; text-decoration: none; white-space: nowrap; }
+.simulator-base-home:hover { color: rgb(var(--color-rgb-e4a458)); }
 .attractor-scene { position: absolute; inset: 0; }
 .attractor-scene canvas { display: block; width: 100%; height: 100%; }
 .attractor-topbar, .attractor-panel, .attractor-title, .attractor-view-toolbar { position: absolute; z-index: 2; }
@@ -469,10 +473,31 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
 .status-pip { display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%; background: rgb(var(--color-rgb-70d1bd)); box-shadow: 0 0 9px rgb(var(--color-rgb-70d1bd)); }
 .attractor-section, .attractor-details { margin-top: 18px; padding-top: 15px; border-top: 1px solid rgba(var(--color-rgb-92aed0), 0.15); }
 .attractor-section-heading { display: flex; align-items: center; justify-content: space-between; color: rgb(var(--color-rgb-c6d3df)); font: 10px 'DM Mono', monospace; letter-spacing: 0.08em; text-transform: uppercase; }
-.attractor-section-heading button, .attractor-actions button, .journal-controls button, .attractor-danger { padding: 6px 8px; border: 1px solid rgba(var(--color-rgb-92aed0), 0.3); color: rgb(var(--color-rgb-bcd0df)); background: rgba(var(--color-rgb-415d82), 0.16); font-size: 12px; font-family: 'DM Mono', monospace; cursor: pointer; }
+.attractor-section-heading button, .simulator-preset-heading button, .attractor-actions button, .journal-controls button, .attractor-danger { padding: 6px 8px; border: 1px solid rgba(var(--color-rgb-92aed0), 0.3); color: rgb(var(--color-rgb-bcd0df)); background: rgba(var(--color-rgb-415d82), 0.16); font-size: 12px; font-family: 'DM Mono', monospace; cursor: pointer; }
 .attractor-section-heading button:hover, .attractor-actions button:hover, .journal-controls button:hover { border-color: rgb(var(--color-rgb-72c7c0)); color: rgb(var(--color-rgb-d5fff1)); }
 .attractor-preset-actions { margin-top: 0; }
 .attractor-preset-actions button { flex: 0 1 auto; }
+.simulator-preset-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: rgb(var(--color-rgb-c6d3df)); font: 10px 'DM Mono', monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+.simulator-preset-save { display: flex; gap: 7px; margin-top: 10px; }
+.simulator-preset-save input { min-width: 0; flex: 1; padding: 7px 8px; border: 1px solid rgba(var(--color-rgb-92aed0), 0.25); border-radius: 0; color: rgb(var(--color-rgb-e8f0eb)); background: rgb(var(--color-rgb-101b2c)); font: 10px 'DM Mono', monospace; }
+.simulator-preset-save input::placeholder { color: rgb(var(--color-rgb-66838a)); }
+.simulator-preset-save button { flex: 0 0 auto; padding: 7px 8px; border: 1px solid rgba(var(--color-rgb-e4a458), 0.45); color: rgb(var(--color-rgb-f4c37d)); background: rgba(var(--color-rgb-5d3d1e), 0.28); font: 9px 'DM Mono', monospace; cursor: pointer; }
+.simulator-preset-save button:hover:not(:disabled) { border-color: rgb(var(--color-rgb-e4a458)); background: rgba(var(--color-rgb-7e4f23), 0.42); }
+.simulator-preset-save button:disabled { color: rgb(var(--color-rgb-526b72)); background: var(--color-transparent); cursor: not-allowed; }
+.simulator-io-journal { margin-top: 18px; }
+.simulator-io-journal > summary { color: rgb(var(--color-rgb-e7b16b)); cursor: pointer; font-family: 'DM Mono', monospace; letter-spacing: 0.1em; list-style-position: inside; text-transform: uppercase; }
+.simulator-io-journal[open] > summary { margin-bottom: 15px; }
+.simulator-io-journal > .attractor-json { min-height: 160px; margin-top: 2px; padding: 8px; resize: vertical; line-height: 1.4; }
+.simulator-io-toggle { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: rgb(var(--color-rgb-aabccc)); font-size: 11px; }
+.simulator-io-toggle input { accent-color: rgb(var(--color-rgb-73c5c3)); }
+.simulator-io-journal .attractor-danger { width: 100%; margin-top: 14px; }
+.simulator-replay-log { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(var(--color-rgb-92aed0), 0.14); }
+.simulator-replay-log > summary { color: rgb(var(--color-rgb-aabccc)); cursor: pointer; font: 10px 'DM Mono', monospace; }
+.simulator-replay-log[open] > summary { margin-bottom: 8px; }
+.simulator-replay-log .param-yaml-textarea textarea { min-height: 120px; }
+.simulator-replay-button { width: 100%; margin-top: 13px; padding: 7px 8px; border: 1px solid rgba(var(--color-rgb-72c7c0), 0.45); color: rgb(var(--color-rgb-d5fff1)); background: rgba(var(--color-rgb-73c5c3), 0.12); font: 10px 'DM Mono', monospace; cursor: pointer; }
+.simulator-replay-button:disabled { opacity: 0.55; cursor: wait; }
+.simulator-replay-status { display: block; margin-top: 8px; color: rgb(var(--color-rgb-7dd1c5)); font-size: 10px; line-height: 1.4; }
 .attractor-json, .param-yaml-textarea textarea, .attractor-axis-group input, .attractor-number input { width: 100%; border: 1px solid rgba(var(--color-rgb-92aed0), 0.25); border-radius: 0; color: rgb(var(--color-rgb-e8f0eb)); background: rgb(var(--color-rgb-101b2c)); font: 12px 'DM Mono', monospace; }
 .attractor-preset { width: 100%; margin-top: 10px; }
 .attractor-preset .param-select-trigger { padding: 8px; }
@@ -692,6 +717,10 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
 
 @media (max-width: 700px) {
   .wave-topbar { padding: 16px 18px; }
+  .simulator-base-meta { gap: 8px; }
+  .wave-top-meta { gap: 8px; }
+  .wave-brand b { font-size: 10px; }
+  .wave-hide-button { font-size: 8px; }
   .wave-top-meta > span { display: none; }
   .wave-panel { top: 78px; right: 14px; bottom: 14px; left: 14px; width: auto; padding: 14px; }
   .wave-editor-workbench, .wave-editor-workbench.placement-above, .wave-editor-workbench.placement-below, .wave-editor-workbench.placement-outward, .wave-editor-workbench.placement-inward { grid-template-columns: 1fr; grid-template-areas: 'orbit' 'params'; }
@@ -725,7 +754,7 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
   .sqg-loader-footer { margin-top: 48px; }
   .attractor-topbar { padding: 16px 18px; }
   .attractor-top-meta { display: none; }
-  .attractor-top-actions { gap: 0; }
+  .attractor-top-actions { gap: 8px; }
   .attractor-view-toolbar { top: 72px; right: 18px; left: 18px; max-width: none; }
   .attractor-view-modes { flex: 1 1 auto; }
   .attractor-panel { top: 122px; right: 14px; bottom: 14px; left: 14px; width: auto; padding: 14px; }
@@ -927,4 +956,112 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
   .frc-select-grid .param-select { grid-template-columns: 1fr; gap: 5px; }
   .frc-readout-grid strong { font-size: 12px; }
   .frc-output-grid strong { font-size: 11px; }
+}
+
+.laser-app { position: relative; width: 100%; height: 100%; overflow: hidden; color: #e8eee7; background: #101718; }
+.laser-scene { position: absolute; inset: 0; }
+.laser-scene canvas { display: block; width: 100%; height: 100%; }
+.laser-topbar, .laser-title, .laser-panel, .laser-footer, .laser-scene-status, .laser-panel-toggle { position: absolute; z-index: 2; }
+.laser-topbar { top: 0; right: 0; left: 0; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 19px 28px; border-bottom: 1px solid rgba(173, 208, 189, 0.16); background: linear-gradient(180deg, rgba(12, 19, 20, 0.94), rgba(12, 19, 20, 0.25)); }
+.laser-brand, .laser-top-meta { display: flex; align-items: center; gap: 12px; }
+.laser-brand b, .laser-brand em { display: block; font-family: 'DM Mono', monospace; font-style: normal; }
+.laser-brand b { color: #eef2e8; font-size: 11px; letter-spacing: 0.12em; }
+.laser-brand em { margin-top: 4px; color: #91aaa0; font-size: 9px; }
+.laser-mark { display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid #e4a458; color: #f1c27e; font: 10px 'DM Mono', monospace; }
+.laser-top-meta { gap: 18px; color: #9ab5b0; font: 9px 'DM Mono', monospace; }
+.laser-top-meta button, .laser-panel-toggle, .laser-hide, .laser-actions button { border: 1px solid rgba(121, 204, 204, 0.38); color: #b9e1d6; background: rgba(19, 42, 42, 0.85); font: 9px 'DM Mono', monospace; cursor: pointer; }
+.laser-top-meta button { padding: 8px 10px; }
+.laser-top-meta button:hover, .laser-panel-toggle:hover, .laser-actions button:hover { border-color: #e4a458; color: #f4d5a2; }
+.laser-title { bottom: 54px; left: 30px; width: min(430px, calc(100vw - 430px)); pointer-events: none; text-shadow: 0 2px 20px #101718; }
+.laser-title p { margin: 0 0 12px; color: #f0b36a; font: 9px 'DM Mono', monospace; }
+.laser-title h1 { margin: 0; color: #edf1e8; font-size: 43px; font-weight: 500; line-height: 1.02; }
+.laser-title span { display: block; max-width: 360px; margin-top: 13px; color: #b1c3b9; font-size: 11px; line-height: 1.5; }
+.laser-scene-status { top: 82px; left: 28px; display: flex; align-items: center; gap: 20px; padding: 9px 11px; border: 1px solid rgba(173, 208, 189, 0.18); color: #b5c6bd; background: rgba(15, 27, 27, 0.76); font: 9px 'DM Mono', monospace; }
+.laser-scene-status span { display: flex; align-items: center; gap: 8px; }
+.laser-scene-status i, .laser-readout i { width: 6px; height: 6px; border-radius: 50%; background: #708078; }
+.laser-scene-status i.is-running, .laser-readout i { background: #81dfbf; box-shadow: 0 0 10px rgba(129, 223, 191, 0.7); }
+.laser-scene-status strong { color: #f1c27e; font-weight: 400; }
+.laser-panel { top: 82px; right: 22px; bottom: 20px; width: 350px; overflow-y: auto; padding: 17px; border: 1px solid rgba(143, 191, 171, 0.32); background: rgba(15, 25, 25, 0.94); box-shadow: 0 22px 60px rgba(0, 0, 0, 0.38); backdrop-filter: blur(14px); scrollbar-color: #496a5c #14201e; scrollbar-width: thin; }
+.laser-panel.is-hidden { display: none; }
+.laser-panel::-webkit-scrollbar { width: 8px; }
+.laser-panel::-webkit-scrollbar-track { background: #14201e; }
+.laser-panel::-webkit-scrollbar-thumb { border: 2px solid #14201e; background: #496a5c; }
+.laser-panel-head { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
+.laser-kicker, .laser-section-title, .laser-reference summary { color: #83aaa0; font: 9px 'DM Mono', monospace; letter-spacing: 0.06em; }
+.laser-panel-head h2 { margin: 8px 0 0; color: #f0f1e8; font-size: 21px; font-weight: 500; }
+.laser-hide { width: 27px; height: 27px; padding: 0; color: #a8b9b0; font: 19px 'Space Grotesk', sans-serif; }
+.laser-readout { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; padding: 10px 0; border-block: 1px solid rgba(143, 191, 171, 0.18); color: #a2b8ad; font: 9px 'DM Mono', monospace; }
+.laser-readout > span { display: flex; align-items: center; gap: 7px; }
+.laser-readout strong { color: #f0c37f; font-weight: 400; }
+.laser-section { margin-top: 16px; padding-top: 13px; border-top: 1px solid rgba(143, 191, 171, 0.16); }
+.laser-section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.laser-section-title strong { color: #d0d9ce; font-size: 8px; font-weight: 400; text-align: right; }
+.laser-count-control, .laser-layout-options { display: grid; gap: 4px; }
+.laser-count-control { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.laser-layout-options { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.laser-count-control button, .laser-layout-options button { min-width: 0; min-height: 31px; padding: 5px 4px; border: 1px solid rgba(143, 191, 171, 0.22); color: #a9bcb2; background: rgba(53, 75, 65, 0.14); font: 9px 'DM Mono', monospace; cursor: pointer; }
+.laser-layout-options button { font-size: 8px; }
+.laser-count-control button[aria-pressed='true'], .laser-layout-options button[aria-pressed='true'] { border-color: #e4a458; color: #f4d29a; background: rgba(120, 78, 34, 0.24); }
+.laser-count-control button:hover, .laser-layout-options button:hover { border-color: #81cdb4; }
+.laser-select { display: grid; grid-template-columns: 0.8fr 1.2fr; align-items: center; gap: 8px; margin-top: 11px; color: #a9bcb2; font-size: 9px; }
+.laser-select select { min-width: 0; padding: 7px 8px; border: 1px solid rgba(143, 191, 171, 0.24); border-radius: 0; color: #dbe6dc; background: #182725; font: 9px 'DM Mono', monospace; }
+.laser-range { display: grid; gap: 5px; margin-top: 10px; color: #adbbb2; font-size: 9px; }
+.laser-range > span { display: flex; justify-content: space-between; gap: 8px; }
+.laser-range strong { color: #e1e8dc; font: 9px 'DM Mono', monospace; font-weight: 400; }
+.laser-range input { width: 100%; margin: 0; accent-color: #e4a458; }
+.laser-focus-readout { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 11px; padding: 9px; background: rgba(87, 131, 106, 0.13); }
+.laser-focus-readout span { color: #8fa99a; font: 8px 'DM Mono', monospace; }
+.laser-focus-readout strong { color: #d0e49f; font: 12px 'DM Mono', monospace; font-weight: 400; }
+.laser-module { margin-top: 6px; border: 1px solid rgba(143, 191, 171, 0.2); background: rgba(30, 45, 40, 0.46); }
+.laser-module summary { display: flex; min-height: 44px; align-items: center; gap: 9px; padding: 6px 9px; color: var(--module-color); cursor: pointer; font: 9px 'DM Mono', monospace; list-style: none; }
+.laser-module summary::-webkit-details-marker { display: none; }
+.laser-module summary > i { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #515d57; }
+.laser-module summary > i.is-on { background: var(--module-color); box-shadow: 0 0 9px var(--module-color); }
+.laser-module summary > span { display: flex; flex: 1; align-items: center; justify-content: space-between; gap: 8px; }
+.laser-module summary small { color: #a6b6ab; font-size: 8px; }
+.laser-enable { position: relative; display: block; width: 28px; height: 15px; flex: 0 0 auto; cursor: pointer; }
+.laser-enable input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.laser-enable span { position: absolute; inset: 0; border: 1px solid #65766c; background: #26342e; }
+.laser-enable span::after { position: absolute; top: 2px; left: 2px; width: 9px; height: 9px; background: #95a69b; content: ''; transition: transform 140ms ease; }
+.laser-enable input:checked + span { border-color: var(--module-color); }
+.laser-enable input:checked + span::after { background: var(--module-color); transform: translateX(13px); }
+.laser-enable input:focus-visible + span { outline: 1px solid #f1c27e; outline-offset: 2px; }
+.laser-module-controls { padding: 0 9px 11px; border-top: 1px solid rgba(143, 191, 171, 0.12); }
+.laser-focus-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+.laser-module .laser-select { margin-top: 12px; }
+.laser-module .laser-select select { padding: 6px; }
+.laser-exposure-section { padding-bottom: 4px; }
+.laser-progress-track { height: 4px; overflow: hidden; background: #2b3a34; }
+.laser-progress-track span { display: block; height: 100%; background: linear-gradient(90deg, #75cdb8, #f2b45f); transition: width 120ms linear; }
+.laser-actions { display: flex; gap: 7px; margin-top: 11px; }
+.laser-actions button { flex: 1; min-height: 32px; padding: 6px; }
+.laser-actions .laser-primary-action { border-color: rgba(228, 164, 88, 0.56); color: #f3ca8d; background: rgba(116, 74, 33, 0.28); }
+.laser-toggle { display: flex; align-items: center; gap: 7px; margin-top: 12px; color: #a8b9af; font-size: 9px; cursor: pointer; }
+.laser-toggle input { accent-color: #e4a458; }
+.laser-reference { margin-top: 15px; padding-top: 12px; border-top: 1px solid rgba(143, 191, 171, 0.16); }
+.laser-reference summary { cursor: pointer; }
+.laser-reference p { color: #a7b5ac; font-size: 9px; line-height: 1.55; }
+.laser-reference a { color: #e9bd79; font: 8px 'DM Mono', monospace; }
+.laser-panel-toggle { top: 82px; left: 28px; padding: 9px 11px; }
+.laser-footer { right: 390px; bottom: 17px; left: 28px; display: flex; justify-content: space-between; gap: 12px; color: #a3b3a8; font: 8px 'DM Mono', monospace; text-shadow: 0 1px 8px #101718; }
+
+@media (max-width: 700px) {
+  .laser-topbar { padding: 14px 16px; }
+  .laser-brand b { font-size: 9px; }
+  .laser-brand em, .laser-top-meta > span { display: none; }
+  .laser-mark { width: 32px; height: 32px; }
+  .laser-top-meta button { padding: 7px 8px; }
+  .laser-panel { top: 72px; right: 10px; bottom: 10px; left: 10px; width: auto; padding: 14px; }
+  .laser-title { display: none; }
+  .laser-scene-status { display: none; }
+  .laser-panel-toggle { top: 72px; left: 12px; }
+  .laser-footer { display: none; }
+  .laser-footer span:last-child { display: none; }
+}
+
+@media (max-width: 420px) {
+  .laser-scene-status { max-width: calc(100vw - 24px); }
+  .laser-scene-status span { font-size: 7px; }
+  .laser-section-title strong { max-width: 55%; font-size: 7px; }
+  .laser-module summary > span { align-items: start; flex-direction: column; gap: 3px; }
 }

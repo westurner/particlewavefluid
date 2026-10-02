@@ -1,6 +1,50 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHistoryState, getAtPath, historyReducer, parseNumericValue, setAtPath } from './simulation-state.js';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { createHistoryState, diffParameterValues, getAtPath, historyReducer, parseNumericValue, setAtPath, useSimulationEditor } from './simulation-state.js';
+
+test('simulation editor exposes an empty parameter log as valid YAML', () => {
+  function LogProbe() {
+    const { log } = useSimulationEditor({ value: 1 });
+    return createElement('output', { 'data-log': stringifyYaml(log).trim() });
+  }
+
+  const markup = renderToStaticMarkup(createElement(LogProbe));
+  const yaml = markup.match(/data-log="([^"]*)"/)?.[1];
+  assert.equal(yaml, '[]');
+  assert.deepEqual(parseYaml(yaml), []);
+});
+
+test('simulation editor can log parameter edits for generic simulator controls', () => {
+  let state = createHistoryState({ value: 1 });
+  state = historyReducer(state, { type: 'commit', next: { value: 2 }, event: { type: 'parameter-edit', offsetMs: 12 }, recordParameterEdits: true });
+  assert.equal(state.log[0].type, 'parameter-edit');
+  assert.equal(state.log[0].path, 'value');
+  assert.equal(state.log[0].oldValue, 1);
+  assert.equal(state.log[0].newValue, 2);
+  assert.equal(state.log[0].offsetMs, 12);
+});
+
+test('parameter edit diffs include nested configuration values and array paths', () => {
+  assert.deepEqual(diffParameterValues(
+    { detector: { brightness: 1 }, waves: [{ amplitude: 0.5 }] },
+    { detector: { brightness: 1.5 }, waves: [{ amplitude: 0.8 }] },
+    { offsetMs: 20 }
+  ), [
+    { type: 'parameter-edit', path: 'detector.brightness', oldValue: 1, newValue: 1.5, value: 1.5, oldExists: true, newExists: true, offsetMs: 20 },
+    { type: 'parameter-edit', path: 'waves[0].amplitude', oldValue: 0.5, newValue: 0.8, value: 0.8, oldExists: true, newExists: true, offsetMs: 20 }
+  ]);
+});
+
+test('undo and redo include old/new values in an enabled parameter log', () => {
+  let state = createHistoryState({ amplitude: 0.5 });
+  state = historyReducer(state, { type: 'commit', next: { amplitude: 0.8 }, event: { type: 'parameter-edit', offsetMs: 5 }, recordParameterEdits: true });
+  state = historyReducer(state, { type: 'undo', recordParameterEdits: true });
+  state = historyReducer(state, { type: 'redo', recordParameterEdits: true });
+  assert.deepEqual(state.log.filter((entry) => entry.type === 'parameter-edit').map(({ oldValue, newValue }) => [oldValue, newValue]), [[0.5, 0.8], [0.8, 0.5], [0.5, 0.8]]);
+});
 
 test('history commits, undoes, redoes, and drops the redo branch', () => {
   let state = createHistoryState({ value: 1 });

@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html, OrbitControls, TransformControls } from '@react-three/drei';
-import { stringify as stringifyYaml } from "yaml";
 import { AdditiveBlending, BufferAttribute, BufferGeometry, Camera, Color, DoubleSide, Euler, FloatType, HalfFloatType, InstancedBufferAttribute, Mesh, NearestFilter, NoBlending, PlaneGeometry, RGBAFormat, Scene, ShaderMaterial, TOUCH, Vector3, WebGLRenderTarget } from 'three';
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
-import { HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect, YamlTextArea } from './lib/ParamControls.jsx';
+import { HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
+import { SimulatorBase, SimulatorExportModal, SimulatorIOJournal, SimulatorPresetControls, useSimulatorJournal } from './lib/SimulatorBase.jsx';
+import { buildParameterReplayJournal, deletePresetLibrary, parseParameterEditLogYaml, parseSimulatorJson, readPresetLibrary, serializeParameterEditLog, writePresetLibrary } from './lib/simulator-base.js';
 import { compareFieldModels, DEFAULT_FIELD_MECHANICS, FIELD_MODEL_DETAILS, FIELD_MODEL_OPTIONS, fieldModelIndex, sanitizeFieldMechanics } from './mechanicsModels.js';
 import { advanceBlackHoleStarField, createBlackHoleStarField } from './blackHoleStarModel.js';
 import {
@@ -790,14 +791,7 @@ function createPresetLibrary(variant) {
 }
 
 function readSavedPresets(variant) {
-  const library = createPresetLibrary(variant);
-  try {
-    const saved = JSON.parse(localStorage.getItem(PRESET_STORAGE_KEY) || '{}');
-    Object.assign(library, saved);
-  } catch {
-    return library;
-  }
-  return library;
+  return readPresetLibrary(localStorage, PRESET_STORAGE_KEY, createPresetLibrary(variant));
 }
 
 function sanitizeConfiguration(data, variant) {
@@ -1608,7 +1602,7 @@ function SelectControl({ label, value, options, onChange }) {
   return <ParamSelect className="attractor-select" label={label} value={value} options={options} onChange={onChange} />;
 }
 
-function AttractorPanel({ variant, particleCount, configuration, presets, currentPreset, jsonText, setJsonText, showParamEditLog, onShowParamEditLog, paramEditLogYaml, onChange, onApplyPreset, onSavePreset, onReset, onExport, onLoad, onDeletePresets, journal, playing, playbackTime, onPlaybackTime, onTogglePlayback, onStop, recording, onRecording, onAddAttractor, onRemoveAttractor, onSetOrigin, onResetOrigin, onBack, paramsVisible, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {} }) {
+function AttractorPanel({ variant, particleCount, configuration, presets, currentPreset, presetName, onPresetName, jsonText, setJsonText, showParamEditLog, onShowParamEditLog, paramEditLogYaml, onChange, onApplyPreset, onSavePreset, onReset, onExport, onLoad, onDeletePresets, onReplayLog, replayMessage, replaying, journal, playing, playbackTime, onPlaybackTime, onTogglePlayback, onStop, recording, onRecording, onAddAttractor, onRemoveAttractor, onSetOrigin, onResetOrigin, paramsVisible, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {} }) {
   const hasBlackHoles = configuration.attractors.some((attractor) => attractor.type === 'blackhole');
   const mechanics = configuration.fieldMechanics;
   const modelDetails = FIELD_MODEL_DETAILS[mechanics.model];
@@ -1622,14 +1616,11 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
   return (
     <aside className={`attractor-panel ${paramsVisible ? '' : 'is-hidden'}`} aria-hidden={!paramsVisible} onPointerDown={(event) => event.stopPropagation()}>
       <ParamEditingProvider editing={editing}>
-      <div className="attractor-panel-header"><div><span className="attractor-eyebrow">SQGSIM / GPU COMPUTE</span><h2>Attractor particles</h2></div><button type="button" className="attractor-back" onClick={onBack}>Lab menu</button></div>
+      <div className="attractor-panel-header"><div><span className="attractor-eyebrow">SQGSIM / GPU COMPUTE</span><h2>Attractor particles</h2></div></div>
       <p className="attractor-intro">A bounded field of particles orbiting configurable gravitational and spinning attractors.</p>
       <div className="attractor-status"><span className="status-pip" />{configuration.attractors.length} attractors / {particleCount.toLocaleString()} particles</div><div className="attractor-editor-toolbar"><ParamEditingToggle checked={editing} onChange={onEditing} /><HistoryControls canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} /></div>
 
-      <section className="attractor-section">
-        <div className="attractor-section-heading"><span>Preset</span><div className="attractor-actions attractor-preset-actions"><button type="button" onClick={onSavePreset}>Save snapshot</button><button type="button" onClick={onReset}>Reset</button></div></div>
-        <ParamSelect className="attractor-preset" ariaLabel="Preset" value={currentPreset} options={Object.keys(presets)} onChange={onApplyPreset} />
-      </section>
+      <SimulatorPresetControls className="attractor-section" selectClassName="attractor-preset" name={presetName} onNameChange={onPresetName} presets={presets} currentPreset={currentPreset} onApply={onApplyPreset} onSave={onSavePreset} onReset={onReset} />
 
       <details className="attractor-details" open>
         <summary>Particle field</summary>
@@ -1710,19 +1701,7 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
         <ColorControl label="Controls Z" value={configuration.controlsColorZ} onChange={(value) => onChange({ controlsColorZ: value }, 'controlsColorZ')} />
       </details>
 
-      <details className="attractor-details">
-        <summary>IO / journal</summary>
-        <textarea className="attractor-json" value={jsonText} onChange={(event) => setJsonText(event.target.value)} aria-label="Preset JSON" />
-        <div className="attractor-actions"><button type="button" onClick={onLoad}>Load JSON</button><button type="button" onClick={() => onExport('current')}>Export current</button></div>
-        <div className="attractor-actions"><button type="button" onClick={() => onExport('all')}>Export all</button><button type="button" onClick={() => onExport('saved')}>Export saved</button></div>
-        <BooleanControl label="Show param edit log" value={showParamEditLog} onChange={onShowParamEditLog} />
-        {showParamEditLog && <YamlTextArea label="Parameter edit log YAML" value={paramEditLogYaml} />}
-        <button type="button" className="attractor-danger" onClick={onDeletePresets}>Delete local presets</button>
-        <BooleanControl label="Record simulation (slow)" value={recording} onChange={onRecording} />
-        <div className="journal-controls"><button type="button" onClick={onTogglePlayback}>{playing ? 'Pause' : 'Play'}</button><button type="button" onClick={onStop}>Stop / reset</button></div>
-        <RangeControl label="Playback speed" value={configuration.playbackSpeed} min={0.1} max={10} step={0.1} onChange={(value) => onChange({ playbackSpeed: value }, 'playbackSpeed')} />
-        <RangeControl label="Timeline" value={playbackTime} min={0} max={Math.max(1, journal.at(-1)?.time || 1)} step={1} onChange={onPlaybackTime} />
-      </details>
+      <SimulatorIOJournal currentValue={configuration} presets={presets} jsonText={jsonText} onJsonText={setJsonText} onLoad={onLoad} onExport={onExport} onDeletePresets={onDeletePresets} showEditLog={showParamEditLog} onShowEditLog={onShowParamEditLog} editLogYaml={paramEditLogYaml} onReplayLog={onReplayLog} replayMessage={replayMessage} replaying={replaying} journal={journal} recording={recording} onRecording={onRecording} playing={playing} onTogglePlayback={onTogglePlayback} onStop={onStop} playbackTime={playbackTime} onPlaybackTime={onPlaybackTime} playbackSpeed={configuration.playbackSpeed} onPlaybackSpeed={(value) => onChange({ playbackSpeed: value }, 'playbackSpeed')} />
 
       <details className="attractor-details">
         <summary>Camera</summary>
@@ -1779,44 +1758,36 @@ function AttractorEditor({ attractor, index, onChange, onSetOrigin }) {
   );
 }
 
-function AttractorModal({ title, value, onClose }) {
-  return <div className="attractor-modal-backdrop" onClick={onClose}><section className="attractor-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}><header><h3>{title}</h3><button type="button" onClick={onClose} aria-label="Close export">Close</button></header><textarea readOnly value={JSON.stringify(value, null, 2)} /></section></div>;
-}
-
 function SimpleAttractorSim({ variant = 'simple', onBack }) {
-  const editor = useSimulationEditor(createConfiguration(variant));
+  const editor = useSimulationEditor(createConfiguration(variant), { recordParameterEdits: true });
   const { value: configuration, commit, load, record, log, replace, canUndo, canRedo, undo, redo } = editor;
   const particleCount = E2E_PARTICLE_COUNT ?? configuration.particleCount;
   const configurationRef = useRef(configuration);
   const [editing, setEditing] = useState(false);
   const [showParamEditLog, setShowParamEditLog] = useState(false);
+  const [replayMessage, setReplayMessage] = useState('');
   useUndoRedoShortcuts({ undo, redo, canUndo, canRedo, isTextEditing: (target) => ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) });
   configurationRef.current = configuration;
   const [presets, setPresets] = useState(() => readSavedPresets(variant));
   const [currentPreset, setCurrentPreset] = useState('Default');
+  const [presetName, setPresetName] = useState('');
   const [jsonText, setJsonText] = useState(() => JSON.stringify(createConfiguration(variant), null, 2));
   const [gpuError, setGpuError] = useState('');
   const [modal, setModal] = useState(null);
   const [paramsVisible, setParamsVisible] = useState(true);
   const [viewMode, setViewMode] = useState('ortho1');
-  const [recording, setRecording] = useState(true);
-  const [playing, setPlaying] = useState(false);
-  const [playbackTime, setPlaybackTime] = useState(0);
   const initialSnapshot = useMemo(() => clone(configuration), []);
-  const [journal, setJournal] = useState(() => [{ time: 0, snapshot: initialSnapshot }]);
-  const journalRef = useRef(journal);
-  const journalStartRef = useRef(Date.now());
-  const replayingRef = useRef(false);
+  const journal = useSimulatorJournal({ initialSnapshot, playbackSpeed: configuration.playbackSpeed, onApplySnapshot: (snapshot) => {
+    const next = sanitizeConfiguration(snapshot, variant);
+    configurationRef.current = next;
+    replace(next);
+    setJsonText(JSON.stringify(next, null, 2));
+  } });
   const presetApplyingRef = useRef(false);
-  const paramEditLogYaml = useMemo(() => stringifyYaml(log), [log]);
+  const paramEditLogYaml = useMemo(() => serializeParameterEditLog(log), [log]);
 
   const recordChange = (next, path, value) => {
-    if (!recording || replayingRef.current || !path) return;
-    const entry = { time: Date.now() - journalStartRef.current, path, value, snapshot: clone(next) };
-    const nextJournal = [...journalRef.current, entry];
-    journalRef.current = nextJournal;
-    setJournal(nextJournal);
-    setPlaybackTime(entry.time);
+    journal.record(next, path, value);
   };
 
   const applyConfiguration = (data, path = 'configuration', value = null) => {
@@ -1920,16 +1891,13 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
   };
 
   const onSavePreset = () => {
-    const name = new Date().toISOString();
+    const name = presetName.trim() || new Date().toISOString();
     record({ type: "preset-save", name });
     const nextPresets = { ...presets, [name]: clone(configurationRef.current) };
     setPresets(nextPresets);
     setCurrentPreset(name);
-    try {
-      localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(nextPresets));
-    } catch {
-      return;
-    }
+    setPresetName('');
+    writePresetLibrary(localStorage, PRESET_STORAGE_KEY, nextPresets);
   };
 
   const onReset = () => {
@@ -1938,17 +1906,12 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
     load(next, next, { type: "preset-load", name: "Default" });
     setJsonText(JSON.stringify(next, null, 2));
     setCurrentPreset('Default');
-    setPlaying(false);
-    setPlaybackTime(0);
-    journalStartRef.current = Date.now();
-    const nextJournal = [{ time: 0, snapshot: clone(next) }];
-    journalRef.current = nextJournal;
-    setJournal(nextJournal);
+    journal.reset(next);
   };
 
   const onLoad = () => {
     try {
-      applyConfiguration(JSON.parse(jsonText), 'io:load');
+      applyConfiguration(parseSimulatorJson(jsonText), 'io:load');
       setCurrentPreset('JSON draft');
     } catch {
       setModal({ title: 'Invalid JSON', value: { error: 'The preset JSON could not be parsed.' } });
@@ -1956,63 +1919,42 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
   };
 
   const onDeletePresets = () => {
-    localStorage.removeItem(PRESET_STORAGE_KEY);
+    deletePresetLibrary(localStorage, PRESET_STORAGE_KEY);
     setPresets(createPresetLibrary(variant));
     setCurrentPreset('Default');
   };
 
-  const applyStateAt = (time) => {
-    const snapshot = [...journalRef.current].reverse().find((entry) => entry.time <= time)?.snapshot;
-    if (!snapshot) return;
-    replayingRef.current = true;
-    const next = sanitizeConfiguration(snapshot, variant);
-    configurationRef.current = next;
-    replace(next);
-    setJsonText(JSON.stringify(next, null, 2));
-    replayingRef.current = false;
+  const onReplayParameterLog = (text, options) => {
+    try {
+      const log = parseParameterEditLogYaml(text);
+      const entries = buildParameterReplayJournal(initialSnapshot, log, options);
+      if (!journal.replayJournal(entries)) throw new Error('No replayable parameter edits were found.');
+      setReplayMessage(`Replaying ${entries.length - 1} parameter edits.`);
+    } catch (error) {
+      setReplayMessage(`Could not replay parameter log: ${error.message}`);
+    }
   };
 
   useEffect(() => {
-    if (!playing) return undefined;
-    let frameId;
-    const tick = () => {
-      const duration = journalRef.current.at(-1)?.time || 0;
-      const nextTime = Math.min(duration, playbackTime + 16 * configurationRef.current.playbackSpeed);
-      setPlaybackTime(nextTime);
-      applyStateAt(nextTime);
-      if (nextTime >= duration) setPlaying(false);
-      else frameId = requestAnimationFrame(tick);
-    };
-    frameId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frameId);
-  }, [playing, playbackTime]);
-
-  useEffect(() => {
     const undo = (event) => {
-      if (!(event.ctrlKey || event.metaKey) || event.key !== 'z' || journalRef.current.length < 2) return;
+      if (!(event.ctrlKey || event.metaKey) || event.key !== 'z' || journal.journal.length < 2) return;
       event.preventDefault();
-      const nextJournal = journalRef.current.slice(0, -1);
-      journalRef.current = nextJournal;
-      setJournal(nextJournal);
-      const time = nextJournal.at(-1).time;
-      setPlaybackTime(time);
-      applyStateAt(time);
+      journal.rewind();
     };
     window.addEventListener('keydown', undo);
     return () => window.removeEventListener('keydown', undo);
-  }, []);
+  }, [journal.journal.length, journal.rewind]);
 
   const isHypothesisVariant = variant === 'blackhole' || variant === 'ddf';
   const reportTitle = variant === 'ddf' ? 'DDF particles' : variant === 'blackhole' ? 'SQG particles' : 'Attractor particles';
   return (
-    <main className={`attractor-app ${isHypothesisVariant ? 'blackhole-app' : ''}`}>
-      <div className="attractor-scene"><Canvas frameloop={E2E_MODE ? 'demand' : 'always'} camera={{ position: [3, 5, 8], fov: 25, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AttractorWorld configuration={configuration} onAttractorChange={onAttractorChange} onGpuError={setGpuError} playing={playing} onCameraChange={(change) => onChange(change, 'sys:camera')} paramsVisible={paramsVisible} viewMode={viewMode} onManualChange={() => setViewMode(null)} variant={variant} /></Canvas></div>
-      <header className="attractor-topbar"><div><span className="sqg-mark">PAS</span><span><em>{variant === 'ddf' ? 'Dilatant dark fluid sandbox' : variant === 'blackhole' ? 'SQG black-hole sandbox' : 'Particle dynamics lab'}</em></span></div><div className="attractor-top-actions"><span className="attractor-top-meta">WEBGL / GPGPU / {reportTitle.toUpperCase()}</span><button type="button" className="attractor-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button></div></header>
+    <SimulatorBase className={`attractor-app ${isHypothesisVariant ? 'blackhole-app' : ''}`} headerClassName="attractor-topbar" brandClassName="attractor-base-brand" markClassName="sqg-mark" title={variant === 'ddf' ? 'DILATANT DARK FLUID SANDBOX' : variant === 'blackhole' ? 'SQG BLACK-HOLE SANDBOX' : 'PARTICLE DYNAMICS LAB'} subtitle="N-body / presets / journal" meta={reportTitle.toUpperCase()} metaClassName="attractor-top-actions" metaContentClassName="attractor-top-meta" homeUrl="/" onHome={onBack} homeClassName="attractor-back" actions={<button type="button" className="attractor-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button>}>
+      <div className="attractor-scene"><Canvas frameloop={E2E_MODE ? 'demand' : 'always'} camera={{ position: [3, 5, 8], fov: 25, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AttractorWorld configuration={configuration} onAttractorChange={onAttractorChange} onGpuError={setGpuError} playing={journal.playing} onCameraChange={(change) => onChange(change, 'sys:camera')} paramsVisible={paramsVisible} viewMode={viewMode} onManualChange={() => setViewMode(null)} variant={variant} /></Canvas></div>
       <AttractorViewToolbar viewMode={viewMode} onViewChange={setViewMode} />
-      <AttractorPanel variant={variant} particleCount={particleCount} configuration={configuration} presets={presets} currentPreset={currentPreset} jsonText={jsonText} setJsonText={setJsonText} showParamEditLog={showParamEditLog} onShowParamEditLog={setShowParamEditLog} paramEditLogYaml={paramEditLogYaml} onChange={onChange} onApplyPreset={onApplyPreset} onSavePreset={onSavePreset} onReset={onReset} onExport={(type) => setModal({ title: type === 'all' ? 'All presets' : type === 'saved' ? 'Saved presets' : 'Current parameters', value: type === 'current' ? configuration : presets })} onLoad={onLoad} onDeletePresets={onDeletePresets} journal={journal} playing={playing} playbackTime={playbackTime} onPlaybackTime={(value) => { setPlaybackTime(value); applyStateAt(value); }} onTogglePlayback={() => setPlaying((value) => !value)} onStop={() => { setPlaying(false); setPlaybackTime(0); applyStateAt(0); }} recording={recording} onRecording={setRecording} onAddAttractor={onAddAttractor} onRemoveAttractor={onRemoveAttractor} onSetOrigin={onSetOrigin} onResetOrigin={onResetOrigin} onBack={onBack} paramsVisible={paramsVisible} editing={editing} onEditing={setEditing} canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} />
+      <AttractorPanel variant={variant} particleCount={particleCount} configuration={configuration} presets={presets} currentPreset={currentPreset} presetName={presetName} onPresetName={setPresetName} jsonText={jsonText} setJsonText={setJsonText} showParamEditLog={showParamEditLog} onShowParamEditLog={setShowParamEditLog} paramEditLogYaml={paramEditLogYaml} onChange={onChange} onApplyPreset={onApplyPreset} onSavePreset={onSavePreset} onReset={onReset} onExport={(type, value) => setModal({ title: type === 'all' ? 'All presets' : type === 'saved' ? 'Saved presets' : 'Current parameters', value: type === 'current' ? configuration : value })} onLoad={onLoad} onDeletePresets={onDeletePresets} onReplayLog={onReplayParameterLog} replayMessage={replayMessage} replaying={journal.playing} journal={journal.journal} playing={journal.playing} playbackTime={journal.playbackTime} onPlaybackTime={journal.seek} onTogglePlayback={() => journal.setPlaying((value) => !value)} onStop={journal.stop} recording={journal.recording} onRecording={journal.setRecording} onAddAttractor={onAddAttractor} onRemoveAttractor={onRemoveAttractor} onSetOrigin={onSetOrigin} onResetOrigin={onResetOrigin} paramsVisible={paramsVisible} editing={editing} onEditing={setEditing} canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} />
       <div className="attractor-title"><span>ACTIVE FIELD / {variant === 'ddf' ? 'DDFSIM' : variant === 'blackhole' ? 'SQGBLACKHOLESIM' : 'SIMPLEATTRACTORSIM'}</span><h1>{variant === 'ddf' ? 'Dilatant Dark Fluid System' : variant === 'blackhole' ? 'Superfluid Quantum Gravity System' : 'Simple Particle Attractor System'}</h1><p>{variant === 'ddf' ? 'Phenomenological compressible sink flow with speed-limited shear thickening.' : variant === 'blackhole' ? 'Phenomenological SQG sink flow with a finite quantum-pressure core.' : 'Tune attractor mass, spin, and geometry within a field of particles.'}</p>{gpuError && <strong className="attractor-error">GPU offline: {gpuError}</strong>}</div>
-      {modal && <AttractorModal title={modal.title} value={modal.value} onClose={() => setModal(null)} />}
-    </main>
+      {modal && <SimulatorExportModal title={modal.title} value={modal.value} onClose={() => setModal(null)} />}
+    </SimulatorBase>
   );
 }
 

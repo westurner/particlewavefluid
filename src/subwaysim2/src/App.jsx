@@ -1,6 +1,7 @@
 import { lazy, Suspense, useState } from 'react';
 
 const WaveInterferenceSim = lazy(() => import('./WaveInterferenceSim.jsx'));
+const LongitudinalLaserArraySim = lazy(() => import('./LongitudinalLaserArraySim.jsx'));
 const SimpleAttractorSim = lazy(() => import('./SimpleAttractorSim.jsx').then(({ SimpleAttractorSim: component }) => ({ default: component })));
 const SqgBlackHoleSim = lazy(() => import('./SqgBlackHoleSim.jsx'));
 const DdfBlackHoleSim = lazy(() => import('./DdfBlackHoleSim.jsx'));
@@ -111,6 +112,15 @@ const SIMULATION_MODES = [
     description: 'Demodulate synthetic I/Q data, unwrap phase, detect discontinuities, and compare event timing.',
     detail: 'I/Q / EVENTS / PHASE UNWRAP',
     accent: 'blue'
+  },
+  {
+    id: 'longitudinallasersim',
+    index: '12',
+    name: 'longitudinallasersim',
+    label: 'Longitudinal laser array',
+    description: 'Phase 4–8 continuous-wave laser modules to converge a vectorial exposure field and write circuits on a block, wafer, or reel-to-reel web.',
+    detail: 'CW ARRAY / HOLOGRAPHY / NANOWRITE',
+    accent: 'orange'
   }
 ];
 
@@ -123,6 +133,7 @@ function SimulationLoader() {
   const onBack = () => setSelectedSimulation(null);
   let simulation = null;
   if (selectedSimulation === 'waveinterferencesim') simulation = <WaveInterferenceSim onBack={onBack} />;
+  if (selectedSimulation === 'longitudinallasersim') simulation = <LongitudinalLaserArraySim onBack={onBack} />;
   if (selectedSimulation === 'simpleattractorsim') simulation = <SimpleAttractorSim onBack={onBack} />;
   if (selectedSimulation === 'sqgblackholesim') simulation = <SqgBlackHoleSim onBack={onBack} />;
   if (selectedSimulation === 'ddfblackholesim') simulation = <DdfBlackHoleSim onBack={onBack} />;
