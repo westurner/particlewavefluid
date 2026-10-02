@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { advanceDetectorResponse, calculateDoubleSlitField, calculateElectromagneticField, calculateOcclusionTransmission, calculatePinholeField, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveDisplacementAndTensorGaussian, calculateWaveEnvelope, calculateWaveFrame, calculateWaveSample, calculateWaveTensorGaussian, cloneWaveState, combineWaves, createApertureSamplePoints, DEFAULT_APERTURE_SETTINGS, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_COUNT, DEFAULT_WAVE_STATES, DEFAULT_WAVES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, getSlitGeometry, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, SIGNAL_SOURCE_PRESETS } from './waveModel.js';
+import { Euler, Vector3 } from 'three';
+import { advanceDetectorResponse, calculateDoubleSlitField, calculateElectromagneticField, calculateOcclusionTransmission, calculatePinholeField, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveDisplacementAndTensorGaussian, calculateWaveEnvelope, calculateWaveFrame, calculateWaveSample, calculateWaveTensorGaussian, cloneWaveState, combineWaves, createApertureSamplePoints, DEFAULT_APERTURE_SETTINGS, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_COUNT, DEFAULT_WAVE_STATES, DEFAULT_WAVES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, detectorDistanceForSlitScreenPosition, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, getSlitGeometry, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, SIGNAL_SOURCE_PRESETS, slitScreenLocalToWorld, slitScreenWorldToLocal } from './waveModel.js';
 
 test('wave configuration exposes eight phase modes and eight defaults', () => {
   assert.equal(MAX_WAVES, 8);
@@ -250,6 +251,56 @@ test('slit count, spacing, wall margins, and opacity share screen and field geom
   assert.ok(samples.every((sample) => Math.abs(sample.y) < geometry.openingHeight / 2));
   assert.equal(calculateOcclusionTransmission('double-slit', 0, geometry.centers[0], 1, settings), 1);
   assert.equal(calculateOcclusionTransmission('double-slit', 0, geometry.centers[0], 1.2, settings), 0);
+});
+
+test('slit screen XYZ pose is invertible and drives the rotated occlusion aperture', () => {
+  assert.equal(DEFAULT_APERTURE_SETTINGS.detectorDistance, DOUBLE_SLIT_DETECTOR_X);
+  assert.equal(detectorDistanceForSlitScreenPosition({ x: 1, y: 2, z: 2 }), Math.hypot(DOUBLE_SLIT_DETECTOR_X - 1, 2, 2));
+  assert.equal(normalizeApertureSettings({ slitScreenPositionX: 1 }).detectorDistance, DOUBLE_SLIT_DETECTOR_X - 1);
+  const settings = normalizeApertureSettings({
+    slitCount: 3,
+    slitSpacing: 2,
+    slitWallMargin: 0.4,
+    slitScreenPositionX: 1.25,
+    slitScreenPositionY: -0.75,
+    slitScreenPositionZ: 2.5,
+    slitScreenRotationX: 0.35,
+    slitScreenRotationY: -0.6,
+    slitScreenRotationZ: 0.2
+  });
+  const geometry = getSlitGeometry('double-slit', settings);
+  assert.deepEqual(geometry.screenPosition, { x: 1.25, y: -0.75, z: 2.5 });
+  assert.deepEqual(geometry.screenRotation, { x: 0.35, y: -0.6, z: 0.2 });
+  const localOpening = { x: 0, y: 0.8, z: 0 };
+  const worldOpening = slitScreenLocalToWorld(localOpening, settings);
+  const roundTrip = slitScreenWorldToLocal(worldOpening, settings);
+  const threeWorldOpening = new Vector3(localOpening.x, localOpening.y, localOpening.z)
+    .applyEuler(new Euler(settings.slitScreenRotationX, settings.slitScreenRotationY, settings.slitScreenRotationZ, 'ZYX'))
+    .add(new Vector3(settings.slitScreenPositionX, settings.slitScreenPositionY, settings.slitScreenPositionZ));
+  assert.ok(Math.abs(roundTrip.x - localOpening.x) < 1e-12);
+  assert.ok(Math.abs(roundTrip.y - localOpening.y) < 1e-12);
+  assert.ok(Math.abs(roundTrip.z - localOpening.z) < 1e-12);
+  assert.ok(Math.hypot(worldOpening.x - threeWorldOpening.x, worldOpening.y - threeWorldOpening.y, worldOpening.z - threeWorldOpening.z) < 1e-12);
+  assert.equal(calculateOcclusionTransmission('double-slit', worldOpening.x, worldOpening.z, worldOpening.y, settings), 1);
+
+  const localWall = { x: 0, y: 1.5, z: 0 };
+  const worldWall = slitScreenLocalToWorld(localWall, settings);
+  assert.equal(calculateOcclusionTransmission('double-slit', worldWall.x, worldWall.z, worldWall.y, settings), 0);
+  const offScreen = slitScreenLocalToWorld({ x: 0.3, y: 0.8, z: 0 }, settings);
+  assert.equal(calculateOcclusionTransmission('double-slit', offScreen.x, offScreen.z, offScreen.y, settings), 1);
+
+  const aperture = prepareApertureField([{
+    wavelength: 2,
+    amplitude: 1,
+    phaseMode: 'Standard',
+    phaseOffset: 0,
+    phaseRate: 0,
+    enabled: true
+  }], 'double-slit', settings);
+  const expectedEmitter = slitScreenLocalToWorld({ x: 0, y: -geometry.openingHeight * 0.4, z: geometry.centers[0] - geometry.widths[0] * 3 / 7 }, settings);
+  assert.ok(Math.abs(aperture.emitters[0].x - expectedEmitter.x) < 1e-12);
+  assert.ok(Math.abs(aperture.emitters[0].y - expectedEmitter.y) < 1e-12);
+  assert.ok(Math.abs(aperture.emitters[0].z - expectedEmitter.z) < 1e-12);
 });
 
 test('detector response integrates exposure and retains configurable glow', () => {

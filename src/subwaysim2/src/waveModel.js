@@ -29,7 +29,14 @@ export const DEFAULT_APERTURE_SETTINGS = {
   slitCount: null,
   slitSpacing: null,
   slitWallMargin: 0,
-  slitOpacity: 0.2
+  slitOpacity: 0.2,
+  slitScreenPositionX: DOUBLE_SLIT_SCREEN_X,
+  slitScreenPositionY: 0,
+  slitScreenPositionZ: 0,
+  slitScreenRotationX: 0,
+  slitScreenRotationY: 0,
+  slitScreenRotationZ: 0,
+  detectorDistance: DOUBLE_SLIT_DETECTOR_X - DOUBLE_SLIT_SCREEN_X
 };
 export const POLARIZATION_MODES = ['Scalar', 'Transverse', 'Longitudinal', 'Electromagnetic', 'EM-Tensor-Gaussian'];
 
@@ -233,15 +240,20 @@ function sierpinskiCarpetPass(x, z) {
 
 export function calculateOcclusionTransmission(presetId, x, z, y = 0, apertureSettings = DEFAULT_APERTURE_SETTINGS) {
   const aperturePreset = ['pinhole', 'single-slit', 'double-slit', 'diffraction-grating'].includes(presetId);
-  if (presetId === 'none' || (!aperturePreset && x <= 0)) return 1;
-  if (aperturePreset && Math.abs(x - DOUBLE_SLIT_SCREEN_X) > DOUBLE_SLIT_SCREEN_THICKNESS / 2) return 1;
-  if (presetId === 'pinhole') return y ** 2 + z ** 2 <= PINHOLE_RADIUS ** 2 ? 1 : 0;
+  if (presetId === 'none') return 1;
+  if (presetId === 'pinhole') {
+    if (Math.abs(x - DOUBLE_SLIT_SCREEN_X) > DOUBLE_SLIT_SCREEN_THICKNESS / 2) return 1;
+    return y ** 2 + z ** 2 <= PINHOLE_RADIUS ** 2 ? 1 : 0;
+  }
   if (['single-slit', 'double-slit', 'diffraction-grating'].includes(presetId)) {
     const mode = presetId === 'diffraction-grating' ? 'grating' : presetId;
     const geometry = getSlitGeometry(mode, apertureSettings);
-    if (Math.abs(y) > geometry.openingHeight / 2) return 0;
-    return geometry.centers.some((center, index) => Math.abs(z - center) <= geometry.widths[index] / 2) ? 1 : 0;
+    const point = slitScreenWorldToLocal({ x, y, z }, apertureSettings);
+    if (Math.abs(point.x) > DOUBLE_SLIT_SCREEN_THICKNESS / 2) return 1;
+    if (Math.abs(point.y) > geometry.openingHeight / 2) return 0;
+    return geometry.centers.some((center, index) => Math.abs(point.z - center) <= geometry.widths[index] / 2) ? 1 : 0;
   }
+  if (!aperturePreset && x <= 0) return 1;
   if (presetId === 'sierpinski-carpet') return sierpinskiCarpetPass(x, z) ? 1 : 0;
   if (presetId === 'unilluminable-room') return x > 1.5 && x < 8.2 && Math.abs(z) < 4.2 ? 0 : 1;
   if (presetId === 'boulder') {
@@ -257,6 +269,14 @@ export function normalizeApertureSettings(settings = {}) {
   const optionalInteger = (value, minimum, maximum) => value === null || value === undefined
     ? null
     : Math.min(maximum, Math.max(minimum, Math.round(finiteValue(value, minimum))));
+  const slitScreenPosition = {
+    x: Math.min(9, Math.max(-9, finiteValue(settings.slitScreenPositionX, DEFAULT_APERTURE_SETTINGS.slitScreenPositionX))),
+    y: Math.min(9, Math.max(-9, finiteValue(settings.slitScreenPositionY, DEFAULT_APERTURE_SETTINGS.slitScreenPositionY))),
+    z: Math.min(9, Math.max(-9, finiteValue(settings.slitScreenPositionZ, DEFAULT_APERTURE_SETTINGS.slitScreenPositionZ)))
+  };
+  const detectorDistance = settings.detectorDistance === null || settings.detectorDistance === undefined
+    ? detectorDistanceForSlitScreenPosition(slitScreenPosition)
+    : Math.min(21, Math.max(0.5, finiteValue(settings.detectorDistance, DEFAULT_APERTURE_SETTINGS.detectorDistance)));
   return {
     slitPosition: Math.min(3, Math.max(-3, finiteValue(settings.slitPosition, DEFAULT_APERTURE_SETTINGS.slitPosition))),
     slitWidthA: Math.min(3.6, Math.max(0.2, finiteValue(settings.slitWidthA, DEFAULT_APERTURE_SETTINGS.slitWidthA))),
@@ -267,7 +287,14 @@ export function normalizeApertureSettings(settings = {}) {
       ? null
       : Math.min(8, Math.max(0.5, finiteValue(settings.slitSpacing, 4.2))),
     slitWallMargin: Math.min(APERTURE_SCREEN_HEIGHT / 2 - 0.05, Math.max(0, finiteValue(settings.slitWallMargin, DEFAULT_APERTURE_SETTINGS.slitWallMargin))),
-    slitOpacity: Math.min(1, Math.max(0, finiteValue(settings.slitOpacity, DEFAULT_APERTURE_SETTINGS.slitOpacity)))
+    slitOpacity: Math.min(1, Math.max(0, finiteValue(settings.slitOpacity, DEFAULT_APERTURE_SETTINGS.slitOpacity))),
+    slitScreenPositionX: slitScreenPosition.x,
+    slitScreenPositionY: slitScreenPosition.y,
+    slitScreenPositionZ: slitScreenPosition.z,
+    slitScreenRotationX: Math.min(Math.PI, Math.max(-Math.PI, finiteValue(settings.slitScreenRotationX, DEFAULT_APERTURE_SETTINGS.slitScreenRotationX))),
+    slitScreenRotationY: Math.min(Math.PI, Math.max(-Math.PI, finiteValue(settings.slitScreenRotationY, DEFAULT_APERTURE_SETTINGS.slitScreenRotationY))),
+    slitScreenRotationZ: Math.min(Math.PI, Math.max(-Math.PI, finiteValue(settings.slitScreenRotationZ, DEFAULT_APERTURE_SETTINGS.slitScreenRotationZ))),
+    detectorDistance
   };
 }
 
@@ -295,7 +322,10 @@ export function getSlitGeometry(experimentMode, apertureSettings = DEFAULT_APERT
     spacing,
     openingHeight: APERTURE_SCREEN_HEIGHT - settings.slitWallMargin * 2,
     wallMargin: settings.slitWallMargin,
-    opacity: settings.slitOpacity
+    opacity: settings.slitOpacity,
+    screenPosition: slitScreenPosition(settings),
+    screenRotation: slitScreenRotation(settings),
+    detectorDistance: settings.detectorDistance
   };
 }
 
@@ -317,6 +347,49 @@ function rotateVector(vector, rotation) {
     y: sinZ * xTurned + cosZ * yTurned,
     z: zTurned
   };
+}
+
+function slitScreenRotation(settings) {
+  return {
+    x: settings.slitScreenRotationX,
+    y: settings.slitScreenRotationY,
+    z: settings.slitScreenRotationZ
+  };
+}
+
+function slitScreenPosition(settings) {
+  return {
+    x: settings.slitScreenPositionX,
+    y: settings.slitScreenPositionY,
+    z: settings.slitScreenPositionZ
+  };
+}
+
+export function slitScreenLocalToWorld(point, apertureSettings = DEFAULT_APERTURE_SETTINGS) {
+  const settings = normalizeApertureSettings(apertureSettings);
+  const rotated = rotateVector(point, slitScreenRotation(settings));
+  const position = slitScreenPosition(settings);
+  return { x: position.x + rotated.x, y: position.y + rotated.y, z: position.z + rotated.z };
+}
+
+export function slitScreenWorldToLocal(point, apertureSettings = DEFAULT_APERTURE_SETTINGS) {
+  const settings = normalizeApertureSettings(apertureSettings);
+  const position = slitScreenPosition(settings);
+  const relative = { x: point.x - position.x, y: point.y - position.y, z: point.z - position.z };
+  const rotation = slitScreenRotation(settings);
+  return {
+    x: dot(relative, rotateVector({ x: 1, y: 0, z: 0 }, rotation)),
+    y: dot(relative, rotateVector({ x: 0, y: 1, z: 0 }, rotation)),
+    z: dot(relative, rotateVector({ x: 0, y: 0, z: 1 }, rotation))
+  };
+}
+
+export function detectorDistanceForSlitScreenPosition(position) {
+  return Math.hypot(
+    DOUBLE_SLIT_DETECTOR_X - position.x,
+    -position.y,
+    -position.z
+  );
 }
 
 function dot(left, right) {
@@ -526,11 +599,15 @@ export function prepareApertureField(waves, experimentMode, apertureSettings = D
     const phaseRate = Number(wave.phaseRate) || 0;
     const beamWaist = Math.max(0.1, Number(wave.beamWaist) || DEFAULT_BEAM_WAIST);
     for (const point of samplePoints) {
-      const frame = calculateWaveFrame(wave, DOUBLE_SLIT_SCREEN_X, point.y, point.z);
+      const emitterPosition = ['single-slit', 'double-slit', 'grating'].includes(experimentMode)
+        ? slitScreenLocalToWorld({ x: 0, y: point.y, z: point.z }, apertureSettings)
+        : { x: DOUBLE_SLIT_SCREEN_X, y: point.y, z: point.z };
+      const frame = calculateWaveFrame(wave, emitterPosition.x, emitterPosition.y, emitterPosition.z);
       const beamProfile = Math.exp(-(frame.transverseRadius ** 2) / (2 * beamWaist ** 2));
       emitters.push({
-        y: point.y,
-        z: point.z,
+        x: emitterPosition.x,
+        y: emitterPosition.y,
+        z: emitterPosition.z,
         waveNumber,
         phaseRate,
         phase: waveNumber * frame.longitudinal + phaseOffset,
@@ -548,7 +625,7 @@ export function sampleApertureField(preparedField, x, y, z, time) {
   const constructiveElectric = { x: 0, y: 0, z: 0 };
   if (!preparedField) return { electric, constructiveElectric, intensity: 0, constructiveIntensity: 0 };
   for (const emitter of preparedField.emitters) {
-    const offsetX = x - DOUBLE_SLIT_SCREEN_X;
+    const offsetX = x - (emitter.x ?? DOUBLE_SLIT_SCREEN_X);
     const offsetY = y - emitter.y;
     const offsetZ = z - emitter.z;
     const distance = Math.hypot(offsetX, offsetY, offsetZ);

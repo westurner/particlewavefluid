@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DataTexture, DoubleSide, FloatType, FrontSide, Mesh, NearestFilter, NoBlending, OrthographicCamera, RGBAFormat, Scene, ShaderMaterial, UnsignedByteType, Vector3, WebGLRenderTarget } from 'three';
-import { advanceDetectorResponse, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacementAndTensorGaussian, calculateWaveFrame, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_APERTURE_SETTINGS, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, DOUBLE_SLIT_SCREEN_THICKNESS, DOUBLE_SLIT_SCREEN_X, DOUBLE_SLIT_WIDTH, APERTURE_SCREEN_DEPTH, APERTURE_SCREEN_HEIGHT, DETECTOR_TRANSVERSE_SPAN, getSlitGeometry, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, GRATING_SLIT_WIDTH, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, readSavedWaveStates, sampleApertureField, SIGNAL_SOURCE_PRESETS, SINGLE_SLIT_WIDTH, TWO_SOURCE_CENTERS, writeSavedWaveStates } from './waveModel.js';
+import { advanceDetectorResponse, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacementAndTensorGaussian, calculateWaveFrame, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_APERTURE_SETTINGS, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, DOUBLE_SLIT_SCREEN_THICKNESS, DOUBLE_SLIT_SCREEN_X, DOUBLE_SLIT_WIDTH, APERTURE_SCREEN_DEPTH, APERTURE_SCREEN_HEIGHT, DETECTOR_TRANSVERSE_SPAN, detectorDistanceForSlitScreenPosition, getSlitGeometry, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, GRATING_SLIT_WIDTH, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, readSavedWaveStates, sampleApertureField, SIGNAL_SOURCE_PRESETS, SINGLE_SLIT_WIDTH, TWO_SOURCE_CENTERS, writeSavedWaveStates } from './waveModel.js';
 import { HistoryControls, NumericParamControl, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 import { evaluateGpeResponse, WAVE_EVOLUTION_OPTIONS } from './mechanicsModels.js';
@@ -43,6 +43,7 @@ const DETECTOR_RESPONSE_FRAGMENT_SHADER = `
   uniform sampler2D uEmitterPhase;
   uniform sampler2D uEmitterAmplitude;
   uniform sampler2D uEmitterPolarization;
+  uniform sampler2D uEmitterSide;
   uniform float uEmitterCount;
   uniform float uIntensityScale;
   uniform float uTime;
@@ -66,17 +67,18 @@ const DETECTOR_RESPONSE_FRAGMENT_SHADER = `
       vec4 phaseData = texture2D(uEmitterPhase, emitterUv);
       vec4 amplitudeData = texture2D(uEmitterAmplitude, emitterUv);
       vec4 polarizationData = texture2D(uEmitterPolarization, emitterUv);
-      vec3 offset = vec3(uDetectorX, y, z) - vec3(0.0, phaseData.x, phaseData.y);
+      vec4 sideData = texture2D(uEmitterSide, emitterUv);
+      vec3 offset = vec3(uDetectorX, y, z) - phaseData.xyz;
       float distanceToEmitter = max(length(offset), 0.000001);
       vec3 propagation = offset / distanceToEmitter;
-      vec3 transverse = vec3(amplitudeData.z, amplitudeData.w, polarizationData.x);
+      vec3 transverse = polarizationData.xyz;
       vec3 polarization = transverse - dot(transverse, propagation) * propagation;
       if (length(polarization) < 0.000001) {
-        vec3 side = polarizationData.xyz;
+        vec3 side = sideData.xyz;
         polarization = side - dot(side, propagation) * propagation;
       }
-      float phase = phaseData.z * distanceToEmitter + phaseData.w - amplitudeData.x * uTime;
-      float fieldAmplitude = amplitudeData.y * sin(phase) / distanceToEmitter;
+      float phase = phaseData.w * distanceToEmitter + amplitudeData.x - amplitudeData.y * uTime;
+      float fieldAmplitude = amplitudeData.z * sin(phase) / distanceToEmitter;
       electric += polarization * fieldAmplitude;
     }
     float intensity = dot(electric, electric) / uIntensityScale;
@@ -210,7 +212,7 @@ function createFieldGeometry(particleCount) {
 }
 
 function createDetectorRenderResources(width, height) {
-  const emitterTextures = Array.from({ length: 3 }, () => {
+  const emitterTextures = Array.from({ length: 4 }, () => {
     const texture = new DataTexture(new Float32Array(DETECTOR_MAX_EMITTERS * 4), DETECTOR_MAX_EMITTERS, 1, RGBAFormat, FloatType);
     texture.minFilter = NearestFilter;
     texture.magFilter = NearestFilter;
@@ -236,6 +238,7 @@ function createDetectorRenderResources(width, height) {
       uEmitterPhase: { value: emitterTextures[0] },
       uEmitterAmplitude: { value: emitterTextures[1] },
       uEmitterPolarization: { value: emitterTextures[2] },
+      uEmitterSide: { value: emitterTextures[3] },
       uEmitterCount: { value: 0 },
       uIntensityScale: { value: 1 },
       uTime: { value: 0 },
@@ -372,7 +375,7 @@ function createPinholeScreenGeometry() {
 
 function SlitScreen({ experimentMode, apertureSettings }) {
   const wallSegments = useMemo(() => {
-    const { centers, widths, wallMargin } = getSlitGeometry(experimentMode, apertureSettings);
+    const { centers, widths, wallMargin, screenPosition, screenRotation } = getSlitGeometry(experimentMode, apertureSettings);
     const openings = centers.map((center, index) => ({ center, start: center - widths[index] / 2, end: center + widths[index] / 2 }))
       .sort((left, right) => left.start - right.start);
     const result = [];
@@ -386,11 +389,12 @@ function SlitScreen({ experimentMode, apertureSettings }) {
       cursor = Math.max(cursor, end);
     });
     if (cursor < FIELD_SIZE / 2) result.push({ key: 'side-end', start: cursor, end: FIELD_SIZE / 2, height: APERTURE_SCREEN_HEIGHT, y: 0 });
-    return result;
+    return { segments: result, screenPosition, screenRotation };
   }, [apertureSettings, experimentMode]);
+  const { segments, screenPosition, screenRotation } = wallSegments;
   return (
-    <group>
-      {wallSegments.map(({ key, start, end, height, y }) => <mesh key={key} position={[DOUBLE_SLIT_SCREEN_X, y, (start + end) / 2]} rotation={[0, Math.PI / 2, 0]}>
+    <group position={[screenPosition.x, screenPosition.y, screenPosition.z]} rotation={[screenRotation.x, screenRotation.y, screenRotation.z, 'ZYX']}>
+      {segments.map(({ key, start, end, height, y }) => <mesh key={key} position={[0, y, (start + end) / 2]} rotation={[0, Math.PI / 2, 0]}>
         <boxGeometry args={[end - start, height, APERTURE_SCREEN_DEPTH]} />
         <meshBasicMaterial color="#203640" transparent={apertureSettings.slitOpacity < 1} opacity={apertureSettings.slitOpacity} depthWrite={apertureSettings.slitOpacity >= 1} side={DoubleSide} />
       </mesh>)}
@@ -442,29 +446,32 @@ function NativeResolutionDetector({ apertureField, running, timeRef, detectionTi
   useEffect(() => {
     const emitters = apertureField?.emitters ?? [];
     const emitterCount = Math.min(emitters.length, DETECTOR_MAX_EMITTERS);
-    const [phaseTexture, amplitudeTexture, polarizationTexture] = resources.emitterTextures;
+    const [phaseTexture, amplitudeTexture, polarizationTexture, sideTexture] = resources.emitterTextures;
     phaseTexture.image.data.fill(0);
     amplitudeTexture.image.data.fill(0);
     polarizationTexture.image.data.fill(0);
+    sideTexture.image.data.fill(0);
     for (let index = 0; index < emitterCount; index += 1) {
       const emitter = emitters[index];
       const offset = index * 4;
-      phaseTexture.image.data[offset] = emitter.y;
-      phaseTexture.image.data[offset + 1] = emitter.z;
-      phaseTexture.image.data[offset + 2] = emitter.waveNumber;
-      phaseTexture.image.data[offset + 3] = emitter.phase;
-      amplitudeTexture.image.data[offset] = emitter.phaseRate;
-      amplitudeTexture.image.data[offset + 1] = emitter.amplitude;
-      amplitudeTexture.image.data[offset + 2] = emitter.transverse.x;
-      amplitudeTexture.image.data[offset + 3] = emitter.transverse.y;
-      polarizationTexture.image.data[offset] = emitter.transverse.z;
-      polarizationTexture.image.data[offset + 1] = emitter.side.x;
-      polarizationTexture.image.data[offset + 2] = emitter.side.y;
-      polarizationTexture.image.data[offset + 3] = emitter.side.z;
+      phaseTexture.image.data[offset] = emitter.x;
+      phaseTexture.image.data[offset + 1] = emitter.y;
+      phaseTexture.image.data[offset + 2] = emitter.z;
+      phaseTexture.image.data[offset + 3] = emitter.waveNumber;
+      amplitudeTexture.image.data[offset] = emitter.phase;
+      amplitudeTexture.image.data[offset + 1] = emitter.phaseRate;
+      amplitudeTexture.image.data[offset + 2] = emitter.amplitude;
+      polarizationTexture.image.data[offset] = emitter.transverse.x;
+      polarizationTexture.image.data[offset + 1] = emitter.transverse.y;
+      polarizationTexture.image.data[offset + 2] = emitter.transverse.z;
+      sideTexture.image.data[offset] = emitter.side.x;
+      sideTexture.image.data[offset + 1] = emitter.side.y;
+      sideTexture.image.data[offset + 2] = emitter.side.z;
     }
     phaseTexture.needsUpdate = true;
     amplitudeTexture.needsUpdate = true;
     polarizationTexture.needsUpdate = true;
+    sideTexture.needsUpdate = true;
     resources.responseMaterial.uniforms.uEmitterCount.value = emitterCount;
     needsRefresh.current = true;
   }, [apertureField, resources]);
@@ -902,6 +909,35 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
   const activeModeLabels = Object.entries(INTERFERENCE_MODES).filter(([mode]) => interferenceModes[mode]).map(([, details]) => details.label);
   const defaultSlitCount = experimentMode === 'single-slit' ? 1 : experimentMode === 'grating' ? GRATING_SLIT_CENTERS.length : DOUBLE_SLIT_CENTERS.length;
   const defaultSlitSpacing = experimentMode === 'grating' ? GRATING_SLIT_SPACING : Math.abs(DOUBLE_SLIT_CENTERS[1] - DOUBLE_SLIT_CENTERS[0]);
+  const updateSlitScreenPosition = (axis, value) => {
+    const field = `slitScreenPosition${axis.toUpperCase()}`;
+    const position = {
+      x: axis === 'x' ? value : apertureSettings.slitScreenPositionX,
+      y: axis === 'y' ? value : apertureSettings.slitScreenPositionY,
+      z: axis === 'z' ? value : apertureSettings.slitScreenPositionZ
+    };
+    onApertureSettingsChange({ ...apertureSettings, [field]: value, detectorDistance: detectorDistanceForSlitScreenPosition(position) });
+  };
+  const updateDetectorDistance = (distance) => {
+    const position = { x: apertureSettings.slitScreenPositionX, y: apertureSettings.slitScreenPositionY, z: apertureSettings.slitScreenPositionZ };
+    const offset = { x: position.x - DOUBLE_SLIT_DETECTOR_X, y: position.y, z: position.z };
+    const currentDistance = Math.hypot(offset.x, offset.y, offset.z);
+    const direction = currentDistance > 1e-8
+      ? { x: offset.x / currentDistance, y: offset.y / currentDistance, z: offset.z / currentDistance }
+      : { x: -1, y: 0, z: 0 };
+    const nextPosition = {
+      x: clamp(DOUBLE_SLIT_DETECTOR_X + direction.x * distance, -9, 9),
+      y: clamp(direction.y * distance, -9, 9),
+      z: clamp(direction.z * distance, -9, 9)
+    };
+    onApertureSettingsChange({
+      ...apertureSettings,
+      slitScreenPositionX: nextPosition.x,
+      slitScreenPositionY: nextPosition.y,
+      slitScreenPositionZ: nextPosition.z,
+      detectorDistance: detectorDistanceForSlitScreenPosition(nextPosition)
+    });
+  };
   return (
     <aside className={`wave-panel ${paramsVisible ? '' : 'is-hidden'}`} aria-hidden={!paramsVisible} onPointerDown={(event) => event.stopPropagation()}>
       <div className="wave-panel-topline"><span className="wave-panel-kicker"><i /> WAVE FIELD / PHASE 01</span><button type="button" className="wave-hide-button" onClick={onBack}>Lab menu</button></div>
@@ -938,6 +974,17 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
             <RangeControl label="Slit center spacing" value={apertureSettings.slitSpacing ?? defaultSlitSpacing} min={0.5} max={8} step={0.1} suffix=" u" editing={editing} isDefault={isDefault(['apertureSettings', 'slitSpacing'])} onReset={() => onResetPath(['apertureSettings', 'slitSpacing'])} onChange={(slitSpacing) => onApertureSettingsChange({ ...apertureSettings, slitSpacing })} />
             <RangeControl label="Top/bottom wall margin" value={apertureSettings.slitWallMargin} min={0} max={APERTURE_SCREEN_HEIGHT / 2 - 0.05} step={0.05} suffix=" u" editing={editing} isDefault={isDefault(['apertureSettings', 'slitWallMargin'])} onReset={() => onResetPath(['apertureSettings', 'slitWallMargin'])} onChange={(slitWallMargin) => onApertureSettingsChange({ ...apertureSettings, slitWallMargin })} />
             <RangeControl label="Slit screen opacity" value={apertureSettings.slitOpacity} min={0} max={1} step={0.01} editing={editing} isDefault={isDefault(['apertureSettings', 'slitOpacity'])} onReset={() => onResetPath(['apertureSettings', 'slitOpacity'])} onChange={(slitOpacity) => onApertureSettingsChange({ ...apertureSettings, slitOpacity })} />
+            <span className="wave-section-label">SLIT SCREEN POSITION</span>
+            {['x', 'y', 'z'].map((axis) => {
+              const field = `slitScreenPosition${axis.toUpperCase()}`;
+              return <RangeControl key={field} label={`Screen ${axis.toUpperCase()} position`} value={apertureSettings[field]} min={-9} max={9} step={0.1} suffix=" u" editing={editing} isDefault={isDefault(['apertureSettings', field])} onReset={() => onResetPath(['apertureSettings', field])} onChange={(value) => updateSlitScreenPosition(axis, value)} />;
+            })}
+            <RangeControl label="Slit-to-detector distance" value={apertureSettings.detectorDistance} min={0.5} max={21} step={0.1} suffix=" u" editing={editing} isDefault={isDefault(['apertureSettings', 'detectorDistance'])} onReset={() => onResetPath(['apertureSettings', 'detectorDistance'])} onChange={updateDetectorDistance} />
+            <span className="wave-section-label">SLIT SCREEN ROTATION</span>
+            {['x', 'y', 'z'].map((axis) => {
+              const field = `slitScreenRotation${axis.toUpperCase()}`;
+              return <RangeControl key={field} label={`Screen rotation ${axis.toUpperCase()}`} value={apertureSettings[field]} min={-3.15} max={3.15} step={0.05} suffix=" rad" editing={editing} isDefault={isDefault(['apertureSettings', field])} onReset={() => onResetPath(['apertureSettings', field])} onChange={(value) => onApertureSettingsChange({ ...apertureSettings, [field]: value })} />;
+            })}
           </>}
           {['single-slit', 'double-slit', 'grating'].includes(experimentMode) && <>
             <RangeControl label="Slit position" value={apertureSettings.slitPosition} min={-3} max={3} step={0.05} suffix=" z u" editing={editing} isDefault={isDefault(['apertureSettings', 'slitPosition'])} onReset={() => onResetPath(['apertureSettings', 'slitPosition'])} onChange={(slitPosition) => onApertureSettingsChange({ ...apertureSettings, slitPosition })} />
@@ -972,6 +1019,8 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
         <p>Aperture experiments sample finite opening points and add their propagated, polarization-projected electric fields coherently at each detector pixel. Wave field mode instead evaluates the configured wave field directly at the detector plane; it uses the Classic pixels implementation. In both paths, the displayed signal is squared field magnitude with exponential exposure averaging and a separate glow-persistence response.</p>
         <p>Classic pixels evaluates a 48x48 base grid on the CPU. Native resolution (GPU) evaluates one texel per canvas drawing-buffer pixel and is available for aperture experiments. Pixel density scales both axes, so 2x density uses 4x as many pixels. The visibility toggle only hides the display; it does not disable wave propagation. The optional detector mask darkens pixels outside the 3.2-unit wall-height band.</p>
         <p>Slit screens support 1 to 12 centered openings. Their automatic layouts are one slit, two slits 4.2 units apart, or five grating slits 1.6 units apart; count and center spacing can override those layouts. Width is constrained to fit between neighboring slits. The top/bottom wall-margin control shortens every opening equally and adds matching occluding bars; slit position shifts the full array. Side walls, margin bars, and opening geometry share one visual opacity, default 0.2. Opacity changes appearance only; the propagation mask remains fully blocking outside the clear apertures.</p>
+        <p>Screen translation (X/Y/Z) and rotation (X/Y/Z, radians) affect the visible wall, aperture-source locations, and propagation mask using the same ZYX Euler transform. The detector center remains fixed at (7.2, 0, 0). Its distance control moves the screen along its current direction from the detector; editing any screen position coordinate recalculates the center-to-center distance.</p>
+        <p>Slit-screen XYZ position and Euler rotation are shared by the visible mask, world-space aperture sources, and propagation occlusion. The detector stays anchored at (7.2, 0, 0); its distance is the center-to-center distance. Moving the screen updates that distance, while editing distance moves the screen along its current radial direction.</p>
         <h3>Limitations</h3>
         <p>This is a Huygens-style point-source approximation, not a full Maxwell boundary-value solver. Wave field mode squares its configured displacement vector as a visualization signal; it is not a calibrated detector energy-flux measurement. The finite aperture grid, idealized screen, normalized display intensity, and nonphysical glow do not model calibrated power, a material sensor, photon shot noise, or dark counts.</p>
         <h3>Opportunities</h3>
