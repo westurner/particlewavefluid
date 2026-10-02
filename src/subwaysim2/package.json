@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build --config vite.config.js",
-    "test": "node --test src/*.test.js",
+    "test": "node --test src/*.test.js src/lib/*.test.js",
     "test:e2e": "node e2e/run-tests.js",
     "preview": "vite preview --host 0.0.0.0"
   },
