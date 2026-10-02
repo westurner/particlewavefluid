@@ -415,7 +415,7 @@ function PinholeScreen() {
   const geometry = useMemo(createPinholeScreenGeometry, []);
   useEffect(() => () => geometry.dispose(), [geometry]);
   return <mesh geometry={geometry}>
-    <meshBasicMaterial color="#203640" side={DoubleSide} />
+    <meshBasicMaterial color="#203640" transparent opacity={0.2} side={DoubleSide} />
   </mesh>;
 }
 
