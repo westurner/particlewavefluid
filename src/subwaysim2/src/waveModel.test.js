@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { advanceDetectorResponse, calculateDoubleSlitField, calculateElectromagneticField, calculateOcclusionTransmission, calculatePinholeField, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveEnvelope, calculateWaveFrame, calculateWaveSample, calculateWaveTensorGaussian, cloneWaveState, combineWaves, createApertureSamplePoints, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_COUNT, DEFAULT_WAVE_STATES, DEFAULT_WAVES, DOUBLE_SLIT_DETECTOR_X, GRATING_SLIT_CENTERS, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, OCCLUSION_PRESETS, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, SIGNAL_SOURCE_PRESETS } from './waveModel.js';
+import { advanceDetectorResponse, calculateDoubleSlitField, calculateElectromagneticField, calculateOcclusionTransmission, calculatePinholeField, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveDisplacementAndTensorGaussian, calculateWaveEnvelope, calculateWaveFrame, calculateWaveSample, calculateWaveTensorGaussian, cloneWaveState, combineWaves, createApertureSamplePoints, DEFAULT_APERTURE_SETTINGS, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_COUNT, DEFAULT_WAVE_STATES, DEFAULT_WAVES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, getSlitGeometry, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, SIGNAL_SOURCE_PRESETS } from './waveModel.js';
 
 test('wave configuration exposes eight phase modes and eight defaults', () => {
   assert.equal(MAX_WAVES, 8);
@@ -136,13 +136,17 @@ test('polarization maps scalar, transverse, and longitudinal displacement vector
   assert.ok(Math.hypot(electromagnetic.x, electromagnetic.y, electromagnetic.z) > 0);
 });
 
-test('electromagnetic polarization is transverse and derives B from k cross E', () => {
+test('electromagnetic plane wave is transverse, null, and derives B from k cross E', () => {
   const wave = { wavelength: 4, amplitude: 1, phaseMode: 'Circular-Left', phaseOffset: 0, phaseRate: 0, direction: { x: 0, y: 0, z: 1 } };
   const field = calculateElectromagneticField(wave, 0, 0, 0);
   const dotWithDirection = field.electric.z;
+  const electricMagneticDot = field.electric.x * field.magnetic.x + field.electric.y * field.magnetic.y + field.electric.z * field.magnetic.z;
+  const nullFieldInvariant = 2 * (field.magnetic.x ** 2 + field.magnetic.y ** 2 + field.magnetic.z ** 2 - field.electric.x ** 2 - field.electric.y ** 2 - field.electric.z ** 2);
   const magneticMagnitude = Math.hypot(field.magnetic.x, field.magnetic.y, field.magnetic.z);
   const electricMagnitude = Math.hypot(field.electric.x, field.electric.y, field.electric.z);
   assert.ok(Math.abs(dotWithDirection) < 1e-12);
+  assert.ok(Math.abs(electricMagneticDot) < 1e-12, 'E dot B is a vanishing electromagnetic invariant for this plane wave');
+  assert.ok(Math.abs(nullFieldInvariant) < 1e-12, 'B squared minus E squared vanishes in the model c=1 units');
   assert.ok(Math.abs(magneticMagnitude - electricMagnitude) < 1e-12);
   assert.ok(Math.abs(field.tensor.reduce((sum, value) => sum + value * value, 0) - 1) < 1e-12);
 });
@@ -218,6 +222,36 @@ test('slit widths and shared position stay synchronized between mask and field s
   assert.equal(calculateOcclusionTransmission('double-slit', 0, 3.9, 0, settings), 0);
 });
 
+test('slit count, spacing, wall margins, and opacity share screen and field geometry', () => {
+  const defaultDouble = getSlitGeometry('double-slit');
+  const defaultGrating = getSlitGeometry('grating');
+  assert.deepEqual(defaultDouble.centers, DOUBLE_SLIT_CENTERS);
+  assert.equal(defaultDouble.spacing, 4.2);
+  assert.equal(defaultGrating.centers.length, GRATING_SLIT_CENTERS.length);
+  assert.equal(defaultGrating.spacing, GRATING_SLIT_SPACING);
+  assert.equal(defaultDouble.opacity, 0.2);
+
+  const settings = normalizeApertureSettings({
+    slitPosition: 1,
+    slitCount: 4,
+    slitSpacing: 2.5,
+    slitWidthA: 0.4,
+    slitWallMargin: 0.5,
+    slitOpacity: 0.65
+  });
+  const geometry = getSlitGeometry('double-slit', settings);
+  assert.deepEqual(geometry.centers, [-2.75, -0.25, 2.25, 4.75]);
+  assert.deepEqual(geometry.widths, [0.4, 0.4, 0.4, 0.4]);
+  assert.equal(geometry.openingHeight, 2.2);
+  assert.equal(geometry.opacity, 0.65);
+
+  const samples = createApertureSamplePoints('double-slit', settings);
+  assert.equal(samples.length, 4 * 5 * 7);
+  assert.ok(samples.every((sample) => Math.abs(sample.y) < geometry.openingHeight / 2));
+  assert.equal(calculateOcclusionTransmission('double-slit', 0, geometry.centers[0], 1, settings), 1);
+  assert.equal(calculateOcclusionTransmission('double-slit', 0, geometry.centers[0], 1.2, settings), 0);
+});
+
 test('detector response integrates exposure and retains configurable glow', () => {
   let response = { average: 0, glow: 0 };
   for (let step = 0; step < 100; step += 1) response = advanceDetectorResponse(response, 1, 0.1, 0.5, 2);
@@ -234,6 +268,40 @@ test('tensor Gaussian splatters are strongest on-axis and vanish toward the beam
   assert.ok(center > edge);
   assert.ok(center > 0);
   assert.ok(edge < 0.02);
+});
+
+test('tensor Gaussian uses electric energy consistently across phase and direction modes', () => {
+  const interferenceModes = { constructive: false, superposition: true };
+  const modes = ['Standard', 'Quadrature', 'Inverted', 'Standing', 'Circular-Left', 'Circular-Right', 'Helical-Left', 'Helical-Right'];
+  for (const phaseMode of modes) {
+    const wave = {
+      wavelength: 3.7,
+      amplitude: 0.82,
+      phaseMode,
+      phaseOffset: 0.31,
+      phaseRate: -0.4,
+      beamWaist: 2.3,
+      origin: { x: -0.7, y: 0.4, z: 0.2 },
+      direction: { x: 0.3, y: 0.6, z: -0.2 },
+      rotation: { x: 0.2, y: -0.4, z: 0.1 },
+      polarization: 'EM-Tensor-Gaussian'
+    };
+    const x = 1.3;
+    const y = -0.5;
+    const z = 2.1;
+    const time = 0.73;
+    const field = calculateElectromagneticField(wave, x, z, time, y);
+    const electricEnergy = field.electric.x ** 2 + field.electric.y ** 2 + field.electric.z ** 2;
+    const expected = Math.min(1, electricEnergy) * field.gaussian;
+    const waveSlots = [{ polarization: 'Scalar', enabled: true }, wave];
+    const optimized = calculateWaveTensorGaussian(waveSlots, x, z, time, interferenceModes, y);
+    const combined = calculateWaveDisplacementAndTensorGaussian(waveSlots, x, z, time, interferenceModes, y);
+    assert.ok(Math.abs(optimized - expected) < 1e-12, `${phaseMode}: ${optimized} should match ${expected}`);
+    assert.ok(Math.abs(combined.tensorGaussian - expected) < 1e-12, `${phaseMode}: fused tensor response should match ${expected}`);
+    assert.deepEqual(combined.displacement, calculateWaveDisplacement(waveSlots, x, z, time, interferenceModes, y));
+    const normalizedTensorNorm = Math.sqrt(field.tensor.reduce((sum, value) => sum + value * value, 0));
+    if (electricEnergy > 1e-12) assert.ok(Math.abs(normalizedTensorNorm - 1) < 1e-12, `${phaseMode}: normalized tensor norm should be one`);
+  }
 });
 
 test('signal source presets provide coherent laser configurations', () => {

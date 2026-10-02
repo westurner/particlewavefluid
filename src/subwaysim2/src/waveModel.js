@@ -25,7 +25,11 @@ export const DEFAULT_APERTURE_SETTINGS = {
   slitPosition: 0,
   slitWidthA: DOUBLE_SLIT_WIDTH,
   slitWidthB: DOUBLE_SLIT_WIDTH,
-  slitWidthsLinked: true
+  slitWidthsLinked: true,
+  slitCount: null,
+  slitSpacing: null,
+  slitWallMargin: 0,
+  slitOpacity: 0.2
 };
 export const POLARIZATION_MODES = ['Scalar', 'Transverse', 'Longitudinal', 'Electromagnetic', 'EM-Tensor-Gaussian'];
 
@@ -233,9 +237,9 @@ export function calculateOcclusionTransmission(presetId, x, z, y = 0, apertureSe
   if (aperturePreset && Math.abs(x - DOUBLE_SLIT_SCREEN_X) > DOUBLE_SLIT_SCREEN_THICKNESS / 2) return 1;
   if (presetId === 'pinhole') return y ** 2 + z ** 2 <= PINHOLE_RADIUS ** 2 ? 1 : 0;
   if (['single-slit', 'double-slit', 'diffraction-grating'].includes(presetId)) {
-    if (Math.abs(y) > APERTURE_SCREEN_HEIGHT / 2) return 0;
     const mode = presetId === 'diffraction-grating' ? 'grating' : presetId;
     const geometry = getSlitGeometry(mode, apertureSettings);
+    if (Math.abs(y) > geometry.openingHeight / 2) return 0;
     return geometry.centers.some((center, index) => Math.abs(z - center) <= geometry.widths[index] / 2) ? 1 : 0;
   }
   if (presetId === 'sierpinski-carpet') return sierpinskiCarpetPass(x, z) ? 1 : 0;
@@ -250,31 +254,49 @@ export function calculateOcclusionTransmission(presetId, x, z, y = 0, apertureSe
 
 export function normalizeApertureSettings(settings = {}) {
   const finiteValue = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const optionalInteger = (value, minimum, maximum) => value === null || value === undefined
+    ? null
+    : Math.min(maximum, Math.max(minimum, Math.round(finiteValue(value, minimum))));
   return {
     slitPosition: Math.min(3, Math.max(-3, finiteValue(settings.slitPosition, DEFAULT_APERTURE_SETTINGS.slitPosition))),
     slitWidthA: Math.min(3.6, Math.max(0.2, finiteValue(settings.slitWidthA, DEFAULT_APERTURE_SETTINGS.slitWidthA))),
     slitWidthB: Math.min(3.6, Math.max(0.2, finiteValue(settings.slitWidthB, DEFAULT_APERTURE_SETTINGS.slitWidthB))),
-    slitWidthsLinked: settings.slitWidthsLinked ?? DEFAULT_APERTURE_SETTINGS.slitWidthsLinked
+    slitWidthsLinked: settings.slitWidthsLinked ?? DEFAULT_APERTURE_SETTINGS.slitWidthsLinked,
+    slitCount: optionalInteger(settings.slitCount, 1, 12),
+    slitSpacing: settings.slitSpacing === null || settings.slitSpacing === undefined
+      ? null
+      : Math.min(8, Math.max(0.5, finiteValue(settings.slitSpacing, 4.2))),
+    slitWallMargin: Math.min(APERTURE_SCREEN_HEIGHT / 2 - 0.05, Math.max(0, finiteValue(settings.slitWallMargin, DEFAULT_APERTURE_SETTINGS.slitWallMargin))),
+    slitOpacity: Math.min(1, Math.max(0, finiteValue(settings.slitOpacity, DEFAULT_APERTURE_SETTINGS.slitOpacity)))
   };
 }
 
 export function getSlitGeometry(experimentMode, apertureSettings = DEFAULT_APERTURE_SETTINGS) {
   const settings = normalizeApertureSettings(apertureSettings);
-  let centers;
-  let widths;
-  if (experimentMode === 'single-slit') {
-    centers = [0];
-    widths = [settings.slitWidthA];
-  } else if (experimentMode === 'double-slit') {
-    centers = DOUBLE_SLIT_CENTERS;
-    widths = [settings.slitWidthA, settings.slitWidthsLinked ? settings.slitWidthA : settings.slitWidthB].map((width) => Math.min(width, 2.4));
-  } else if (experimentMode === 'grating') {
-    centers = GRATING_SLIT_CENTERS;
-    widths = centers.map(() => Math.min(settings.slitWidthA, GRATING_SLIT_SPACING - 0.1));
-  } else {
+  if (!['single-slit', 'double-slit', 'grating'].includes(experimentMode)) {
     return { centers: [], widths: [] };
   }
-  return { centers: centers.map((center) => center + settings.slitPosition), widths };
+  const defaultCount = experimentMode === 'single-slit' ? 1 : experimentMode === 'grating' ? GRATING_SLIT_COUNT : DOUBLE_SLIT_CENTERS.length;
+  const defaultSpacing = experimentMode === 'grating' ? GRATING_SLIT_SPACING : Math.abs(DOUBLE_SLIT_CENTERS[1] - DOUBLE_SLIT_CENTERS[0]);
+  const count = settings.slitCount ?? defaultCount;
+  const spacing = settings.slitSpacing ?? defaultSpacing;
+  const centers = Array.from({ length: count }, (_, index) => (index - (count - 1) / 2) * spacing);
+  const maximumSlitWidth = Math.max(0.2, spacing - 0.1);
+  const widths = centers.map((_, index) => {
+    const requestedWidth = experimentMode === 'double-slit' && index === 1 && !settings.slitWidthsLinked
+      ? settings.slitWidthB
+      : settings.slitWidthA;
+    return Math.min(requestedWidth, maximumSlitWidth);
+  });
+  return {
+    centers: centers.map((center) => center + settings.slitPosition),
+    widths,
+    count,
+    spacing,
+    openingHeight: APERTURE_SCREEN_HEIGHT - settings.slitWallMargin * 2,
+    wallMargin: settings.slitWallMargin,
+    opacity: settings.slitOpacity
+  };
 }
 
 function rotateVector(vector, rotation) {
@@ -402,11 +424,7 @@ function cross(left, right) {
   };
 }
 
-function tensorNorm(tensor) {
-  return Math.sqrt(tensor.reduce((sum, value) => sum + value * value, 0));
-}
-
-export function calculateElectromagneticField(wave, x, z, time, y = 0) {
+export function calculateElectromagneticField(wave, x, z, time, y = 0, includeTensor = true, includeMagnetic = includeTensor) {
   const wavelength = Math.max(0.1, Number(wave.wavelength) || 0.1);
   const phase = Number(wave.phaseOffset) || 0;
   const rate = Number(wave.phaseRate) || 0;
@@ -438,30 +456,32 @@ export function calculateElectromagneticField(wave, x, z, time, y = 0) {
   const electric = circular
     ? scaleVector(addVectors(scaleVector(frame.transverse, Math.cos(vortexPhase)), scaleVector(frame.side, handedness * Math.sin(vortexPhase))), magnitude)
     : scaleVector(frame.transverse, magnitude * carrier);
-  const magnetic = cross(frame.direction, electric);
+  const magnetic = includeMagnetic ? cross(frame.direction, electric) : { x: 0, y: 0, z: 0 };
   const electricEnergy = dot(electric, electric);
-  const magneticEnergy = dot(magnetic, magnetic);
-  const energy = 0.5 * (electricEnergy + magneticEnergy);
-  const stressTensor = [
-    electric.x * electric.x + magnetic.x * magnetic.x - energy,
-    electric.x * electric.y + magnetic.x * magnetic.y,
-    electric.x * electric.z + magnetic.x * magnetic.z,
-    electric.y * electric.x + magnetic.y * magnetic.x,
-    electric.y * electric.y + magnetic.y * magnetic.y - energy,
-    electric.y * electric.z + magnetic.y * magnetic.z,
-    electric.z * electric.x + magnetic.z * magnetic.x,
-    electric.z * electric.y + magnetic.z * magnetic.y,
-    electric.z * electric.z + magnetic.z * magnetic.z - energy
-  ];
-  const norm = tensorNorm(stressTensor);
-  const normalizedTensor = norm > 0 ? stressTensor.map((value) => value / norm) : stressTensor;
+  const magneticEnergy = includeMagnetic ? dot(magnetic, magnetic) : 0;
+  const energy = includeTensor ? 0.5 * (electricEnergy + magneticEnergy) : 0;
+  let normalizedTensor;
+  if (includeTensor) {
+    const stressTensor = [
+      electric.x * electric.x + magnetic.x * magnetic.x - energy,
+      electric.x * electric.y + magnetic.x * magnetic.y,
+      electric.x * electric.z + magnetic.x * magnetic.z,
+      electric.y * electric.x + magnetic.y * magnetic.x,
+      electric.y * electric.y + magnetic.y * magnetic.y - energy,
+      electric.y * electric.z + magnetic.y * magnetic.z,
+      electric.z * electric.x + magnetic.z * magnetic.x,
+      electric.z * electric.y + magnetic.z * magnetic.y,
+      electric.z * electric.z + magnetic.z * magnetic.z - energy
+    ];
+    normalizedTensor = electricEnergy > 0 ? stressTensor.map((value) => value / electricEnergy) : stressTensor;
+  }
   return {
     electric,
     magnetic,
     gaussian,
     intensity: electricEnergy + magneticEnergy,
-    tensor: normalizedTensor,
-    tensorGaussian: Math.min(1, norm) * gaussian
+    ...(includeTensor ? { tensor: normalizedTensor } : {}),
+    tensorGaussian: Math.min(1, electricEnergy) * gaussian
   };
 }
 
@@ -478,14 +498,14 @@ export function createApertureSamplePoints(experimentMode, apertureSettings = DE
   if (['single-slit', 'double-slit', 'grating'].includes(experimentMode)) {
     const rows = 5;
     const columns = 7;
-    const { centers, widths } = getSlitGeometry(experimentMode, apertureSettings);
+    const { centers, widths, openingHeight } = getSlitGeometry(experimentMode, apertureSettings);
     return centers.flatMap((center, slitIndex) => Array.from({ length: rows * columns }, (_, index) => {
       const row = Math.floor(index / columns);
       const column = index % columns;
       return {
-        y: ((row + 0.5) / rows - 0.5) * APERTURE_SCREEN_HEIGHT,
+        y: ((row + 0.5) / rows - 0.5) * openingHeight,
         z: center + ((column + 0.5) / columns - 0.5) * widths[slitIndex],
-        weight: widths[slitIndex] / (rows * columns)
+        weight: widths[slitIndex] * openingHeight / APERTURE_SCREEN_HEIGHT / (rows * columns)
       };
     }));
   }
@@ -596,47 +616,83 @@ export function combineWaves(waves, x, z, time, interferenceModes = DEFAULT_INTE
   return activeWaves.reduce((total, wave) => total + waveInterferenceContribution(wave, x, z, time, activeModes, y), 0);
 }
 
-export function calculateWaveDisplacement(waves, x, z, time, interferenceModes = DEFAULT_INTERFERENCE_MODES, y = 0) {
+export function calculateWaveDisplacementAndTensorGaussian(waves, x, z, time, interferenceModes = DEFAULT_INTERFERENCE_MODES, y = 0) {
   const activeModes = normalizeInterferenceModes(interferenceModes);
   const responseLayerCount = Number(activeModes.constructive) + Number(activeModes.superposition);
-  return waves.slice(0, MAX_WAVES).reduce((total, wave) => {
-    const contribution = waveInterferenceContribution(wave, x, z, time, activeModes, y);
+  const displacement = { x: 0, y: 0, z: 0 };
+  let tensorGaussianTotal = 0;
+  for (let index = 0; index < Math.min(waves.length, MAX_WAVES); index += 1) {
+    const wave = waves[index];
+    if (wave.enabled === false) continue;
     if (wave.polarization === 'Electromagnetic' || wave.polarization === 'EM-Tensor-Gaussian') {
-      if (wave.enabled === false || responseLayerCount === 0) return total;
-      const field = calculateElectromagneticField(wave, x, z, time, y);
-      const fieldScale = (wave.polarization === 'EM-Tensor-Gaussian' ? field.tensorGaussian : 1) * responseLayerCount;
+      if (responseLayerCount === 0) continue;
+      const field = calculateElectromagneticField(wave, x, z, time, y, false);
+      const isTensorGaussian = wave.polarization === 'EM-Tensor-Gaussian';
+      const fieldScale = (isTensorGaussian ? field.tensorGaussian : 1) * responseLayerCount;
       const electromagneticDisplacement = scaleVector(field.electric, fieldScale);
-      return addVectors(total, electromagneticDisplacement);
+      displacement.x += electromagneticDisplacement.x;
+      displacement.y += electromagneticDisplacement.y;
+      displacement.z += electromagneticDisplacement.z;
+      if (isTensorGaussian) tensorGaussianTotal += field.tensorGaussian * responseLayerCount;
+      continue;
     }
-    if (contribution === 0) return total;
+    const contribution = waveInterferenceContribution(wave, x, z, time, activeModes, y);
+    if (contribution === 0) continue;
     const frame = calculateWaveFrame(wave, x, y, z);
     if (wave.polarization === 'Longitudinal') {
-      return {
-        x: total.x + contribution * frame.direction.x,
-        y: total.y + contribution * frame.direction.y,
-        z: total.z + contribution * frame.direction.z
-      };
+      displacement.x += contribution * frame.direction.x;
+      displacement.y += contribution * frame.direction.y;
+      displacement.z += contribution * frame.direction.z;
+    } else if (wave.polarization === 'Transverse') {
+      displacement.x += contribution * frame.transverse.x;
+      displacement.y += contribution * frame.transverse.y;
+      displacement.z += contribution * frame.transverse.z;
+    } else {
+      displacement.y += contribution;
     }
-    if (wave.polarization === 'Transverse') {
-      return {
-        x: total.x + contribution * frame.transverse.x,
-        y: total.y + contribution * frame.transverse.y,
-        z: total.z + contribution * frame.transverse.z
-      };
-    }
-    return { x: total.x, y: total.y + contribution, z: total.z };
-  }, { x: 0, y: 0, z: 0 });
+  }
+  return { displacement, tensorGaussian: Math.min(1, tensorGaussianTotal) };
+}
+
+export function calculateWaveDisplacement(waves, x, z, time, interferenceModes = DEFAULT_INTERFERENCE_MODES, y = 0) {
+  return calculateWaveDisplacementAndTensorGaussian(waves, x, z, time, interferenceModes, y).displacement;
 }
 
 export function calculateWaveTensorGaussian(waves, x, z, time, interferenceModes = DEFAULT_INTERFERENCE_MODES, y = 0) {
   const activeModes = normalizeInterferenceModes(interferenceModes);
   const responseLayerCount = Number(activeModes.constructive) + Number(activeModes.superposition);
   if (responseLayerCount === 0) return 0;
-  return Math.min(1, waves.slice(0, MAX_WAVES).reduce((total, wave) => {
-    if (wave.enabled === false || wave.polarization !== 'EM-Tensor-Gaussian') return total;
-    const field = calculateElectromagneticField(wave, x, z, time, y);
-    return total + field.tensorGaussian * responseLayerCount;
-  }, 0));
+  let total = 0;
+  for (let index = 0; index < Math.min(waves.length, MAX_WAVES); index += 1) {
+    const wave = waves[index];
+    if (wave.enabled === false || wave.polarization !== 'EM-Tensor-Gaussian') continue;
+    const wavelength = Math.max(0.1, Number(wave.wavelength) || 0.1);
+    const phaseOffset = Number(wave.phaseOffset) || 0;
+    const phaseRate = Number(wave.phaseRate) || 0;
+    const waveNumber = (Math.PI * 2) / wavelength;
+    const temporalPhase = time * phaseRate;
+    const frame = calculateWaveFrame(wave, x, y, z);
+    const gaussian = Math.exp(-(frame.transverseRadius * frame.transverseRadius) / (2 * Math.max(0.1, Number(wave.beamWaist) || DEFAULT_BEAM_WAIST) ** 2));
+    const magnitude = (Number(wave.amplitude) || 0) * calculateWaveEnvelope(wave, frame.longitudinal) * gaussian;
+    const travel = waveNumber * frame.longitudinal - temporalPhase + phaseOffset;
+    const vortexPhase = wave.phaseMode === 'Helical-Left'
+      ? travel + HELICAL_TOPOLOGICAL_CHARGE * frame.angle
+      : wave.phaseMode === 'Helical-Right'
+        ? travel - HELICAL_TOPOLOGICAL_CHARGE * frame.angle
+        : travel;
+    const isCircular = wave.phaseMode === 'Circular-Left'
+      || wave.phaseMode === 'Circular-Right'
+      || wave.phaseMode === 'Helical-Left'
+      || wave.phaseMode === 'Helical-Right';
+    let carrier;
+    if (wave.phaseMode === 'Quadrature') carrier = Math.cos(vortexPhase);
+    else if (wave.phaseMode === 'Inverted') carrier = -Math.sin(vortexPhase);
+    else if (wave.phaseMode === 'Standing') carrier = Math.sin(waveNumber * frame.longitudinal + phaseOffset) * Math.cos(temporalPhase);
+    else carrier = Math.sin(vortexPhase);
+    const electricEnergy = magnitude * magnitude * (isCircular ? 1 : carrier * carrier);
+    total += Math.min(1, electricEnergy) * gaussian * responseLayerCount;
+  }
+  return Math.min(1, total);
 }
 
 export function calculateWaveDerivative(waves, x, z, time, order, interferenceModes = DEFAULT_INTERFERENCE_MODES, y = 0) {
