@@ -1,7 +1,49 @@
 import { ParamSelect, YamlTextArea } from './ParamControls.jsx';
-import { useEffect, useRef, useState } from 'react';
+import { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
+import { OrbitControls } from '@react-three/drei';
+import { NumericParamControl } from './ParamControls.jsx';
 import { cloneState, statesEqual } from './simulation-state.js';
-import { appendJournalEntry, rewindJournal, snapshotAtJournalTime } from './simulator-base.js';
+import { appendJournalEntry, CAMERA_WHEEL_MODE_OPTIONS, createOrbitCameraParams, rewindJournal, snapshotAtJournalTime } from './simulator-base.js';
+
+export const OrbitCameraControls = forwardRef(function OrbitCameraControls({ cameraParams, ...props }, ref) {
+  const cameraParamsKey = JSON.stringify(cameraParams);
+  const stableCameraParams = useMemo(() => createOrbitCameraParams(cameraParams), [cameraParamsKey]);
+  return <OrbitControls ref={ref} makeDefault enableDamping {...stableCameraParams} {...props} />;
+});
+
+export function CameraPerspectiveToolbar({ views, viewMode, onViewChange, className = 'attractor-view-toolbar', modesClassName = 'attractor-view-modes', controls }) {
+  return (
+    <nav className={className} aria-label="Camera views">
+      <div className={modesClassName} role="group" aria-label="Select camera perspective">
+        {views.map((view) => <button key={view.id} type="button" className={viewMode === view.id ? 'active' : ''} aria-pressed={viewMode === view.id} onClick={() => onViewChange(view.id)}>{view.label}</button>)}
+      </div>
+      {controls}
+    </nav>
+  );
+}
+
+export function OrbitCameraSettings({ configuration, onChange, className = 'attractor-details', rangeClassName = 'attractor-control', selectClassName = 'attractor-select' }) {
+  const update = (field, value) => onChange({ [field]: value }, field);
+  const range = (label, field, min, max, step, disabled = false) => <NumericParamControl key={field} className={rangeClassName} label={label} value={configuration[field]} min={min} max={max} step={step} disabled={disabled} onChange={(value) => update(field, value)} />;
+  return (
+    <details className={className}>
+      <summary>Camera</summary>
+      <ParamSelect className={selectClassName} label="Replay mode" value={configuration.replayCameraTrack} options={['false', 'exact', 'easing', 'orbit']} onChange={(value) => update('replayCameraTrack', value)} />
+      <label className="simulator-camera-toggle"><input type="checkbox" checked={configuration.cameraOrbitOn} onChange={(event) => update('cameraOrbitOn', event.target.checked)} /><span>Orbit on</span></label>
+      <label className="simulator-camera-toggle"><input type="checkbox" checked={configuration.cameraZoomEnabled} onChange={(event) => update('cameraZoomEnabled', event.target.checked)} /><span>Enable zoom</span></label>
+      <ParamSelect className={selectClassName} label="Scroll mode" value={configuration.cameraWheelMode} options={CAMERA_WHEEL_MODE_OPTIONS} onChange={(value) => update('cameraWheelMode', value)} />
+      {range('Orbit speed', 'replayCameraOrbitSpeed', 0.01, 2, 0.01)}
+      {range('Orbit X', 'replayCameraOrbitX', -1, 1, 0.01)}
+      {range('Orbit Y', 'replayCameraOrbitY', -1, 1, 0.01)}
+      {range('Orbit Z', 'replayCameraOrbitZ', -1, 1, 0.01)}
+      {['cameraPosX', 'cameraPosY', 'cameraPosZ', 'cameraTargetX', 'cameraTargetY', 'cameraTargetZ'].map((field) => range(field.replace('camera', 'Camera '), field, -50, 50, 0.01))}
+      {range('Zoom', 'cameraZoom', 0.1, 10, 0.01, !configuration.cameraZoomEnabled)}
+      {range('FOV', 'cameraFov', 1, 179, 1)}
+      {range('Near', 'cameraNear', 0.001, 10, 0.001)}
+      {range('Far', 'cameraFar', 10, 10000, 1)}
+    </details>
+  );
+}
 
 export function useSimulatorJournal({ initialSnapshot, onApplySnapshot, playbackSpeed = 1 }) {
   const [journal, setJournal] = useState(() => [{ time: 0, snapshot: cloneState(initialSnapshot) }]);
@@ -94,18 +136,22 @@ export function useSimulatorJournal({ initialSnapshot, onApplySnapshot, playback
   return { journal, recording, setRecording, playing, setPlaying, playbackTime, seek, stop, rewind, reset, record, replayJournal };
 }
 
-export function SimulatorBase({ children, className, headerClassName, title, subtitle, mark = 'PAS', meta, actions, homeUrl = '/', onHome, markClassName = '', metaClassName = '', homeClassName = '' }) {
+export function SimulatorBase({ children, className, headerClassName, title, subtitle, mark = 'PAS', meta, actions, homeUrl = '/', onHome, mode = '3d', brandClassName = '', markClassName = '', metaClassName = '', metaContentClassName = '', homeClassName = '' }) {
   return (
-    <main className={className}>
+    <main className={`simulator-base simulator-base-${mode} ${className || ''}`} data-simulator-mode={mode}>
       <header className={`simulator-base-topbar ${headerClassName || ''}`}>
-        <div className="simulator-base-brand">
+        <div className={`simulator-base-brand ${brandClassName}`}>
           <span className={`simulator-base-mark ${markClassName}`}>{mark}</span>
           <span><b>{title}</b><em>{subtitle}</em></span>
         </div>
         <div className={`simulator-base-meta ${metaClassName}`}>
-          {meta && <span>{meta}</span>}
+          {meta && <span className={metaContentClassName}>{meta}</span>}
           {actions}
-          <a className={`simulator-base-home ${homeClassName}`} href={homeUrl} onClick={onHome}>Lab menu</a>
+          <a className={`simulator-base-home ${homeClassName}`} href={homeUrl} onClick={(event) => {
+            if (!onHome) return;
+            event.preventDefault();
+            onHome(event);
+          }}>Lab menu</a>
         </div>
       </header>
       {children}

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { parseNumericValue } from "./simulation-state.js";
 
@@ -34,7 +34,7 @@ export function ParamSelect({ label, value, options, onChange, className = "", a
   const normalizedOptions = options.map((option) => typeof option === "string" ? { value: option, label: option } : option);
   const selectedOption = normalizedOptions.find((option) => option.value === value) ?? normalizedOptions[0];
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return undefined;
     const updateMenuPosition = () => {
       const trigger = triggerRef.current;

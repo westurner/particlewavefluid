@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls } from '@react-three/drei';
 import { BufferAttribute, BufferGeometry, Vector3 } from 'three';
 import {
   AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY,
@@ -21,6 +20,7 @@ import {
   updateAmplitudeGravityStreamlines
 } from './amplitudeGravityModel.js';
 import { ColorParamControl, NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
+import { OrbitCameraControls, SimulatorBase } from './lib/SimulatorBase.jsx';
 
 const BODY_COLORS = ['#f5c65d', '#68d5cc', '#e98567', '#8f9ff2', '#d7e77b'];
 const INITIAL_BODIES = [
@@ -249,7 +249,7 @@ function AmplitudeScene({ configuration, running, resetToken, onTelemetry }) {
       <gridHelper args={[24, 24, '#244247', '#12272b']} position={[0, -1.4, 0]} />
       <NBodyField configuration={configuration} running={running} resetToken={resetToken} onTelemetry={onTelemetry} />
       <CellGeometry cell={cell} />
-      <OrbitControls makeDefault enableDamping dampingFactor={0.08} minDistance={7} maxDistance={34} target={[0, 0, 0]} />
+      <OrbitCameraControls cameraParams={{ minDistance: 7, maxDistance: 34 }} />
     </>
   );
 }
@@ -272,9 +272,8 @@ export default function AmplitudeGravitySim({ onBack }) {
   const updateGap = (index, value) => update({ cellGaps: settings.cellGaps.map((gap, gapIndex) => gapIndex === index ? value : gap) });
 
   return (
-    <main className="amplitude-app">
+    <SimulatorBase className="amplitude-app" headerClassName="amplitude-topbar" mark="AMP" markClassName="amplitude-mark" title="AMPLITUDE GEOMETRY GRAVITY LAB" subtitle="Positive geometry / EFT comparison" actions={<><button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button><button type="button" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></>} onHome={onBack}>
       <div className="amplitude-scene"><Canvas camera={{ position: [10, 8, 12], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AmplitudeScene configuration={{ ...settings, timeScale: configuration.timeScale }} running={running} resetToken={resetToken} onTelemetry={setTelemetry} /></Canvas></div>
-      <header className="amplitude-topbar"><div><span className="amplitude-mark">AMP</span><span><b>AMPLITUDE GEOMETRY GRAVITY LAB</b><em>Positive geometry / EFT comparison</em></span></div><div><button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button><button type="button" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></div></header>
       <section className="amplitude-title"><span>ACTIVE FIELD / N-BODY AMPLITUDE PROXY</span><h1>Geometric gravity.<br />Conservation of motion.</h1><p>Compare a Newtonian reference, spin-2 EFT proxy, and an explicitly speculative QED derived scattering gravituhedron modulation.</p></section>
       <aside className={`amplitude-panel ${panelVisible ? '' : 'is-hidden'}`}>
         <div className="amplitude-panel-heading"><div><span>GR(2,4) / TOP CELL</span><h2>Amplitude gravity</h2></div><button type="button" onClick={onBack}>Lab menu</button></div>
@@ -321,6 +320,6 @@ export default function AmplitudeGravitySim({ onBack }) {
           <p className="amplitude-note">{weakField.sources.scattering}</p>
         </details>
       </aside>
-    </main>
+    </SimulatorBase>
   );
 }

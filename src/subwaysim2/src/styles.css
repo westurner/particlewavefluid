@@ -441,8 +441,11 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
 .attractor-app { position: relative; width: 100%; height: 100%; overflow: hidden; color: rgb(var(--color-rgb-eef2ec)); background: rgb(var(--color-rgb-050810)); }
 .simulator-base-brand { display: flex; align-items: center; gap: 12px; }
 .simulator-base-brand b, .simulator-base-brand em { display: block; font-family: 'DM Mono', monospace; font-style: normal; }
-.simulator-base-home { display: inline-flex; align-items: center; color: inherit; text-decoration: none; white-space: nowrap; }
+.simulator-base-meta { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.simulator-base-home { display: inline-flex; align-items: center; padding: 7px 9px; border: 1px solid rgba(var(--color-rgb-92d4cc), 0.32); color: rgb(var(--color-rgb-c6d7d0)); background: rgba(var(--color-rgb-08181b), 0.32); font: 9px 'DM Mono', monospace; text-decoration: none; white-space: nowrap; }
 .simulator-base-home:hover { color: rgb(var(--color-rgb-e4a458)); }
+.simulator-camera-toggle { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: rgb(var(--color-rgb-aabccc)); font-size: 11px; }
+.simulator-camera-toggle input { accent-color: rgb(var(--color-rgb-73c5c3)); }
 .attractor-scene { position: absolute; inset: 0; }
 .attractor-scene canvas { display: block; width: 100%; height: 100%; }
 .attractor-topbar, .attractor-panel, .attractor-title, .attractor-view-toolbar { position: absolute; z-index: 2; }
@@ -831,7 +834,8 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
 .frc-brand b { color: rgb(var(--color-rgb-eff7ee)); font-size: 12px; letter-spacing: 0.12em; }
 .frc-brand em { margin-top: 4px; color: rgb(var(--color-rgb-8bb4ae)); font-size: 9px; letter-spacing: 0.04em; }
 .frc-mark { display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid rgb(var(--color-rgb-f0a23a)); color: rgb(var(--color-rgb-f0a23a)); font: 10px 'DM Mono', monospace; letter-spacing: 0.04em; }
-.frc-top-meta { display: flex; gap: 24px; margin-left: auto; margin-right: 22px; color: rgb(var(--color-rgb-81aaa3)); font: 9px 'DM Mono', monospace; letter-spacing: 0.1em; }
+.frc-top-meta { display: flex; gap: 24px; color: rgb(var(--color-rgb-81aaa3)); font: 9px 'DM Mono', monospace; letter-spacing: 0.1em; }
+.frc-header-actions { margin-left: auto; }
 .frc-back-button, .frc-view-toolbar button { border: 1px solid rgba(var(--color-rgb-f0a23a), 0.42); color: rgb(var(--color-rgb-ffd18a)); background: rgba(var(--color-rgb-f0a23a), 0.09); font: 9px 'DM Mono', monospace; cursor: pointer; }
 .frc-back-button { padding: 7px 10px; }
 .frc-back-button:hover, .frc-view-toolbar button:hover { border-color: rgb(var(--color-rgb-f0a23a)); background: rgba(var(--color-rgb-f0a23a), 0.18); }

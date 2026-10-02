@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { correlateEvents, demodulateIq, detectSignalEvents, generateIqSignal, SIGNAL_EVENT_PRESETS } from './phaseSignalModel.js';
 import { NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
+import { SimulatorBase } from './lib/SimulatorBase.jsx';
 
 function tracePoints(values, width, height, minimum, maximum) {
   const span = Math.max(maximum - minimum, 1e-9);
@@ -41,8 +42,7 @@ export default function PhaseSignalSim({ onBack }) {
   const analogyEvents = useMemo(() => signal.truth.filter(({ type }) => type === 'phase-slip').map((event) => ({ type: 'vortex-crossing', time: event.time + settings.analogyOffset })), [settings.analogyOffset, signal.truth]);
   const correlation = useMemo(() => correlateEvents(events.filter(({ type }) => type === 'phase-slip'), analogyEvents, 0.05), [analogyEvents, events]);
   const update = (patch) => setSettings((current) => ({ ...current, ...patch }));
-  return <main className="signal-app">
-    <header className="signal-topbar"><div><span className="signal-mark">I/Q</span><span><b>FRACTURE + PHASE-SLIP SIGNAL LAB</b><em>Demodulation / unwrapping / event detection</em></span></div><div><button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button><button type="button" onClick={onBack}>Lab menu</button></div></header>
+  return <SimulatorBase mode="non-3d" className="signal-app" headerClassName="signal-topbar" brandClassName="signal-brand" mark="I/Q" markClassName="signal-mark" title="FRACTURE + PHASE-SLIP SIGNAL LAB" subtitle="Demodulation / unwrapping / event detection" actions={<button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button>} onHome={onBack}>
     <section className="signal-workbench">
       <div className="signal-heading"><span>COMPLEX BASEBAND / {signal.sampleRate} SAMPLES·S⁻¹</span><h1>Resolve discontinuity.</h1><p>Detected events are signal-processing outputs. Cross-domain vortex correlation is available only as an explicit analogy.</p></div>
       <SignalTrace label="IN-PHASE I" values={Array.from(signal.inPhase)} color="#67d1c3" events={events} duration={signal.duration} />
@@ -73,5 +73,5 @@ export default function PhaseSignalSim({ onBack }) {
         </>}
       </details>
     </aside>
-  </main>;
+  </SimulatorBase>;
 }

@@ -20,6 +20,7 @@ test('Wave uses the shared simulator base for presets, JSON, and a valid edit jo
   await page.locator('.wave-panel').waitFor({ state: 'visible' });
 
   assert.equal(await page.locator('.wave-topbar .simulator-base-brand b').textContent(), 'WAVE FIELD LAB');
+  assert.equal(await page.locator('.wave-app').getAttribute('data-simulator-mode'), '3d');
   assert.match(await page.locator('.wave-topbar .simulator-base-brand em').textContent(), /Phase geometry/);
   assert.equal(await page.getByRole('link', { name: 'Lab menu' }).getAttribute('href'), '/');
 
@@ -144,5 +145,53 @@ test('Attractor parameter logs include config values, offsets, and replay them',
     const control = [...document.querySelectorAll('.attractor-control')].find((element) => element.textContent.includes('Attractor mass exponent'));
     return control?.querySelector('input[type="range"]')?.value === String(value);
   }, nextValue);
+  assert.deepEqual(errors, []);
+});
+
+test('Phase Signal uses SimulatorBase in non-3D mode without replacing its SVG workbench', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+
+  const url = new URL(baseUrl);
+  url.searchParams.set('e2e', '1');
+  await page.goto(url.toString(), { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /11 \/ LOAD FIELD/ }).click();
+
+  const shell = page.locator('.signal-app');
+  await shell.waitFor({ state: 'visible' });
+  assert.equal(await shell.getAttribute('data-simulator-mode'), 'non-3d');
+  assert.equal(await shell.locator('canvas').count(), 0);
+  assert.equal(await shell.locator('svg[role="img"]').count(), 4);
+  assert.equal(await page.getByRole('link', { name: 'Lab menu' }).getAttribute('href'), '/');
+  await page.getByRole('button', { name: 'Hide params' }).click();
+  assert.equal(await page.locator('.signal-panel').isVisible(), false);
+  assert.equal(await page.getByRole('link', { name: 'Lab menu' }).isVisible(), true);
+  assert.deepEqual(errors, []);
+  await page.getByRole('link', { name: 'Lab menu' }).click();
+  await page.locator('.sqg-loader').waitFor({ state: 'visible' });
+});
+
+test('Longitudinal laser array uses the shared 3D base and orbit controls', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+
+  const url = new URL(baseUrl);
+  url.searchParams.set('e2e', '1');
+  await page.goto(url.toString(), { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /12 \/ LOAD FIELD/ }).click();
+  const app = page.locator('.laser-app');
+  await app.waitFor({ state: 'visible' });
+  assert.equal(await app.getAttribute('data-simulator-mode'), '3d');
+  assert.equal(await page.locator('.laser-topbar .simulator-base-brand b').textContent(), 'LONGITUDINAL ARRAY');
+  assert.equal(await page.getByRole('link', { name: 'Lab menu' }).getAttribute('href'), '/');
+  assert.equal(await page.locator('.laser-scene canvas').count(), 1);
   assert.deepEqual(errors, []);
 });

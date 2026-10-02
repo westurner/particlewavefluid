@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendJournalEntry, buildParameterReplayJournal, deletePresetLibrary, parameterLogCategory, parseParameterEditLogYaml, parseSimulatorJson, readPresetLibrary, rewindJournal, serializeParameterEditLog, snapshotAtJournalTime, writePresetLibrary } from './simulator-base.js';
+import { appendJournalEntry, buildParameterReplayJournal, CAMERA_WHEEL_MODE_OPTIONS, createCameraViews, createOrbitCameraParams, DEFAULT_ORBIT_CAMERA_PARAMS, DEFAULT_SIMULATOR_CAMERA_CONFIGURATION, deletePresetLibrary, parameterLogCategory, parseParameterEditLogYaml, parseSimulatorJson, readPresetLibrary, rewindJournal, serializeParameterEditLog, snapshotAtJournalTime, writePresetLibrary } from './simulator-base.js';
 
 function createStorage() {
   const values = new Map();
@@ -10,6 +10,17 @@ function createStorage() {
     removeItem: (key) => values.delete(key)
   };
 }
+
+test('shared camera helpers retain presets, targets, and overrideable orbit parameters', () => {
+  const attractorViews = createCameraViews();
+  assert.deepEqual(attractorViews.find((view) => view.id === 'ortho1').position, [14, 14, 20]);
+  const subwayViews = createCameraViews({ target: [0, 3, 0], distance: 61, frontDistance: 72, frontDirection: -1, ortho1Offset: [41, 35, 48], ortho2Offset: [-41, 35, -48] });
+  assert.deepEqual(subwayViews.find((view) => view.id === 'front').position, [0, 3, -72]);
+  assert.deepEqual(subwayViews.find((view) => view.id === 'left').position, [-61, 3, 0]);
+  assert.deepEqual(createOrbitCameraParams({ minDistance: 5, target: [1, 2, 3] }), { ...DEFAULT_ORBIT_CAMERA_PARAMS, minDistance: 5, target: [1, 2, 3] });
+  assert.equal(DEFAULT_SIMULATOR_CAMERA_CONFIGURATION.cameraFov, 25);
+  assert.deepEqual(CAMERA_WHEEL_MODE_OPTIONS.map(({ value, label }) => [value, label]), [['zoom', 'Zoom'], ['dolly', 'Move camera']]);
+});
 
 test('preset storage preserves defaults and round-trips simulator snapshots', () => {
   const storage = createStorage();

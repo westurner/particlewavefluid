@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Html, OrbitControls, TransformControls } from '@react-three/drei';
+import { Html, TransformControls } from '@react-three/drei';
 import { AdditiveBlending, BufferAttribute, BufferGeometry, Camera, Color, DoubleSide, Euler, FloatType, HalfFloatType, InstancedBufferAttribute, Mesh, NearestFilter, NoBlending, PlaneGeometry, RGBAFormat, Scene, ShaderMaterial, TOUCH, Vector3, WebGLRenderTarget } from 'three';
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
 import { HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
-import { SimulatorBase, SimulatorExportModal, SimulatorIOJournal, SimulatorPresetControls, useSimulatorJournal } from './lib/SimulatorBase.jsx';
+import { CameraPerspectiveToolbar, OrbitCameraControls, OrbitCameraSettings, SimulatorBase, SimulatorExportModal, SimulatorIOJournal, SimulatorPresetControls, useSimulatorJournal } from './lib/SimulatorBase.jsx';
 import { buildParameterReplayJournal, deletePresetLibrary, parseParameterEditLogYaml, parseSimulatorJson, readPresetLibrary, serializeParameterEditLog, writePresetLibrary } from './lib/simulator-base.js';
+import { createCameraViews, DEFAULT_SIMULATOR_CAMERA_CONFIGURATION } from './lib/simulator-base.js';
 import { compareFieldModels, DEFAULT_FIELD_MECHANICS, FIELD_MODEL_DETAILS, FIELD_MODEL_OPTIONS, fieldModelIndex, sanitizeFieldMechanics } from './mechanicsModels.js';
 import { advanceBlackHoleStarField, createBlackHoleStarField } from './blackHoleStarModel.js';
 import {
@@ -34,15 +35,7 @@ const E2E_PARTICLE_COUNT = typeof window !== 'undefined' && new URLSearchParams(
 const PRESET_STORAGE_KEY = 'sqgsim-attractor-presets';
 const ATTRACTOR_PANEL_LAYOUT = { breakpoint: 700, width: 350, right: 28 };
 const ATTRACTOR_CAMERA_TARGET = [0, 0, 0];
-const ATTRACTOR_CAMERA_VIEWS = [
-  { id: 'front', label: 'Front', position: [0, 0, 24] },
-  { id: 'back', label: 'Back', position: [0, 0, -24] },
-  { id: 'left', label: 'Left', position: [-24, 0, 0] },
-  { id: 'right', label: 'Right', position: [24, 0, 0] },
-  { id: 'ortho1', label: 'Ortho 1', position: [14, 14, 20] },
-  { id: 'ortho2', label: 'Ortho 2', position: [-14, 12, -20] },
-  { id: 'orbital', label: 'Orbital tracking', position: null }
-];
+const ATTRACTOR_CAMERA_VIEWS = createCameraViews();
 
 function createBlackHoleStarRuntimeState() {
   return {
@@ -55,11 +48,6 @@ const TRANSFORM_MODE_OPTIONS = [
   { value: 'rotate', label: 'Rotate' },
   { value: 'disabled', label: 'Disabled' }
 ];
-const CAMERA_WHEEL_MODE_OPTIONS = [
-  { value: 'zoom', label: 'Zoom' },
-  { value: 'dolly', label: 'Move camera' }
-];
-
 const BLACK_HOLE_ATTRACTOR_DEFAULTS = {
   eventHorizonShear: 10,
   fractureThreshold: 25,
@@ -631,25 +619,7 @@ function createConfiguration(variant = 'simple') {
     helperShowAttributes: false,
     newAttractorPlacement: 'origin',
     newAttractorRandomDist: 3.14,
-    replayCameraTrack: 'easing',
-    replayCameraEasing: 0.1,
-    replayCameraOrbitSpeed: 0.1,
-    replayCameraOrbitX: 1,
-    replayCameraOrbitY: 0,
-    replayCameraOrbitZ: 0,
-    cameraOrbitOn: true,
-    cameraZoomEnabled: true,
-    cameraWheelMode: 'zoom',
-    cameraPosX: 3,
-    cameraPosY: 5,
-    cameraPosZ: 8,
-    cameraTargetX: 0,
-    cameraTargetY: 0,
-    cameraTargetZ: 0,
-    cameraZoom: 1,
-    cameraFov: 25,
-    cameraNear: 0.1,
-    cameraFar: 100,
+    ...DEFAULT_SIMULATOR_CAMERA_CONFIGURATION,
     timeScale: 1,
     playbackSpeed: 1,
     blackHoleEventHorizonShear: 10,
@@ -1352,7 +1322,7 @@ function AttractorCamera({ configuration, onCameraChange, playing, paramsVisible
       gl.domElement.removeEventListener('wheel', handleWheel, { capture: true });
     };
   }, [gl]);
-  return <OrbitControls ref={controlsRef} makeDefault enableDamping enableZoom={configuration.cameraZoomEnabled && configuration.cameraWheelMode === 'dolly'} touches={{ ONE: TOUCH.ROTATE, TWO: TOUCH.DOLLY_PAN }} dampingFactor={0.08} minDistance={0.25} maxDistance={50} onStart={handleManualChange} onEnd={handleControlEnd} />;
+  return <OrbitCameraControls ref={controlsRef} cameraParams={{ enableZoom: configuration.cameraZoomEnabled && configuration.cameraWheelMode === 'dolly', minDistance: 0.25, maxDistance: 50 }} touches={{ ONE: TOUCH.ROTATE, TWO: TOUCH.DOLLY_PAN }} onStart={handleManualChange} onEnd={handleControlEnd} />;
 }
 
 function BlackHoleEffect({ attractor, configuration, showStreamlines, starStateRef, attractorIndex }) {
@@ -1543,20 +1513,6 @@ function AttractorPaths({ configuration }) {
   );
 }
 
-function AttractorViewToolbar({ viewMode, onViewChange }) {
-  return (
-    <nav className="attractor-view-toolbar" aria-label="Camera views">
-      <div className="attractor-view-modes" role="group" aria-label="Select camera perspective">
-        {ATTRACTOR_CAMERA_VIEWS.map((view) => (
-          <button key={view.id} type="button" className={viewMode === view.id ? 'active' : ''} aria-pressed={viewMode === view.id} onClick={() => onViewChange(view.id)}>
-            {view.label}
-          </button>
-        ))}
-      </div>
-    </nav>
-  );
-}
-
 function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing, onCameraChange, paramsVisible, viewMode, onManualChange, variant }) {
   const blackHoleStarStateRef = useRef(null);
   if (!blackHoleStarStateRef.current) blackHoleStarStateRef.current = createBlackHoleStarRuntimeState();
@@ -1703,22 +1659,7 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
 
       <SimulatorIOJournal currentValue={configuration} presets={presets} jsonText={jsonText} onJsonText={setJsonText} onLoad={onLoad} onExport={onExport} onDeletePresets={onDeletePresets} showEditLog={showParamEditLog} onShowEditLog={onShowParamEditLog} editLogYaml={paramEditLogYaml} onReplayLog={onReplayLog} replayMessage={replayMessage} replaying={replaying} journal={journal} recording={recording} onRecording={onRecording} playing={playing} onTogglePlayback={onTogglePlayback} onStop={onStop} playbackTime={playbackTime} onPlaybackTime={onPlaybackTime} playbackSpeed={configuration.playbackSpeed} onPlaybackSpeed={(value) => onChange({ playbackSpeed: value }, 'playbackSpeed')} />
 
-      <details className="attractor-details">
-        <summary>Camera</summary>
-        <SelectControl label="Replay mode" value={configuration.replayCameraTrack} options={['false', 'exact', 'easing', 'orbit']} onChange={(value) => onChange({ replayCameraTrack: value }, 'replayCameraTrack')} />
-        <BooleanControl label="Orbit on" value={configuration.cameraOrbitOn} onChange={(value) => onChange({ cameraOrbitOn: value }, 'cameraOrbitOn')} />
-        <BooleanControl label="Enable zoom" value={configuration.cameraZoomEnabled} onChange={(value) => onChange({ cameraZoomEnabled: value }, 'cameraZoomEnabled')} />
-        <SelectControl label="Scroll mode" value={configuration.cameraWheelMode} options={CAMERA_WHEEL_MODE_OPTIONS} onChange={(value) => onChange({ cameraWheelMode: value }, 'cameraWheelMode')} />
-        <RangeControl label="Orbit speed" value={configuration.replayCameraOrbitSpeed} min={0.01} max={2} step={0.01} onChange={(value) => onChange({ replayCameraOrbitSpeed: value }, 'replayCameraOrbitSpeed')} />
-        <RangeControl label="Orbit X" value={configuration.replayCameraOrbitX} min={-1} max={1} step={0.01} onChange={(value) => onChange({ replayCameraOrbitX: value }, 'replayCameraOrbitX')} />
-        <RangeControl label="Orbit Y" value={configuration.replayCameraOrbitY} min={-1} max={1} step={0.01} onChange={(value) => onChange({ replayCameraOrbitY: value }, 'replayCameraOrbitY')} />
-        <RangeControl label="Orbit Z" value={configuration.replayCameraOrbitZ} min={-1} max={1} step={0.01} onChange={(value) => onChange({ replayCameraOrbitZ: value }, 'replayCameraOrbitZ')} />
-        {['cameraPosX', 'cameraPosY', 'cameraPosZ', 'cameraTargetX', 'cameraTargetY', 'cameraTargetZ'].map((key) => <RangeControl key={key} label={key.replace('camera', 'Camera ')} value={configuration[key]} min={-50} max={50} step={0.01} onChange={(value) => onChange({ [key]: value }, key)} />)}
-        <RangeControl label="Zoom" value={configuration.cameraZoom} min={0.1} max={10} step={0.01} onChange={(value) => onChange({ cameraZoom: value }, 'cameraZoom')} disabled={!configuration.cameraZoomEnabled} />
-        <RangeControl label="FOV" value={configuration.cameraFov} min={1} max={179} step={1} onChange={(value) => onChange({ cameraFov: value }, 'cameraFov')} />
-        <RangeControl label="Near" value={configuration.cameraNear} min={0.001} max={10} step={0.001} onChange={(value) => onChange({ cameraNear: value }, 'cameraNear')} />
-        <RangeControl label="Far" value={configuration.cameraFar} min={10} max={10000} step={1} onChange={(value) => onChange({ cameraFar: value }, 'cameraFar')} />
-      </details>
+      <OrbitCameraSettings configuration={configuration} onChange={onChange} />
       </ParamEditingProvider>
     </aside>
   );
@@ -1950,7 +1891,7 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
   return (
     <SimulatorBase className={`attractor-app ${isHypothesisVariant ? 'blackhole-app' : ''}`} headerClassName="attractor-topbar" brandClassName="attractor-base-brand" markClassName="sqg-mark" title={variant === 'ddf' ? 'DILATANT DARK FLUID SANDBOX' : variant === 'blackhole' ? 'SQG BLACK-HOLE SANDBOX' : 'PARTICLE DYNAMICS LAB'} subtitle="N-body / presets / journal" meta={reportTitle.toUpperCase()} metaClassName="attractor-top-actions" metaContentClassName="attractor-top-meta" homeUrl="/" onHome={onBack} homeClassName="attractor-back" actions={<button type="button" className="attractor-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button>}>
       <div className="attractor-scene"><Canvas frameloop={E2E_MODE ? 'demand' : 'always'} camera={{ position: [3, 5, 8], fov: 25, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AttractorWorld configuration={configuration} onAttractorChange={onAttractorChange} onGpuError={setGpuError} playing={journal.playing} onCameraChange={(change) => onChange(change, 'sys:camera')} paramsVisible={paramsVisible} viewMode={viewMode} onManualChange={() => setViewMode(null)} variant={variant} /></Canvas></div>
-      <AttractorViewToolbar viewMode={viewMode} onViewChange={setViewMode} />
+      <CameraPerspectiveToolbar views={ATTRACTOR_CAMERA_VIEWS} viewMode={viewMode} onViewChange={setViewMode} />
       <AttractorPanel variant={variant} particleCount={particleCount} configuration={configuration} presets={presets} currentPreset={currentPreset} presetName={presetName} onPresetName={setPresetName} jsonText={jsonText} setJsonText={setJsonText} showParamEditLog={showParamEditLog} onShowParamEditLog={setShowParamEditLog} paramEditLogYaml={paramEditLogYaml} onChange={onChange} onApplyPreset={onApplyPreset} onSavePreset={onSavePreset} onReset={onReset} onExport={(type, value) => setModal({ title: type === 'all' ? 'All presets' : type === 'saved' ? 'Saved presets' : 'Current parameters', value: type === 'current' ? configuration : value })} onLoad={onLoad} onDeletePresets={onDeletePresets} onReplayLog={onReplayParameterLog} replayMessage={replayMessage} replaying={journal.playing} journal={journal.journal} playing={journal.playing} playbackTime={journal.playbackTime} onPlaybackTime={journal.seek} onTogglePlayback={() => journal.setPlaying((value) => !value)} onStop={journal.stop} recording={journal.recording} onRecording={journal.setRecording} onAddAttractor={onAddAttractor} onRemoveAttractor={onRemoveAttractor} onSetOrigin={onSetOrigin} onResetOrigin={onResetOrigin} paramsVisible={paramsVisible} editing={editing} onEditing={setEditing} canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} />
       <div className="attractor-title"><span>ACTIVE FIELD / {variant === 'ddf' ? 'DDFSIM' : variant === 'blackhole' ? 'SQGBLACKHOLESIM' : 'SIMPLEATTRACTORSIM'}</span><h1>{variant === 'ddf' ? 'Dilatant Dark Fluid System' : variant === 'blackhole' ? 'Superfluid Quantum Gravity System' : 'Simple Particle Attractor System'}</h1><p>{variant === 'ddf' ? 'Phenomenological compressible sink flow with speed-limited shear thickening.' : variant === 'blackhole' ? 'Phenomenological SQG sink flow with a finite quantum-pressure core.' : 'Tune attractor mass, spin, and geometry within a field of particles.'}</p>{gpuError && <strong className="attractor-error">GPU offline: {gpuError}</strong>}</div>
       {modal && <SimulatorExportModal title={modal.title} value={modal.value} onClose={() => setModal(null)} />}

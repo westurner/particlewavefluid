@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState, forwardRef } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { ContactShadows, OrbitControls } from '@react-three/drei';
+import { ContactShadows } from '@react-three/drei';
 import { AdditiveBlending, BackSide, Color, DoubleSide, ExtrudeGeometry, InstancedBufferAttribute, MathUtils, Shape, ShapeGeometry, ShaderMaterial, SphereGeometry, Vector3 } from 'three';
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
 import { HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
+import { CameraPerspectiveToolbar, OrbitCameraControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { createCameraViews } from './lib/simulator-base.js';
 import { FLUID_MODEL_OPTIONS, fluidModelIndex } from './mechanicsModels.js';
 import {
   AIRFLOW_PARAMS,
@@ -86,15 +88,7 @@ const INITIALS = {
 };
 
 const CAMERA_TARGET = [(TRACK_ROUTE.minX + TRACK_ROUTE.maxX) / 2, 3, 0];
-const CAMERA_VIEWS = [
-  { id: 'front', label: 'Front', position: [0, 3, -72] },
-  { id: 'back', label: 'Back', position: [0, 3, 72] },
-  { id: 'left', label: 'Left', position: [-61, 3, 0] },
-  { id: 'right', label: 'Right', position: [61, 3, 0] },
-  { id: 'ortho1', label: 'Ortho 1', position: [41, 38, 48] },
-  { id: 'ortho2', label: 'Ortho 2', position: [-41, 38, -48] },
-  { id: 'orbital', label: 'Orbital tracking', position: null }
-];
+const CAMERA_VIEWS = createCameraViews({ target: CAMERA_TARGET, distance: 61, frontDistance: 72, frontDirection: -1, ortho1Offset: [41, 35, 48], ortho2Offset: [-41, 35, -48] });
 
 const PARAMETERS_PANEL_LAYOUT = {
   breakpoint: 700,
@@ -1541,16 +1535,9 @@ function CameraController({ viewMode, parametersVisible, onManualChange }) {
   }, [gl]);
 
   return (
-    <OrbitControls
+    <OrbitCameraControls
       ref={controlsRef}
-      makeDefault
-      target={CAMERA_TARGET}
-      enableDamping
-      dampingFactor={0.08}
-      minDistance={12}
-      maxDistance={90}
-      autoRotate={viewMode === 'orbital'}
-      autoRotateSpeed={0.55}
+      cameraParams={{ target: CAMERA_TARGET, minDistance: 12, maxDistance: 90, autoRotate: viewMode === 'orbital', autoRotateSpeed: 0.55 }}
       onStart={handleManualChange}
     />
   );
@@ -1855,29 +1842,6 @@ function TelemetryPanel({ settings, onSettingsChange, telemetry, gpuError, susta
   );
 }
 
-function ViewToolbar({ viewMode, onViewChange, parametersVisible, onToggleParameters }) {
-  return (
-    <nav className="view-toolbar panel" aria-label="Camera views">
-      <div className="view-modes" role="group" aria-label="Select camera perspective">
-        {CAMERA_VIEWS.map((view) => (
-          <button
-            key={view.id}
-            type="button"
-            className={viewMode === view.id ? 'active' : ''}
-            aria-pressed={viewMode === view.id}
-            onClick={() => onViewChange(view.id)}
-          >
-            {view.label}
-          </button>
-        ))}
-      </div>
-      <button className="params-toggle" type="button" aria-pressed={parametersVisible} onClick={onToggleParameters}>
-        {parametersVisible ? 'Hide params' : 'Show params'}
-      </button>
-    </nav>
-  );
-}
-
 export function SubwaySim({ onBack }) {
   const editor = useSimulationEditor(INITIALS); const { value: settings, commit, load, canUndo, canRedo, undo, redo } = editor; const [editing, setEditing] = useState(false);
   const [showDescriptions, setShowDescriptions] = useState(false);
@@ -1898,7 +1862,7 @@ export function SubwaySim({ onBack }) {
   }, [reportOpen]);
 
   return (
-    <main className="app-shell">
+    <SimulatorBase className="app-shell" headerClassName="topbar" brandClassName="brand-lockup" mark="T" markClassName="brand-mark" title="TRANSIT / UNDERGROUND" subtitle="Thermodynamics lab" meta={<><span>GPGPU / SPH</span><span>FIELD 04</span></>} metaClassName="subway-base-actions" metaContentClassName="topbar-meta" onHome={onBack} homeClassName="mode-switch">
       <div className="scene-layer">
         <Canvas camera={{ position: [7, 20, 55], fov: 45, near: 0.1, far: 1000 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}>
           <color attach="background" args={['#071316']} />
@@ -1906,13 +1870,8 @@ export function SubwaySim({ onBack }) {
           <SimulationScene settings={settings} viewMode={viewMode} parametersVisible={parametersVisible} onManualViewChange={() => setViewMode(null)} onTelemetry={setTelemetry} onGpuError={setGpuError} />
         </Canvas>
       </div>
-      <header className="topbar">
-        <div className="brand-lockup"><span className="brand-mark">T</span><span><b>TRANSIT / UNDERGROUND</b><em>Thermodynamics lab</em></span></div>
-        <div className="topbar-meta"><span>GPGPU / SPH</span><span>FIELD 04</span></div>
-        <button className="mode-switch" type="button" onClick={onBack}>Lab menu</button>
-      </header>
       {/* <section className="scene-title"><p>Airflow study</p><h1>Heat is a passenger.</h1><span>Watch the station exchange energy in real time.</span></section> */}
-      <ViewToolbar viewMode={viewMode} onViewChange={setViewMode} parametersVisible={parametersVisible} onToggleParameters={() => setParametersVisible((visible) => !visible)} />
+      <CameraPerspectiveToolbar className="view-toolbar panel" modesClassName="view-modes" views={CAMERA_VIEWS} viewMode={viewMode} onViewChange={setViewMode} controls={<button className="params-toggle" type="button" aria-pressed={parametersVisible} onClick={() => setParametersVisible((visible) => !visible)}>{parametersVisible ? 'Hide params' : 'Show params'}</button>} />
       {parametersVisible && <TelemetryPanel settings={settings} onSettingsChange={handleSettingsChange} telemetry={telemetry} gpuError={gpuError} sustainabilityScore={resilienceReport.score} showDescriptions={showDescriptions} onShowDescriptionsChange={setShowDescriptions} onOpenReport={() => setReportOpen(true)} onHide={() => setParametersVisible(false)} editing={editing} onEditing={setEditing} canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} onReset={() => load(INITIALS)} />}
       <aside className="legend-panel panel">
         <div className="legend-heading"><span>Thermal dispersion</span><span className="legend-unit">NORMALIZED / 0—1</span></div>
@@ -1921,6 +1880,6 @@ export function SubwaySim({ onBack }) {
       </aside>
       {reportOpen && <ThermalResilienceReport report={resilienceReport} onClose={() => setReportOpen(false)} />}
       <footer className="footer-note"><span>PLATFORM 04 / ACTIVE</span><span>Drag to orbit · Scroll to zoom</span></footer>
-    </main>
+    </SimulatorBase>
   );
 }

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls } from '@react-three/drei';
 import { AdditiveBlending, BoxGeometry, BufferAttribute, BufferGeometry, CatmullRomCurve3, DoubleSide, EdgesGeometry, Quaternion, TubeGeometry, Vector3 } from 'three';
+import { OrbitCameraControls, SimulatorBase } from './lib/SimulatorBase.jsx';
 
 const LASER_COLORS = ['#76e3d4', '#f2b45f', '#8bb8ff', '#f27d79', '#c1e77d', '#d59df2', '#6fd7f0', '#f08fae'];
 const R2R_WEB_LENGTH = 6.1;
@@ -388,7 +388,7 @@ function LaserScene({ layout, circuitId, modules, progress, wavelength, numerica
         <sphereGeometry args={[0.13, 16, 16]} />
         <meshBasicMaterial color="#fff0c5" transparent opacity={0.88} blending={AdditiveBlending} depthWrite={false} />
       </mesh>
-      <OrbitControls makeDefault enabled={orbitEnabled} target={[0, 0.35, 0]} minDistance={5.8} maxDistance={15} maxPolarAngle={Math.PI * 0.48} enableDamping />
+      <OrbitCameraControls cameraParams={{ enabled: orbitEnabled, target: [0, 0.35, 0], minDistance: 5.8, maxDistance: 15, maxPolarAngle: Math.PI * 0.48 }} />
     </>
   );
 }
@@ -445,7 +445,7 @@ function LaserPanel({ layout, setLayout, modules, setModules, circuitId, setCirc
           {modules.map((module, index) => {
             const color = LASER_COLORS[index % LASER_COLORS.length];
             return (
-              <details className="laser-module" key={module.id} style={{ '--module-color': color }} defaultOpen={index === 0}>
+              <details className="laser-module" key={module.id} style={{ '--module-color': color }} open={index === 0}>
                 <summary>
                   <i className={module.enabled ? 'is-on' : ''} />
                   <span>LASER {String(index + 1).padStart(2, '0')}<small>{module.enabled ? `${module.power}% · ${module.phase}°` : 'STANDBY'}</small></span>
@@ -511,16 +511,12 @@ export default function LongitudinalLaserArraySim({ onBack }) {
   };
 
   return (
-    <main className="laser-app">
+    <SimulatorBase className="laser-app" headerClassName="laser-topbar" brandClassName="laser-brand" mark="L/A" markClassName="laser-mark" title="LONGITUDINAL ARRAY" subtitle="Continuous-wave holographic nanowrite lab" meta={`FIELD SYNTHESIS / ${String(modules.length).padStart(2, '0')} CHANNELS`} metaClassName="laser-top-meta" metaContentClassName="laser-top-description" homeUrl="/" onHome={onBack} homeClassName="laser-back">
       <div className="laser-scene" data-layout={layout} data-laser-count={modules.length} data-active-lasers={activeCount} data-write-progress={progress}>
         <Canvas camera={{ position: [7.2, 6.2, 9.4], fov: 46, near: 0.1, far: 80 }} dpr={[1, 1.5]} gl={{ antialias: true, powerPreference: 'high-performance' }}>
           <LaserScene layout={layout} circuitId={circuitId} modules={modules} progress={progress} wavelength={wavelength} numericalAperture={numericalAperture} orbitEnabled={orbitEnabled} />
         </Canvas>
       </div>
-      <header className="laser-topbar">
-        <div className="laser-brand"><span className="laser-mark">L/A</span><span><b>LONGITUDINAL ARRAY</b><em>Continuous-wave holographic nanowrite lab</em></span></div>
-        <div className="laser-top-meta"><span>FIELD SYNTHESIS / {String(modules.length).padStart(2, '0')} CHANNELS</span><button type="button" className="laser-back" onClick={onBack}>Back to labs</button></div>
-      </header>
       <section className="laser-title">
         <p>HOLOGRAPHIC EXPOSURE / {layout === 'block' ? 'VOLUME' : layout === 'wafer' ? 'PLANAR' : 'ROLL-TO-ROLL'}</p>
         <h1>Converge.<br />Write the circuit.</h1>
@@ -550,6 +546,6 @@ export default function LongitudinalLaserArraySim({ onBack }) {
         onRunToggle={toggleWriting}
       />
       <footer className="laser-footer"><span>PHASE FRONTS SLOWED FOR DISPLAY</span><span>FOCUS VOLUME / {wavelength} nm · NA {numericalAperture.toFixed(2)}</span></footer>
-    </main>
+    </SimulatorBase>
   );
 }

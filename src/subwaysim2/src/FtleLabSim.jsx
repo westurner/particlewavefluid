@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { Line, OrbitControls } from '@react-three/drei';
+import { Line } from '@react-three/drei';
 import { BufferAttribute, BufferGeometry, Color } from 'three';
 import { FTLE_FLOW_PRESETS, integrateTrajectory, sampleFtleGrid, velocityAt } from './ftleModel.js';
 import { NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
+import { OrbitCameraControls, SimulatorBase } from './lib/SimulatorBase.jsx';
 
 const METRIC_OPTIONS = [
   { value: 'ftle', label: 'FTLE' },
@@ -95,7 +96,7 @@ function FtleScene({ grid, bounds, metric, trajectory }) {
       <directionalLight position={[5, 9, 4]} intensity={1.4} color="#ffe7b1" />
       <FtleField grid={grid} bounds={bounds} metric={metric} />
       <Trajectory trajectory={trajectory} bounds={bounds} />
-      <OrbitControls makeDefault enableDamping dampingFactor={0.08} minDistance={7} maxDistance={28} target={[0, 0.5, 0]} />
+      <OrbitCameraControls cameraParams={{ minDistance: 7, maxDistance: 28, target: [0, 0.5, 0] }} />
     </>
   );
 }
@@ -142,9 +143,8 @@ export default function FtleLabSim({ onBack }) {
   };
 
   return (
-    <main className="ftle-app">
+    <SimulatorBase className="ftle-app" headerClassName="ftle-topbar" mark="FTL" markClassName="ftle-mark" title="FINITE-TIME LYAPUNOV LAB" subtitle="Trajectory deformation / coherent structures" actions={<button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button>} onHome={onBack}>
       <div className="ftle-scene"><Canvas camera={{ position: [9, 9, 11], fov: 43, near: 0.1, far: 80 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><FtleScene grid={grid} bounds={bounds} metric={metric} trajectory={trajectory} /></Canvas></div>
-      <header className="ftle-topbar"><div><span className="ftle-mark">FTL</span><span><b>FINITE-TIME LYAPUNOV LAB</b><em>Trajectory deformation / coherent structures</em></span></div><button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button></header>
       <section className="ftle-title"><span>ACTIVE FIELD / {direction.toUpperCase()} FTLE</span><h1>Trace deformation.<br />Reveal transport.</h1><p>Finite-time diagnostics describe the selected velocity field; they do not by themselves prove a singularity or event horizon.</p></section>
       <aside className={`ftle-panel ${panelVisible ? '' : 'is-hidden'}`}>
         <div className="ftle-panel-heading"><div><span>FLOW MAP / CAUCHY-GREEN</span><h2>FTLE and LCS</h2></div><button type="button" onClick={onBack}>Lab menu</button></div>
@@ -164,6 +164,6 @@ export default function FtleLabSim({ onBack }) {
           <div className="ftle-readout"><span>Trajectory samples</span><strong>{trajectory.points.length}</strong></div>
         </details>
       </aside>
-    </main>
+    </SimulatorBase>
   );
 }

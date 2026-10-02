@@ -1,6 +1,71 @@
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { cloneState, setAtPath } from './simulation-state.js';
 
+export const DEFAULT_SIMULATOR_CAMERA_CONFIGURATION = Object.freeze({
+  replayCameraTrack: 'easing',
+  replayCameraEasing: 0.1,
+  replayCameraOrbitSpeed: 0.1,
+  replayCameraOrbitX: 1,
+  replayCameraOrbitY: 0,
+  replayCameraOrbitZ: 0,
+  cameraOrbitOn: true,
+  cameraZoomEnabled: true,
+  cameraWheelMode: 'zoom',
+  cameraPosX: 3,
+  cameraPosY: 5,
+  cameraPosZ: 8,
+  cameraTargetX: 0,
+  cameraTargetY: 0,
+  cameraTargetZ: 0,
+  cameraZoom: 1,
+  cameraFov: 25,
+  cameraNear: 0.1,
+  cameraFar: 100
+});
+
+export const DEFAULT_ORBIT_CAMERA_PARAMS = Object.freeze({
+  dampingFactor: 0.08,
+  minDistance: 7,
+  maxDistance: 34,
+  target: Object.freeze([0, 0, 0])
+});
+
+export const CAMERA_WHEEL_MODE_OPTIONS = Object.freeze([
+  { value: 'zoom', label: 'Zoom' },
+  { value: 'dolly', label: 'Move camera' }
+]);
+
+export function createOrbitCameraParams(overrides = {}) {
+  return {
+    ...DEFAULT_ORBIT_CAMERA_PARAMS,
+    ...overrides,
+    target: [...(overrides.target ?? DEFAULT_ORBIT_CAMERA_PARAMS.target)]
+  };
+}
+
+export function createCameraViews({ target = [0, 0, 0], distance = 24, frontDistance = distance, frontDirection = 1, ortho1Offset, ortho2Offset } = {}) {
+  const scale = distance / 24;
+  const positions = {
+    front: [0, 0, frontDistance * frontDirection],
+    back: [0, 0, -frontDistance * frontDirection],
+    left: [-24, 0, 0],
+    right: [24, 0, 0],
+    ortho1: ortho1Offset ?? [14, 14, 20],
+    ortho2: ortho2Offset ?? [-14, 12, -20]
+  };
+  return [
+    ...Object.entries(positions).map(([id, offset]) => {
+      const customOffset = id === 'ortho1' ? ortho1Offset : id === 'ortho2' ? ortho2Offset : null;
+      return {
+        id,
+        label: id === 'ortho1' ? 'Ortho 1' : id === 'ortho2' ? 'Ortho 2' : `${id[0].toUpperCase()}${id.slice(1)}`,
+        position: offset.map((value, axis) => target[axis] + value * (customOffset || id === 'front' || id === 'back' ? 1 : scale))
+      };
+    }),
+    { id: 'orbital', label: 'Orbital tracking', position: null }
+  ];
+}
+
 export function readPresetLibrary(storage, key, defaults = {}) {
   try {
     const saved = JSON.parse(storage?.getItem(key) || '{}');
