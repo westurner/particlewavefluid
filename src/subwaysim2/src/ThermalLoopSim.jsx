@@ -3,7 +3,8 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { CatmullRomCurve3, Color, Vector3 } from 'three';
 import { calculateThermalLoop, compareThermalFluids, THERMAL_FLUIDS, THERMAL_FLUID_OPTIONS } from './thermalLoopModel.js';
 import { NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
-import { OrbitCameraControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { CameraPerspectiveToolbar, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { DEFAULT_CAMERA_VIEWS } from './lib/simulator-base.js';
 
 const LOOP_POINTS = [
   new Vector3(-5.2, -1.1, 0), new Vector3(-5.2, 1.2, 0), new Vector3(-2.4, 2.2, 0),
@@ -23,7 +24,7 @@ function FlowParticles({ curve, speed, color }) {
   return <group>{Array.from({ length: 18 }, (_, index) => <mesh key={index} ref={(node) => { refs.current[index] = node; }}><sphereGeometry args={[0.075, 10, 8]} /><meshBasicMaterial color={color} /></mesh>)}</group>;
 }
 
-function ThermalLoopScene({ model }) {
+function ThermalLoopScene({ model, viewMode, orbitPlaying, onUserInteraction }) {
   const curve = useMemo(() => new CatmullRomCurve3(LOOP_POINTS, true, 'catmullrom', 0.16), []);
   const pipeColor = model.fluidId === 'hbnFarnesane' ? '#e7c95f' : model.fluidId === 'glycol30' ? '#77cbbf' : '#62aee8';
   const flowSpeed = Math.min(3, 0.4 + model.velocityMS * 0.8);
@@ -39,7 +40,7 @@ function ThermalLoopScene({ model }) {
     <group position={[4.2, 0, 0]}>{[-0.65, 0.65].map((z) => <mesh key={z} position={[0, 0, z]}><boxGeometry args={[1.15, 3.2, 0.48]} /><meshStandardMaterial color={model.economizerAvailable ? '#4f8977' : '#546069'} emissive={model.economizerAvailable ? '#4fc691' : '#e7a35c'} emissiveIntensity={0.28} /></mesh>)}</group>
     <mesh position={[0, -2.2, 0]} rotation={[Math.PI / 2, 0, 0]}><torusGeometry args={[0.42, 0.18, 14, 28]} /><meshStandardMaterial color="#d2a65e" metalness={0.62} roughness={0.28} /></mesh>
     <gridHelper args={[14, 28, '#27484a', '#132d30']} position={[0, -2.65, 0]} />
-    <OrbitCameraControls cameraParams={{ minDistance: 8, maxDistance: 28 }} />
+    <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} cameraParams={{ minDistance: 8, maxDistance: 28 }} onUserInteraction={onUserInteraction} />
   </>;
 }
 
@@ -54,12 +55,15 @@ export default function ThermalLoopSim({ onBack }) {
     economizerApproachC: 5, economizerHoursFraction: 0.55, facilityBasePue: 1.08
   });
   const [panelVisible, setPanelVisible] = useState(true);
+  const [viewMode, setViewMode] = useState('ortho1');
+  const [orbitPlaying, setOrbitPlaying] = useState(true);
   const selectedFluid = THERMAL_FLUIDS[scenario.fluidId];
   const model = calculateThermalLoop({ ...scenario, ...selectedFluid });
   const comparison = compareThermalFluids(scenario, 'water', scenario.fluidId);
   const update = (patch) => setScenario((current) => ({ ...current, ...patch }));
   return <SimulatorBase className="thermal-app" headerClassName="thermal-topbar" mark="THM" markClassName="thermal-mark" title="DATACENTER THERMAL LOOP" subtitle="Energy / pressure / economizer balance" actions={<button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button>} onHome={onBack}>
-    <div className="thermal-scene"><Canvas camera={{ position: [10, 8, 12], fov: 44, near: 0.1, far: 80 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><ThermalLoopScene model={model} /></Canvas></div>
+    <div className="thermal-scene"><Canvas camera={{ position: [10, 8, 12], fov: 44, near: 0.1, far: 80 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><ThermalLoopScene model={model} viewMode={viewMode} orbitPlaying={orbitPlaying} onUserInteraction={() => setViewMode(null)} /></Canvas></div>
+    <CameraPerspectiveToolbar className="simulator-perspective-toolbar" modesClassName="simulator-perspective-modes" views={DEFAULT_CAMERA_VIEWS} viewMode={viewMode} orbitPlaying={orbitPlaying} onViewChange={setViewMode} onToggleOrbit={() => setOrbitPlaying((value) => !value)} />
     <section className="thermal-title"><span>ACTIVE LOOP / {model.fluid.label.toUpperCase()}</span><h1>Move heat.<br />Account for power.</h1><p>Cooling outcomes follow fluid properties, piping, climate, and equipment assumptions with uncertainty shown.</p></section>
     <aside className={`thermal-panel ${panelVisible ? '' : 'is-hidden'}`}>
       <div className="thermal-panel-heading"><div><span>CLOSED LOOP / STEADY STATE</span><h2>Thermal balance</h2></div><button type="button" onClick={onBack}>Lab menu</button></div>

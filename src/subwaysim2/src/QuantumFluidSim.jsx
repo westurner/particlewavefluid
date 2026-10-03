@@ -12,7 +12,8 @@ import {
   stepGrossPitaevskii
 } from './quantumFluidModel.js';
 import { NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
-import { OrbitCameraControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { CameraPerspectiveToolbar, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { DEFAULT_CAMERA_VIEWS } from './lib/simulator-base.js';
 
 const VIEW_OPTIONS = [
   { value: 'side-by-side', label: 'GPE / Euler-Korteweg' },
@@ -192,7 +193,7 @@ function QuantumEvolution({ settings, running, resetToken, onTelemetry }) {
   </group>;
 }
 
-function QuantumScene(props) {
+function QuantumScene({ viewMode, orbitPlaying, onUserInteraction, ...props }) {
   return <>
     <color attach="background" args={['#071117']} />
     <fog attach="fog" args={['#071117', 16, 34]} />
@@ -200,7 +201,7 @@ function QuantumScene(props) {
     <directionalLight intensity={1.3} position={[5, 10, 5]} color="#ffe8b5" />
     <gridHelper args={[20, 40, '#244d55', '#112b31']} position={[0, -0.08, 0]} />
     <QuantumEvolution {...props} />
-    <OrbitCameraControls cameraParams={{ minDistance: 8, maxDistance: 34, target: [0, 0.5, 0] }} />
+    <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} cameraParams={{ minDistance: 8, maxDistance: 34, target: [0, 0.5, 0] }} onUserInteraction={onUserInteraction} />
   </>;
 }
 
@@ -222,12 +223,15 @@ export default function QuantumFluidSim({ onBack }) {
   });
   const [running, setRunning] = useState(true);
   const [panelVisible, setPanelVisible] = useState(true);
+  const [viewMode, setViewMode] = useState('ortho1');
+  const [orbitPlaying, setOrbitPlaying] = useState(true);
   const [resetToken, setResetToken] = useState(0);
   const [telemetry, setTelemetry] = useState({ time: 0, norm: 0, energy: 0, normDrift: 0, energyDrift: 0, vortexCount: 0, totalCharge: 0, phaseSlips: 0, rmsDifference: 0, maximumDifference: 0 });
   const update = (patch) => setSettings((current) => ({ ...current, ...patch }));
 
   return <SimulatorBase className="quantum-app" headerClassName="quantum-topbar" mark="QFL" markClassName="quantum-mark" title="QUANTUM FLUID LAB" subtitle="Gross-Pitaevskii / Euler-Korteweg" actions={<><button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button><button type="button" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></>} onHome={onBack}>
-    <div className="quantum-scene"><Canvas camera={{ position: [11, 9, 13], fov: 43, near: 0.1, far: 90 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><QuantumScene settings={settings} running={running} resetToken={resetToken} onTelemetry={setTelemetry} /></Canvas></div>
+    <div className="quantum-scene"><Canvas camera={{ position: [11, 9, 13], fov: 43, near: 0.1, far: 90 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><QuantumScene settings={settings} running={running} resetToken={resetToken} onTelemetry={setTelemetry} viewMode={viewMode} orbitPlaying={orbitPlaying} onUserInteraction={() => setViewMode(null)} /></Canvas></div>
+    <CameraPerspectiveToolbar className="simulator-perspective-toolbar" modesClassName="simulator-perspective-modes" views={DEFAULT_CAMERA_VIEWS} viewMode={viewMode} orbitPlaying={orbitPlaying} onViewChange={setViewMode} onToggleOrbit={() => setOrbitPlaying((value) => !value)} />
     <section className="quantum-title"><span>ACTIVE FIELD / COMPLEX ORDER PARAMETER</span><h1>Evolve phase.<br />Measure conservation.</h1><p>Split-step Fourier GPE and finite-difference Euler-Korteweg states advance from identical initial conditions.</p></section>
     <aside className={`quantum-panel ${panelVisible ? '' : 'is-hidden'}`}>
       <div className="quantum-panel-heading"><div><span>PERIODIC GRID / ℏ = m = 1</span><h2>Quantum fluid</h2></div><button type="button" onClick={onBack}>Lab menu</button></div>

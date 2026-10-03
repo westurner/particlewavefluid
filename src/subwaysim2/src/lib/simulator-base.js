@@ -66,6 +66,8 @@ export function createCameraViews({ target = [0, 0, 0], distance = 24, frontDist
   ];
 }
 
+export const DEFAULT_CAMERA_VIEWS = createCameraViews();
+
 export function readPresetLibrary(storage, key, defaults = {}) {
   try {
     const saved = JSON.parse(storage?.getItem(key) || '{}');

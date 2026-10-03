@@ -20,7 +20,8 @@ import {
   updateAmplitudeGravityStreamlines
 } from './amplitudeGravityModel.js';
 import { ColorParamControl, NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
-import { OrbitCameraControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { CameraPerspectiveToolbar, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { DEFAULT_CAMERA_VIEWS } from './lib/simulator-base.js';
 
 const BODY_COLORS = ['#f5c65d', '#68d5cc', '#e98567', '#8f9ff2', '#d7e77b'];
 const INITIAL_BODIES = [
@@ -238,7 +239,7 @@ function NBodyField({ configuration, running, resetToken, onTelemetry }) {
   );
 }
 
-function AmplitudeScene({ configuration, running, resetToken, onTelemetry }) {
+function AmplitudeScene({ configuration, running, resetToken, onTelemetry, viewMode, orbitPlaying, onUserInteraction }) {
   const cell = useMemo(() => createPositiveGrassmannianCell(configuration), [configuration]);
   return (
     <>
@@ -249,7 +250,7 @@ function AmplitudeScene({ configuration, running, resetToken, onTelemetry }) {
       <gridHelper args={[24, 24, '#244247', '#12272b']} position={[0, -1.4, 0]} />
       <NBodyField configuration={configuration} running={running} resetToken={resetToken} onTelemetry={onTelemetry} />
       <CellGeometry cell={cell} />
-      <OrbitCameraControls cameraParams={{ minDistance: 7, maxDistance: 34 }} />
+      <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} cameraParams={{ minDistance: 7, maxDistance: 34 }} onUserInteraction={onUserInteraction} />
     </>
   );
 }
@@ -263,6 +264,8 @@ export default function AmplitudeGravitySim({ onBack }) {
   const [running, setRunning] = useState(true);
   const [resetToken, setResetToken] = useState(0);
   const [panelVisible, setPanelVisible] = useState(true);
+  const [viewMode, setViewMode] = useState('ortho1');
+  const [orbitPlaying, setOrbitPlaying] = useState(true);
   const [telemetry, setTelemetry] = useState({ potential: 0, photonDiagnostic: 0, forceResidual: 0, maximumDifference: 0, bodyDifferences: [], energyDrift: 0, momentumResidual: 0, angularMomentumResidual: 0 });
   const settings = sanitizeAmplitudeGravity(configuration);
   const cell = useMemo(() => createPositiveGrassmannianCell(settings), [settings.cellGaps.join(','), settings.fourthColumnWeight]);
@@ -273,7 +276,8 @@ export default function AmplitudeGravitySim({ onBack }) {
 
   return (
     <SimulatorBase className="amplitude-app" headerClassName="amplitude-topbar" mark="AMP" markClassName="amplitude-mark" title="AMPLITUDE GEOMETRY GRAVITY LAB" subtitle="Positive geometry / EFT comparison" actions={<><button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button><button type="button" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></>} onHome={onBack}>
-      <div className="amplitude-scene"><Canvas camera={{ position: [10, 8, 12], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AmplitudeScene configuration={{ ...settings, timeScale: configuration.timeScale }} running={running} resetToken={resetToken} onTelemetry={setTelemetry} /></Canvas></div>
+      <div className="amplitude-scene"><Canvas camera={{ position: [10, 8, 12], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AmplitudeScene configuration={{ ...settings, timeScale: configuration.timeScale }} running={running} resetToken={resetToken} onTelemetry={setTelemetry} viewMode={viewMode} orbitPlaying={orbitPlaying} onUserInteraction={() => setViewMode(null)} /></Canvas></div>
+      <CameraPerspectiveToolbar className="simulator-perspective-toolbar" modesClassName="simulator-perspective-modes" views={DEFAULT_CAMERA_VIEWS} viewMode={viewMode} orbitPlaying={orbitPlaying} onViewChange={setViewMode} onToggleOrbit={() => setOrbitPlaying((value) => !value)} />
       <section className="amplitude-title"><span>ACTIVE FIELD / N-BODY AMPLITUDE PROXY</span><h1>Geometric gravity.<br />Conservation of motion.</h1><p>Compare a Newtonian reference, spin-2 EFT proxy, and an explicitly speculative QED derived scattering gravituhedron modulation.</p></section>
       <aside className={`amplitude-panel ${panelVisible ? '' : 'is-hidden'}`}>
         <div className="amplitude-panel-heading"><div><span>GR(2,4) / TOP CELL</span><h2>Amplitude gravity</h2></div><button type="button" onClick={onBack}>Lab menu</button></div>

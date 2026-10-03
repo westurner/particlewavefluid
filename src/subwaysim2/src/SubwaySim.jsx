@@ -1480,7 +1480,7 @@ function StationArchitecture({ landingY, surfaceY }) {
   );
 }
 
-function CameraController({ viewMode, parametersVisible, onManualChange }) {
+function CameraController({ viewMode, orbitalPlaying, parametersVisible, onManualChange }) {
   const { camera, gl, size } = useThree();
   const controlsRef = useRef();
   const destinationRef = useRef(new Vector3(...CAMERA_VIEWS.find((view) => view.id === 'ortho1').position));
@@ -1537,13 +1537,13 @@ function CameraController({ viewMode, parametersVisible, onManualChange }) {
   return (
     <OrbitCameraControls
       ref={controlsRef}
-      cameraParams={{ target: CAMERA_TARGET, minDistance: 12, maxDistance: 90, autoRotate: viewMode === 'orbital', autoRotateSpeed: 0.55 }}
+      cameraParams={{ target: CAMERA_TARGET, minDistance: 12, maxDistance: 90, autoRotate: viewMode === 'orbital' && orbitalPlaying, autoRotateSpeed: 0.55 }}
       onStart={handleManualChange}
     />
   );
 }
 
-function SimulationScene({ settings, viewMode, parametersVisible, onManualViewChange, onTelemetry, onGpuError }) {
+function SimulationScene({ settings, viewMode, orbitalPlaying, parametersVisible, onManualViewChange, onTelemetry, onGpuError }) {
   const trainRef = useRef();
   const stairProfile = {
     tunnelHeight: settings.stairUndergroundOpeningHeight,
@@ -1564,7 +1564,7 @@ function SimulationScene({ settings, viewMode, parametersVisible, onManualViewCh
       <Train ref={trainRef} active={settings.train} brakes={settings.brakes} />
       <ParticleField key={settings.particleCount} settings={settings} trainRef={trainRef} onTelemetry={onTelemetry} onGpuError={onGpuError} />
       <ContactShadows position={[9, -4, 0]} opacity={0.42} scale={56} blur={2.5} far={8} />
-      <CameraController viewMode={viewMode} parametersVisible={parametersVisible} onManualChange={onManualViewChange} />
+      <CameraController viewMode={viewMode} orbitalPlaying={orbitalPlaying} parametersVisible={parametersVisible} onManualChange={onManualViewChange} />
     </>
   );
 }
@@ -1847,6 +1847,7 @@ export function SubwaySim({ onBack }) {
   const [showDescriptions, setShowDescriptions] = useState(false);
   const [parametersVisible, setParametersVisible] = useState(true);
   const [viewMode, setViewMode] = useState('ortho1');
+  const [orbitalPlaying, setOrbitalPlaying] = useState(true);
   const [reportOpen, setReportOpen] = useState(false);
   const [telemetry, setTelemetry] = useState({ temperature: 81.5, shafts: [] });
   const [gpuError, setGpuError] = useState('');
@@ -1867,11 +1868,11 @@ export function SubwaySim({ onBack }) {
         <Canvas camera={{ position: [7, 20, 55], fov: 45, near: 0.1, far: 1000 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}>
           <color attach="background" args={['#071316']} />
           <fog attach="fog" args={['#071316', 28, 72]} />
-          <SimulationScene settings={settings} viewMode={viewMode} parametersVisible={parametersVisible} onManualViewChange={() => setViewMode(null)} onTelemetry={setTelemetry} onGpuError={setGpuError} />
+          <SimulationScene settings={settings} viewMode={viewMode} orbitalPlaying={orbitalPlaying} parametersVisible={parametersVisible} onManualViewChange={() => setViewMode(null)} onTelemetry={setTelemetry} onGpuError={setGpuError} />
         </Canvas>
       </div>
       {/* <section className="scene-title"><p>Airflow study</p><h1>Heat is a passenger.</h1><span>Watch the station exchange energy in real time.</span></section> */}
-      <CameraPerspectiveToolbar className="view-toolbar panel" modesClassName="view-modes" views={CAMERA_VIEWS} viewMode={viewMode} onViewChange={setViewMode} controls={<button className="params-toggle" type="button" aria-pressed={parametersVisible} onClick={() => setParametersVisible((visible) => !visible)}>{parametersVisible ? 'Hide params' : 'Show params'}</button>} />
+      <CameraPerspectiveToolbar className="view-toolbar panel" modesClassName="view-modes" views={CAMERA_VIEWS} viewMode={viewMode} onViewChange={setViewMode} orbitPlaying={orbitalPlaying} onToggleOrbit={() => setOrbitalPlaying((value) => !value)} controls={<button className="params-toggle" type="button" aria-pressed={parametersVisible} onClick={() => setParametersVisible((visible) => !visible)}>{parametersVisible ? 'Hide params' : 'Show params'}</button>} />
       {parametersVisible && <TelemetryPanel settings={settings} onSettingsChange={handleSettingsChange} telemetry={telemetry} gpuError={gpuError} sustainabilityScore={resilienceReport.score} showDescriptions={showDescriptions} onShowDescriptionsChange={setShowDescriptions} onOpenReport={() => setReportOpen(true)} onHide={() => setParametersVisible(false)} editing={editing} onEditing={setEditing} canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} onReset={() => load(INITIALS)} />}
       <aside className="legend-panel panel">
         <div className="legend-heading"><span>Thermal dispersion</span><span className="legend-unit">NORMALIZED / 0—1</span></div>

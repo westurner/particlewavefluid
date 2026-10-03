@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { AdditiveBlending, BoxGeometry, BufferAttribute, BufferGeometry, CatmullRomCurve3, DoubleSide, EdgesGeometry, Quaternion, TubeGeometry, Vector3 } from 'three';
-import { OrbitCameraControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { CameraPerspectiveToolbar, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { DEFAULT_CAMERA_VIEWS } from './lib/simulator-base.js';
 
 const LASER_COLORS = ['#76e3d4', '#f2b45f', '#8bb8ff', '#f27d79', '#c1e77d', '#d59df2', '#6fd7f0', '#f08fae'];
 const R2R_WEB_LENGTH = 6.1;
@@ -365,7 +366,7 @@ function Workpiece({ layout }) {
   );
 }
 
-function LaserScene({ layout, circuitId, modules, progress, wavelength, numericalAperture, orbitEnabled }) {
+function LaserScene({ layout, circuitId, modules, progress, wavelength, numericalAperture, orbitEnabled, viewMode, orbitPlaying, onUserInteraction }) {
   const paths = useMemo(() => makeCircuitPaths(layout, circuitId), [layout, circuitId]);
   const scannerFocus = useMemo(() => focusAlongPaths(paths, progress), [paths, progress]);
   return (
@@ -388,7 +389,7 @@ function LaserScene({ layout, circuitId, modules, progress, wavelength, numerica
         <sphereGeometry args={[0.13, 16, 16]} />
         <meshBasicMaterial color="#fff0c5" transparent opacity={0.88} blending={AdditiveBlending} depthWrite={false} />
       </mesh>
-      <OrbitCameraControls cameraParams={{ enabled: orbitEnabled, target: [0, 0.35, 0], minDistance: 5.8, maxDistance: 15, maxPolarAngle: Math.PI * 0.48 }} />
+      <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} cameraParams={{ enabled: orbitEnabled, target: [0, 0.35, 0], minDistance: 5.8, maxDistance: 15, maxPolarAngle: Math.PI * 0.48 }} onUserInteraction={onUserInteraction} />
     </>
   );
 }
@@ -492,6 +493,8 @@ export default function LongitudinalLaserArraySim({ onBack }) {
   const [running, setRunning] = useState(true);
   const [paramsVisible, setParamsVisible] = useState(true);
   const [orbitEnabled, setOrbitEnabled] = useState(true);
+  const [viewMode, setViewMode] = useState('ortho1');
+  const [orbitPlaying, setOrbitPlaying] = useState(true);
 
   useEffect(() => {
     if (!running) return undefined;
@@ -514,9 +517,10 @@ export default function LongitudinalLaserArraySim({ onBack }) {
     <SimulatorBase className="laser-app" headerClassName="laser-topbar" brandClassName="laser-brand" mark="L/A" markClassName="laser-mark" title="LONGITUDINAL ARRAY" subtitle="Continuous-wave holographic nanowrite lab" meta={`FIELD SYNTHESIS / ${String(modules.length).padStart(2, '0')} CHANNELS`} metaClassName="laser-top-meta" metaContentClassName="laser-top-description" homeUrl="/" onHome={onBack} homeClassName="laser-back">
       <div className="laser-scene" data-layout={layout} data-laser-count={modules.length} data-active-lasers={activeCount} data-write-progress={progress}>
         <Canvas camera={{ position: [7.2, 6.2, 9.4], fov: 46, near: 0.1, far: 80 }} dpr={[1, 1.5]} gl={{ antialias: true, powerPreference: 'high-performance' }}>
-          <LaserScene layout={layout} circuitId={circuitId} modules={modules} progress={progress} wavelength={wavelength} numericalAperture={numericalAperture} orbitEnabled={orbitEnabled} />
+          <LaserScene layout={layout} circuitId={circuitId} modules={modules} progress={progress} wavelength={wavelength} numericalAperture={numericalAperture} orbitEnabled={orbitEnabled} viewMode={viewMode} orbitPlaying={orbitPlaying} onUserInteraction={() => setViewMode(null)} />
         </Canvas>
       </div>
+      <CameraPerspectiveToolbar className="simulator-perspective-toolbar" modesClassName="simulator-perspective-modes" views={DEFAULT_CAMERA_VIEWS} viewMode={viewMode} orbitPlaying={orbitPlaying} onViewChange={setViewMode} onToggleOrbit={() => setOrbitPlaying((value) => !value)} />
       <section className="laser-title">
         <p>HOLOGRAPHIC EXPOSURE / {layout === 'block' ? 'VOLUME' : layout === 'wafer' ? 'PLANAR' : 'ROLL-TO-ROLL'}</p>
         <h1>Converge.<br />Write the circuit.</h1>

@@ -8,7 +8,8 @@ import { calculateFocusBeamDirection, calculatePlasmaFocusBeam, PLASMA_FOCUS_ION
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
 import { ColorParamControl, HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
-import { OrbitCameraControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { CameraPerspectiveToolbar, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { DEFAULT_CAMERA_VIEWS } from './lib/simulator-base.js';
 import { QUANTUM_TRANSPORT_OPTIONS, quantumTransportIndex } from './mechanicsModels.js';
 
 const DEFAULT_PLASMA_COLOR = '#ff4fa3';
@@ -1432,10 +1433,6 @@ function PlasmaParticles({ configuration, model, onGpuError, focusedAnnotation }
   return <points geometry={geometry} material={material} scale={configuration.vesselScale ?? 1} rotation={[0, MathUtils.degToRad(configuration.fieldTilt ?? 0), 0]} visible={configuration.showPlasma} renderOrder={20} frustumCulled={false} />;
 }
 
-function ReactorControls({ controlsRef }) {
-  return <OrbitCameraControls ref={controlsRef} cameraParams={{ minDistance: 9, maxDistance: 38, target: [0, 0, 0] }} />;
-}
-
 function ReactorCameraFrame({ controlsRef, parametersVisible }) {
   const { camera, size } = useThree();
   const targetRef = useRef(new Vector3(0, 0, 0));
@@ -1463,7 +1460,7 @@ function ReactorCameraFrame({ controlsRef, parametersVisible }) {
   });
 }
 
-function ReactorScene({ configuration, onGpuError, parametersVisible, focusedAnnotation, onHoverAnnotation, onToggleAnnotation }) {
+function ReactorScene({ configuration, onGpuError, parametersVisible, focusedAnnotation, onHoverAnnotation, onToggleAnnotation, viewMode, orbitPlaying, onUserInteraction }) {
   const deviceGroupRef = useRef();
   const controlsRef = useRef();
   const model = useMemo(() => calculateFrcModel(configuration), [configuration]);
@@ -1569,7 +1566,7 @@ function ReactorScene({ configuration, onGpuError, parametersVisible, focusedAnn
         {configuration.showAxis && <FieldAxis model={model} scale={scale} tilt={configuration.fieldTilt} />}
       </group>
       <gridHelper args={[36, 18, '#2b5b5a', '#153434']} position={[0, -5.2, 0]} />
-      <ReactorControls controlsRef={controlsRef} />
+      <PerspectiveOrbitControls controlsRef={controlsRef} views={DEFAULT_CAMERA_VIEWS} viewMode={viewMode} orbitPlaying={orbitPlaying} cameraParams={{ minDistance: 9, maxDistance: 38, target: [0, 0, 0] }} onUserInteraction={onUserInteraction} />
       <ReactorCameraFrame controlsRef={controlsRef} parametersVisible={parametersVisible} />
     </>
   );
@@ -1914,6 +1911,8 @@ export default function FrcFusionSim({ onBack }) {
   const { value: configuration, commit, load, canUndo, canRedo, undo, redo } = editor;
   const [editing, setEditing] = useState(false);
   const [parametersVisible, setParametersVisible] = useState(true);
+  const [viewMode, setViewMode] = useState('front');
+  const [orbitPlaying, setOrbitPlaying] = useState(true);
   const [gpuError, setGpuError] = useState('');
   const [hoveredAnnotation, setHoveredAnnotation] = useState(null);
   const [pinnedAnnotation, setPinnedAnnotation] = useState(null);
@@ -1961,9 +1960,9 @@ export default function FrcFusionSim({ onBack }) {
 
   return (
     <SimulatorBase className="frc-app" headerClassName="frc-topbar" brandClassName="frc-brand" mark="FRC" markClassName="frc-mark" title="FUSION DEVICE LAB" subtitle="Field-reversed configuration / phase 02" meta={<><span>PHYSICAL MODEL</span><span>GPGPU TRANSPORT ACTIVE</span></>} metaClassName="frc-header-actions" metaContentClassName="frc-top-meta" onHome={onBack} homeClassName="frc-back-button">
-      <div className="frc-scene"><Canvas camera={{ position: [0, 0, 22], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><ReactorScene configuration={configuration} onGpuError={setGpuError} parametersVisible={parametersVisible} focusedAnnotation={focusedAnnotation} onHoverAnnotation={setHoveredAnnotation} onToggleAnnotation={toggleAnnotationFocus} /></Canvas></div>
+      <div className="frc-scene"><Canvas camera={{ position: [0, 0, 22], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><ReactorScene configuration={configuration} onGpuError={setGpuError} parametersVisible={parametersVisible} focusedAnnotation={focusedAnnotation} onHoverAnnotation={setHoveredAnnotation} onToggleAnnotation={toggleAnnotationFocus} viewMode={viewMode} orbitPlaying={orbitPlaying} onUserInteraction={() => setViewMode(null)} /></Canvas></div>
       <section className="frc-title"><p>Transparent reactor study</p><h1>Shape the vessel.<br />Read the field.</h1><span>GPU plasma transport is active inside the device. Kinetic solver dynamics work follows in phase 03.</span></section>
-      <nav className="frc-view-toolbar"><button type="button" onClick={() => setParametersVisible((visible) => !visible)}>{parametersVisible ? 'Hide params' : 'Show params'}</button><span>ORBIT / DEVICE SCALE 1:{configuration.vesselScale.toFixed(2)}</span></nav>
+      <CameraPerspectiveToolbar className="frc-view-toolbar" modesClassName="simulator-perspective-modes" views={DEFAULT_CAMERA_VIEWS} viewMode={viewMode} orbitPlaying={orbitPlaying} onViewChange={setViewMode} onToggleOrbit={() => setOrbitPlaying((value) => !value)} controls={<><button type="button" onClick={() => setParametersVisible((visible) => !visible)}>{parametersVisible ? 'Hide params' : 'Show params'}</button><span>DEVICE SCALE 1:{configuration.vesselScale.toFixed(2)}</span></>} />
       {configuration.showKeyReadouts !== false && <FrcKeyReadouts model={model} />}
       {parametersVisible && <FrcPanel configuration={configuration} model={model} gpuError={gpuError} onChange={updateConfiguration} onHide={() => setParametersVisible(false)} editing={editing} onEditing={setEditing} canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} onReset={() => load(INITIAL_CONFIGURATION)} />}
       <div className="frc-footer"><span>GEOMETRY / COILS / SEPARATRIX</span><span>BETA {Math.round(model.beta * 100)}% / CONFINEMENT {Math.round(model.confinement * 100)}%</span></div>

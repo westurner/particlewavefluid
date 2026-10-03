@@ -1,9 +1,10 @@
 import { ParamSelect, YamlTextArea } from './ParamControls.jsx';
-import { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { OrbitControls } from '@react-three/drei';
+import { useThree } from '@react-three/fiber';
 import { NumericParamControl } from './ParamControls.jsx';
 import { cloneState, statesEqual } from './simulation-state.js';
-import { appendJournalEntry, CAMERA_WHEEL_MODE_OPTIONS, createOrbitCameraParams, rewindJournal, snapshotAtJournalTime } from './simulator-base.js';
+import { appendJournalEntry, CAMERA_WHEEL_MODE_OPTIONS, createCameraViews, createOrbitCameraParams, DEFAULT_CAMERA_VIEWS, rewindJournal, snapshotAtJournalTime } from './simulator-base.js';
 
 export const OrbitCameraControls = forwardRef(function OrbitCameraControls({ cameraParams, ...props }, ref) {
   const cameraParamsKey = JSON.stringify(cameraParams);
@@ -11,15 +12,57 @@ export const OrbitCameraControls = forwardRef(function OrbitCameraControls({ cam
   return <OrbitControls ref={ref} makeDefault enableDamping {...stableCameraParams} {...props} />;
 });
 
-export function CameraPerspectiveToolbar({ views, viewMode, onViewChange, className = 'attractor-view-toolbar', modesClassName = 'attractor-view-modes', controls }) {
+export function CameraPerspectiveToolbar({ views = DEFAULT_CAMERA_VIEWS, viewMode, onViewChange, orbitPlaying = true, onToggleOrbit = () => {}, className = 'simulator-perspective-toolbar', modesClassName = 'simulator-perspective-modes', controls }) {
+  const selectView = (id) => {
+    onViewChange(id);
+    if (id === 'orbital' && !orbitPlaying) onToggleOrbit();
+  };
   return (
     <nav className={className} aria-label="Camera views">
       <div className={modesClassName} role="group" aria-label="Select camera perspective">
-        {views.map((view) => <button key={view.id} type="button" className={viewMode === view.id ? 'active' : ''} aria-pressed={viewMode === view.id} onClick={() => onViewChange(view.id)}>{view.label}</button>)}
+        {views.map((view) => <span className="camera-view-option" key={view.id}>
+          <button type="button" className={viewMode === view.id ? 'active' : ''} aria-pressed={viewMode === view.id} onClick={() => selectView(view.id)}>{view.label}</button>
+          {view.id === 'orbital' && viewMode === 'orbital' && <button type="button" className="camera-orbit-play-toggle" aria-label={orbitPlaying ? 'Pause orbit' : 'Play orbit'} title={orbitPlaying ? 'Pause orbital tracking' : 'Play orbital tracking'} onClick={onToggleOrbit}>{orbitPlaying ? 'Pause' : 'Play'}</button>}
+        </span>)}
       </div>
       {controls}
     </nav>
   );
+}
+
+export function PerspectiveOrbitControls({ viewMode, orbitPlaying, views = DEFAULT_CAMERA_VIEWS, cameraParams = {}, onUserInteraction, controlsRef: forwardedControlsRef, children }) {
+  const { camera } = useThree();
+  const controlsRef = useRef(null);
+  const assignControlsRef = useCallback((instance) => {
+    controlsRef.current = instance;
+    if (typeof forwardedControlsRef === 'function') forwardedControlsRef(instance);
+    else if (forwardedControlsRef) forwardedControlsRef.current = instance;
+  }, [forwardedControlsRef]);
+  const controlsKey = JSON.stringify(cameraParams);
+  const stableCameraParams = useMemo(() => createOrbitCameraParams(cameraParams), [controlsKey]);
+  const viewKey = JSON.stringify(views);
+  const stableViews = useMemo(() => views, [viewKey]);
+  const orbitTargetKey = JSON.stringify(stableCameraParams.target);
+
+  useEffect(() => {
+    if (!viewMode || viewMode === 'orbital') return;
+    const view = stableViews.find((entry) => entry.id === viewMode);
+    if (!view?.position) return;
+    camera.position.fromArray(view.position);
+    const target = view.target ?? stableCameraParams.target;
+    controlsRef.current?.target.fromArray(target);
+    camera.lookAt(...target);
+    controlsRef.current?.update();
+  }, [camera, orbitTargetKey, stableCameraParams.target, stableViews, viewMode]);
+
+  return <>
+    <OrbitCameraControls
+      ref={assignControlsRef}
+      cameraParams={{ ...stableCameraParams, autoRotate: viewMode === 'orbital' && orbitPlaying }}
+      onStart={() => onUserInteraction?.()}
+    />
+    {children}
+  </>;
 }
 
 export function OrbitCameraSettings({ configuration, onChange, className = 'attractor-details', rangeClassName = 'attractor-control', selectClassName = 'attractor-select' }) {

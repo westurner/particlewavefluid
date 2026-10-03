@@ -195,3 +195,41 @@ test('Longitudinal laser array uses the shared 3D base and orbit controls', asyn
   assert.equal(await page.locator('.laser-scene canvas').count(), 1);
   assert.deepEqual(errors, []);
 });
+
+test('all 3D simulators expose perspectives and pauseable orbital tracking', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+  const url = new URL(baseUrl);
+  url.searchParams.set('e2e', '1');
+  await page.goto(url.toString(), { waitUntil: 'domcontentloaded' });
+
+  for (const index of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12]) {
+    await page.getByRole('button', { name: new RegExp(`${String(index).padStart(2, '0')} \/ LOAD FIELD`) }).click();
+    const toolbar = page.locator('nav[aria-label="Camera views"]');
+    await toolbar.waitFor({ state: 'visible' });
+    const front = toolbar.getByRole('button', { name: 'Front', exact: true });
+    await front.click();
+    assert.equal(await front.getAttribute('aria-pressed'), 'true', `simulator ${index} should select Front`);
+    const orbital = toolbar.getByRole('button', { name: 'Orbital tracking', exact: true });
+    await orbital.click();
+    assert.equal(await orbital.getAttribute('aria-pressed'), 'true', `simulator ${index} should select orbital tracking`);
+    const pauseOrbit = toolbar.getByRole('button', { name: 'Pause orbit', exact: true });
+    assert.equal(await pauseOrbit.isVisible(), true, `simulator ${index} should show orbital pause`);
+    await pauseOrbit.click();
+    const playOrbit = toolbar.getByRole('button', { name: 'Play orbit', exact: true });
+    assert.equal(await playOrbit.isVisible(), true, `simulator ${index} should show orbital play after pausing`);
+    await playOrbit.click();
+    assert.equal(await toolbar.getByRole('button', { name: 'Pause orbit', exact: true }).isVisible(), true);
+    await page.getByRole('link', { name: 'Lab menu' }).click();
+    await page.locator('.sqg-loader').waitFor({ state: 'visible' });
+  }
+
+  await page.getByRole('button', { name: /11 \/ LOAD FIELD/ }).click();
+  assert.equal(await page.locator('.signal-app').getAttribute('data-simulator-mode'), 'non-3d');
+  assert.equal(await page.locator('nav[aria-label="Camera views"]').count(), 0);
+  assert.deepEqual(errors, []);
+});
