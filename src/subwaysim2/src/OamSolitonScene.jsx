@@ -110,12 +110,14 @@ function SignalRails() {
   </mesh>);
 }
 
-function SolitonField({ input, output, operator, running, simulationSpeed, signalOpacity, amplitudeSizeVariation, modeA, modeB, angleRadians, railProbabilities }) {
+function SolitonField({ input, output, operator, running, simulationSpeed, signalOpacity, amplitudeSizeVariation, modeA, modeB, angleRadians, quditDimension, railProbabilities }) {
   const timeRef = useRef(0);
   const { camera, size } = useThree();
   const compactViewport = size.width < 650;
   const matrix = useMemo(() => getOamOperatorMatrix(operator, angleRadians), [angleRadians, operator]);
-  const operatorName = OAM_OPERATOR_OPTIONS.find(({ value }) => value === operator)?.label.toUpperCase() ?? 'OPERATOR';
+  const operatorMetadata = OAM_OPERATOR_OPTIONS.find(({ value }) => value === operator);
+  const operatorType = operatorMetadata?.type === 'ternary' ? '3Q' : operatorMetadata?.type === 'binary' ? 'Q×Qd' : '1Q';
+  const operatorName = operatorMetadata ? `${operatorType} · ${operatorMetadata.shortName}${operatorMetadata.type === 'binary' || operatorMetadata.type === 'ternary' ? ` · m=${quditDimension}` : ''}` : 'OPERATOR';
 
   useEffect(() => {
     if (!camera.isPerspectiveCamera) return;

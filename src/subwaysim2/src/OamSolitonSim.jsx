@@ -2,11 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
 import { SimulatorBase } from './lib/SimulatorBase.jsx';
 import OamSolitonScene from './OamSolitonScene.jsx';
-import { applyOamOperator, createOamInputState, getOamOperatorMatrix, measureOamState, OAM_MODES, OAM_OPERATOR_OPTIONS } from './oamSolitonModel.js';
+import { applyOamOperator, createOamInputState, getActiveOamModes, getOamOperatorMatrix, getQuantumOperatorMatrix, measureOamState, OAM_MODES, OAM_OPERATOR_OPTIONS, QUDIT_DIMENSIONS, QUANTUM_OPERATOR_SCHEMA } from './oamSolitonModel.js';
 
 const MODE_OPTIONS = OAM_MODES.map((mode) => ({ value: mode, label: `ℓ = ${mode}` }));
 const MODE_COLORS = ['#e69a5b', '#72b9e8', '#df789b', '#8dd59d', '#bd9be9', '#edca68', '#64d5ce'];
-const OPERATOR_MARKS = { 'beam-splitter': 'BS', 'phase-shift': 'Rφ', hadamard: 'H', swap: 'X', 'oam-rotation': 'Rℓ', identity: 'I' };
+const OPERATOR_MARKS = { 'beam-splitter': 'BS', 'phase-shift': 'Pφ', hadamard: 'H', swap: 'X', 'pauli-x': 'X', 'pauli-y': 'Y', 'pauli-z': 'Z', 'rotation-x': 'Rx', 'rotation-y': 'Ry', 'rotation-z': 'Rz', 'phase-s': 'S', 'phase-t': 'T', 'oam-rotation': 'Rℓ', identity: 'I', 'controlled-oam-sum': 'Σ', 'controlled-oam-phase': 'Cφ', cnot: 'CX', cz: 'CZ', toffoli: 'CCX' };
 const BUS_SIGNAL_START_X = 55;
 const BUS_GATE_START_X = 434;
 const BUS_GATE_END_X = 566;
@@ -26,13 +26,23 @@ function smoothStep(value) {
   return clamped * clamped * (3 - 2 * clamped);
 }
 
-function branchCoefficient(operator, matrix, mode, angleRadians, outputRail, inputRail) {
+function branchCoefficient(operator, matrix, mode, angleRadians, outputRail, inputRail, quditDimension) {
+  if (['controlled-oam-sum', 'controlled-oam-phase', 'cnot', 'cz', 'toffoli'].includes(operator)) {
+    if (outputRail !== inputRail) return { re: 0, im: 0 };
+    const activeModes = getActiveOamModes(quditDimension);
+    const level = activeModes.indexOf(mode);
+    if (operator === 'controlled-oam-phase' && inputRail === 1 && level >= 0) {
+      return { re: Math.cos(angleRadians * level), im: Math.sin(angleRadians * level) };
+    }
+    if (operator === 'cz' && inputRail === 1 && level === 1) return { re: -1, im: 0 };
+    return { re: 1, im: 0 };
+  }
   if (operator !== 'oam-rotation') return matrix[outputRail][inputRail];
   if (outputRail !== inputRail) return { re: 0, im: 0 };
   return { re: Math.cos(mode * angleRadians), im: Math.sin(mode * angleRadians) };
 }
 
-function wavePath(value, orbitalMode, inputY, outputY, coefficient, elapsed, pulseOffset) {
+function wavePath(value, orbitalMode, outputOrbitalMode, inputY, outputY, coefficient, elapsed, pulseOffset) {
   const amplitude = Math.hypot(value.re, value.im);
   const coefficientMagnitude = Math.hypot(coefficient.re, coefficient.im);
   if (amplitude < 0.004 || coefficientMagnitude < 0.01) return '';
@@ -47,24 +57,38 @@ function wavePath(value, orbitalMode, inputY, outputY, coefficient, elapsed, pul
     const gateProgress = smoothStep((x - BUS_GATE_START_X) / (BUS_GATE_END_X - BUS_GATE_START_X));
     const routeY = inputY + (outputY - inputY) * gateProgress;
     const routeAmplitude = 1 + (coefficientMagnitude - 1) * gateProgress;
-    const carrier = (x - BUS_SIGNAL_START_X) * 0.14 + inputPhase + orbitalMode * 0.42 + operatorPhase * gateProgress - elapsed * 1.8;
+    const currentOrbitalMode = orbitalMode + (outputOrbitalMode - orbitalMode) * gateProgress;
+    const carrier = (x - BUS_SIGNAL_START_X) * 0.14 + inputPhase + currentOrbitalMode * 0.42 + operatorPhase * gateProgress - elapsed * 1.8;
     const y = routeY + Math.sin(carrier) * Math.min(amplitude * routeAmplitude, 1.45) * 25 * envelope;
     points.push(`${x.toFixed(1)},${y.toFixed(1)}`);
   }
   return `M ${points.join(' L ')}`;
 }
 
-function WaveComponents({ state, inputRail, inputYs, outputYs, operator, matrix, angleRadians, elapsed, opacity, lineWidth }) {
+function targetOamMode(operator, inputRail, orbitalMode, quditDimension) {
+  const activeModes = getActiveOamModes(quditDimension);
+  const activeIndex = activeModes.indexOf(orbitalMode);
+  if (activeIndex < 0) return orbitalMode;
+  if (inputRail !== 1) return orbitalMode;
+  if (operator === 'controlled-oam-sum') return activeModes[(activeIndex + 1) % activeModes.length];
+  if (operator === 'cnot' && activeIndex < 2) return activeModes[1 - activeIndex];
+  if (operator === 'toffoli' && (activeIndex === 2 || activeIndex === 3)) return activeModes[5 - activeIndex];
+  return orbitalMode;
+}
+
+function WaveComponents({ state, inputRail, inputYs, outputYs, operator, matrix, angleRadians, quditDimension, elapsed, opacity, lineWidth }) {
   return OAM_MODES.flatMap((mode, modeIndex) => [0, 1].map((outputRail) => {
-    const coefficient = branchCoefficient(operator, matrix, mode, angleRadians, outputRail, inputRail);
+    const coefficient = branchCoefficient(operator, matrix, mode, angleRadians, outputRail, inputRail, quditDimension);
     const coefficientMagnitude = Math.hypot(coefficient.re, coefficient.im);
-    const path = wavePath(state[modeIndex][inputRail], mode, inputYs[inputRail], outputYs[outputRail], coefficient, elapsed, inputRail * 24 + modeIndex * 5);
+    const outputMode = targetOamMode(operator, inputRail, mode, quditDimension);
+    const path = wavePath(state[modeIndex][inputRail], mode, outputMode, inputYs[inputRail], outputYs[outputRail], coefficient, elapsed, inputRail * 24 + modeIndex * 5);
     return path && <path
       key={`${inputRail}:${outputRail}:${mode}`}
       className="oam-signal-branch"
       data-input-rail={inputRail}
       data-output-rail={outputRail}
       data-oam-mode={mode}
+      data-output-oam-mode={outputMode}
       d={path}
       stroke={MODE_COLORS[modeIndex]}
       strokeWidth={lineWidth}
@@ -73,10 +97,10 @@ function WaveComponents({ state, inputRail, inputYs, outputYs, operator, matrix,
   }));
 }
 
-function TravelingPackets({ input, inputYs, outputYs, operator, matrix, angleRadians, elapsed, opacity }) {
+function TravelingPackets({ input, inputYs, outputYs, operator, matrix, angleRadians, quditDimension, elapsed, opacity }) {
   const travelLength = BUS_SIGNAL_END_X - BUS_SIGNAL_START_X - 38;
   return input.flatMap((pair, modeIndex) => [0, 1].flatMap((inputRail) => [0, 1].map((outputRail) => {
-    const coefficient = branchCoefficient(operator, matrix, OAM_MODES[modeIndex], angleRadians, outputRail, inputRail);
+    const coefficient = branchCoefficient(operator, matrix, OAM_MODES[modeIndex], angleRadians, outputRail, inputRail, quditDimension);
     const branchMagnitude = Math.hypot(coefficient.re, coefficient.im);
     const signalMagnitude = Math.hypot(pair[inputRail].re, pair[inputRail].im);
     if (branchMagnitude < 0.01 || signalMagnitude < 0.01) return null;
@@ -90,6 +114,7 @@ function TravelingPackets({ input, inputYs, outputYs, operator, matrix, angleRad
       data-input-rail={inputRail}
       data-output-rail={outputRail}
       data-oam-mode={OAM_MODES[modeIndex]}
+      data-output-oam-mode={targetOamMode(operator, inputRail, OAM_MODES[modeIndex], quditDimension)}
       cx={x}
       cy={y}
       r={2 + Math.min(signalMagnitude * branchMagnitude, 1.5) * 1.6}
@@ -105,16 +130,71 @@ function formatComplex({ re, im }) {
   return `${real}${imaginary}`;
 }
 
-function operatorEquation(operator, matrix, angleRadians, orbitalMode) {
+function operatorEquation(operator, matrix, angleRadians, orbitalMode, quditDimension = OAM_MODES.length) {
+  if (operator === 'controlled-oam-sum') return `Q ⊗ OAM${quditDimension}: |1,m⟩ → |1,(m+1) mod ${quditDimension}⟩`;
+  if (operator === 'controlled-oam-phase') return `Q ⊗ OAM${quditDimension}: |1,m⟩ → e^(imθ)|1,m⟩ · θ = ${phaseText(angleRadians)}`;
+  if (operator === 'cnot') return `Q ⊗ OAM${quditDimension}: |1,0⟩ ↔ |1,1⟩`;
+  if (operator === 'cz') return `Q ⊗ OAM${quditDimension}: |1,1⟩ → −|1,1⟩`;
+  if (operator === 'toffoli') return `CCX: |1,2⟩ ↔ |1,3⟩ · m = ${quditDimension}`;
+  if (operator === 'cnot') return `Q ⊗ OAM${quditDimension}: |1,0⟩ ↔ |1,1⟩`;
+  if (operator === 'cz') return `Q ⊗ OAM${quditDimension}: |1,1⟩ → −|1,1⟩`;
+  if (operator === 'toffoli') return `CCX: |1,2⟩ ↔ |1,3⟩ · m = ${quditDimension}`;
   if (operator === 'oam-rotation') return `Uℓ = e^(iℓφ) I₂ · φ = ${phaseText(angleRadians)} · active ℓ = ${orbitalMode}`;
   const entries = matrix.flat().map(formatComplex);
   return `U = [ ${entries[0]}  ${entries[1]} ; ${entries[2]}  ${entries[3]} ]`;
 }
 
-function BusDiagram({ input, output, operator, matrix, angleRadians, elapsed, settings, signalOpacity, signalLineWidth }) {
+function formatOperatorAttribute(value) {
+  if (value === null || value === undefined) return 'Fixed';
+  if (Array.isArray(value)) return value.length ? value.join('; ') : 'None';
+  if (typeof value === 'object') return `${value.name} (${value.symbol}), ${value.min} to ${value.max} ${value.unit}`;
+  return String(value);
+}
+
+function matrixBasisLabel(index, quditDimension) {
+  if (quditDimension === 1) return String(index);
+  return `${Math.floor(index / quditDimension)}:${index % quditDimension}`;
+}
+
+function SelectedOperatorMatrix({ operator, angleRadians, quditDimension, orbitalMode }) {
+  const matrix = useMemo(() => getQuantumOperatorMatrix(operator, { angleRadians, quditDimension, orbitalMode }), [angleRadians, operator, orbitalMode, quditDimension]);
+  const metadata = OAM_OPERATOR_OPTIONS.find((entry) => entry.value === operator);
+  const basisDimension = operator === 'toffoli' || metadata?.type === 'binary' ? quditDimension : 1;
+  return <section className="oam-selected-matrix" aria-label={`${metadata?.label ?? operator} matrix representation`}>
+    <div className="oam-matrix-heading"><span>SELECTED MATRIX</span><span>{matrix.length} × {matrix.length}</span></div>
+    <div className="oam-matrix-scroll">
+      <table className="oam-matrix-table">
+        <thead><tr><th scope="col">out\in</th>{matrix.map((_, index) => <th key={index} scope="col">{matrixBasisLabel(index, basisDimension)}</th>)}</tr></thead>
+        <tbody>{matrix.map((row, rowIndex) => <tr key={rowIndex}>
+          <th scope="row">{matrixBasisLabel(rowIndex, basisDimension)}</th>
+          {row.map((entry, columnIndex) => <td key={columnIndex}>{formatComplex(entry)}</td>)}
+        </tr>)}</tbody>
+      </table>
+    </div>
+  </section>;
+}
+
+function OperatorCatalog() {
+  const attributes = QUANTUM_OPERATOR_SCHEMA.required;
+  return <details className="oam-operator-catalog">
+    <summary>Operator table ({OAM_OPERATOR_OPTIONS.length})</summary>
+    <div className="oam-catalog-scroll">
+      <table className="oam-catalog-table">
+        <thead><tr>{attributes.map((attribute) => <th key={attribute} scope="col">{attribute}</th>)}</tr></thead>
+        <tbody>{OAM_OPERATOR_OPTIONS.map((operator) => <tr key={operator.value}>
+          {attributes.map((attribute) => <td key={attribute}>{formatOperatorAttribute(operator[attribute])}</td>)}
+        </tr>)}</tbody>
+      </table>
+    </div>
+  </details>;
+}
+
+function BusDiagram({ input, output, operator, matrix, angleRadians, angleSymbol, quditDimension, elapsed, settings, signalOpacity, signalLineWidth }) {
   const inputYs = [177, 354];
   const outputYs = [177, 354];
   const operatorLabel = OPERATOR_MARKS[operator];
+  const metadata = OAM_OPERATOR_OPTIONS.find(({ value }) => value === operator);
+  const operatorType = metadata?.type === 'ternary' ? '3Q' : metadata?.type === 'binary' ? (operator.startsWith('controlled-oam-') ? 'Q×Qd' : '2Q') : '1Q';
   return <svg className="oam-diagram" viewBox="0 0 1000 490" role="img" aria-label="Two adjacent OAM soliton signals passing through a quantum operator on a photonic bus" preserveAspectRatio="xMidYMid meet">
     <defs>
       <pattern id="oam-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(137,190,184,.09)" strokeWidth="1" /></pattern>
@@ -137,13 +217,14 @@ function BusDiagram({ input, output, operator, matrix, angleRadians, elapsed, se
       const endY = outputYs[outputRail];
       return <path key={`${inputRail}:${outputRail}`} d={`M 434 ${startY} C 470 ${startY}, 530 ${endY}, 566 ${endY}`} className="oam-coupling" stroke={inputRail === outputRail ? '#72c7c0' : '#e6a45d'} strokeWidth={1 + magnitude * 2.4} opacity={0.2 + magnitude * 0.46} />;
     }))}
-    <WaveComponents state={input} inputRail={0} inputYs={inputYs} outputYs={outputYs} operator={operator} matrix={matrix} angleRadians={angleRadians} elapsed={elapsed} opacity={signalOpacity} lineWidth={signalLineWidth} />
-    <WaveComponents state={input} inputRail={1} inputYs={inputYs} outputYs={outputYs} operator={operator} matrix={matrix} angleRadians={angleRadians} elapsed={elapsed} opacity={signalOpacity} lineWidth={signalLineWidth} />
-    <rect x="449" y="222" width="102" height="88" rx="3" className="oam-gate" />
+    <WaveComponents state={input} inputRail={0} inputYs={inputYs} outputYs={outputYs} operator={operator} matrix={matrix} angleRadians={angleRadians} quditDimension={quditDimension} elapsed={elapsed} opacity={signalOpacity} lineWidth={signalLineWidth} />
+    <WaveComponents state={input} inputRail={1} inputYs={inputYs} outputYs={outputYs} operator={operator} matrix={matrix} angleRadians={angleRadians} quditDimension={quditDimension} elapsed={elapsed} opacity={signalOpacity} lineWidth={signalLineWidth} />
+    <rect x="419" y="212" width="162" height="108" rx="3" className="oam-gate" />
     <circle cx="500" cy="256" r="17" className="oam-gate-ring" />
     <text x="500" y="262" textAnchor="middle" className="oam-gate-mark">{operatorLabel}</text>
-    <text x="500" y="291" textAnchor="middle" className="oam-gate-name">{OAM_OPERATOR_OPTIONS.find(({ value }) => value === operator)?.label.toUpperCase()}</text>
-    <TravelingPackets input={input} inputYs={inputYs} outputYs={outputYs} operator={operator} matrix={matrix} angleRadians={angleRadians} elapsed={elapsed} opacity={signalOpacity} />
+    <text x="500" y="291" textAnchor="middle" className="oam-gate-name">{operatorType} · {metadata?.shortName}</text>
+    <text x="500" y="306" textAnchor="middle" className="oam-gate-angle">{angleSymbol ? `${angleSymbol} ${settings.angleDegrees}°` : ''}</text>
+    <TravelingPackets input={input} inputYs={inputYs} outputYs={outputYs} operator={operator} matrix={matrix} angleRadians={angleRadians} quditDimension={quditDimension} elapsed={elapsed} opacity={signalOpacity} />
     <text x="54" y="441" className="oam-axis-label">SOLITON ENVELOPE · SECH PROFILE</text>
     <text x="946" y="441" textAnchor="end" className="oam-axis-label">IDEAL LOSSLESS PROPAGATION</text>
   </svg>;
@@ -184,6 +265,7 @@ export default function OamSolitonSim({ onBack }) {
     modeB: -1,
     operator: 'beam-splitter',
     angleDegrees: 45,
+    quditDimension: OAM_MODES.length,
     simulationSpeed: 1,
     signalOpacity: 0.3,
     signalLineWidth: 2.5,
@@ -202,10 +284,33 @@ export default function OamSolitonSim({ onBack }) {
     modeA: settings.modeA,
     modeB: settings.modeB
   }), [settings.amplitudeA, settings.amplitudeB, settings.modeA, settings.modeB, settings.phaseA, settings.phaseB]);
-  const output = useMemo(() => applyOamOperator(input, { operator: settings.operator, angleRadians }), [angleRadians, input, settings.operator]);
+  const output = useMemo(() => applyOamOperator(input, { operator: settings.operator, angleRadians, quditDimension: settings.quditDimension }), [angleRadians, input, settings.operator, settings.quditDimension]);
   const measurement = useMemo(() => measureOamState(output), [output]);
   const matrix = useMemo(() => getOamOperatorMatrix(settings.operator, angleRadians), [angleRadians, settings.operator]);
+  const operatorMetadata = OAM_OPERATOR_OPTIONS.find(({ value }) => value === settings.operator);
+  const angleSymbol = operatorMetadata?.parameter?.symbol;
+  const binaryOperator = operatorMetadata?.type !== 'unary';
+  const inputModes = binaryOperator ? getActiveOamModes(settings.quditDimension) : OAM_MODES;
+  const modeOptions = inputModes.map((mode) => ({ value: mode, label: `ℓ = ${mode}` }));
   const update = (key, value) => setSettings((current) => ({ ...current, [key]: value }));
+  const updateOperator = (operator) => {
+    const metadata = OAM_OPERATOR_OPTIONS.find((entry) => entry.value === operator);
+    setSettings((current) => ({
+      ...current,
+      operator,
+      quditDimension: Math.max(current.quditDimension, metadata?.minimumQuditDimension ?? 2)
+    }));
+  };
+  const updateQuditDimension = (quditDimension) => {
+    const activeModes = getActiveOamModes(quditDimension);
+    const nearestMode = (currentMode) => activeModes.reduce((nearest, mode) => Math.abs(mode - currentMode) < Math.abs(nearest - currentMode) ? mode : nearest, activeModes[0]);
+    setSettings((current) => ({
+      ...current,
+      quditDimension,
+      modeA: activeModes.includes(current.modeA) ? current.modeA : nearestMode(current.modeA),
+      modeB: activeModes.includes(current.modeB) ? current.modeB : nearestMode(current.modeB)
+    }));
+  };
 
   useEffect(() => {
     if (!running || settings.viewMode !== 'bus' || settings.simulationSpeed <= 0) return undefined;
@@ -226,21 +331,21 @@ export default function OamSolitonSim({ onBack }) {
     <button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button>
   </div>} onHome={onBack}>
     {settings.viewMode === '3d' && <div className="oam-3d-field" role="img" aria-label="3D OAM soliton interference field" data-oam-simulation="3d">
-      <OamSolitonScene input={input} output={output} operator={settings.operator} running={running} simulationSpeed={settings.simulationSpeed} signalOpacity={settings.signalOpacity} amplitudeSizeVariation={settings.amplitudeSizeVariation} modeA={settings.modeA} modeB={settings.modeB} angleRadians={angleRadians} railProbabilities={measurement.railProbabilities} />
+      <OamSolitonScene input={input} output={output} operator={settings.operator} running={running} simulationSpeed={settings.simulationSpeed} signalOpacity={settings.signalOpacity} amplitudeSizeVariation={settings.amplitudeSizeVariation} modeA={settings.modeA} modeB={settings.modeB} angleRadians={angleRadians} quditDimension={settings.quditDimension} railProbabilities={measurement.railProbabilities} />
     </div>}
     <section className={`signal-workbench oam-workbench${settings.viewMode === '3d' ? ' is-3d' : ''}`}>
       <div className="signal-heading oam-heading"><span>DUAL-RAIL / OAM {-3}…+3 / COMPLEX AMPLITUDE</span><h1>Compose a soliton state.</h1><p>Set two coherent inputs, apply a unitary, and inspect the output mode probabilities.</p></div>
       {settings.viewMode !== '3d' && <div className="oam-stage">
         <div className="oam-stage-heading"><span>FIELD PROPAGATION</span><span className={running ? 'oam-live' : ''}>{running ? 'LIVE' : 'PAUSED'} <i /></span></div>
         {settings.viewMode === 'bus'
-          ? <BusDiagram input={input} output={output} operator={settings.operator} matrix={matrix} angleRadians={angleRadians} elapsed={elapsed} settings={settings} signalOpacity={settings.signalOpacity} signalLineWidth={settings.signalLineWidth} />
+          ? <BusDiagram input={input} output={output} operator={settings.operator} matrix={matrix} angleRadians={angleRadians} angleSymbol={angleSymbol} quditDimension={settings.quditDimension} elapsed={elapsed} settings={settings} signalOpacity={settings.signalOpacity} signalLineWidth={settings.signalLineWidth} />
           : <SpectrumDiagram output={output} />}
         <div className="oam-stage-footer">
-          <span>{operatorEquation(settings.operator, matrix, angleRadians, settings.modeA)}</span>
+          <span>{operatorEquation(settings.operator, matrix, angleRadians, settings.modeA, settings.quditDimension)}</span>
           <span>‖ψ‖² {measurement.totalIntensity.toFixed(3)}</span>
         </div>
       </div>}
-      {settings.viewMode === '3d' && <div className="oam-scene-readout"><span>{operatorEquation(settings.operator, matrix, angleRadians, settings.modeA)}</span><strong>‖ψ‖² {measurement.totalIntensity.toFixed(3)}</strong></div>}
+      {settings.viewMode === '3d' && <div className="oam-scene-readout"><span>{operatorEquation(settings.operator, matrix, angleRadians, settings.modeA, settings.quditDimension)}</span><strong>‖ψ‖² {measurement.totalIntensity.toFixed(3)}</strong></div>}
       <div className="oam-mode-legend" aria-label="OAM mode colors">
         {OAM_MODES.map((mode, index) => <span key={mode}><i style={{ background: MODE_COLORS[index] }} />ℓ {mode}</span>)}
       </div>
@@ -252,8 +357,8 @@ export default function OamSolitonSim({ onBack }) {
         <NumericParamControl className="signal-range" label="Signal B amplitude" value={settings.amplitudeB} min={0} max={1} step={0.01} onChange={(value) => update('amplitudeB', value)} />
       </div>
       <div className="oam-control-pair">
-        <ParamSelect className="signal-select" label="Input A mode" value={settings.modeA} options={MODE_OPTIONS} onChange={(value) => update('modeA', value)} />
-        <ParamSelect className="signal-select" label="Input B mode" value={settings.modeB} options={MODE_OPTIONS} onChange={(value) => update('modeB', value)} />
+        <ParamSelect className="signal-select" label="Input A mode" value={settings.modeA} options={modeOptions} onChange={(value) => update('modeA', value)} />
+        <ParamSelect className="signal-select" label="Input B mode" value={settings.modeB} options={modeOptions} onChange={(value) => update('modeB', value)} />
       </div>
       <div className="oam-control-pair">
         <NumericParamControl className="signal-range" label="Input A phase" value={settings.phaseA} min={-180} max={180} step={1} suffix="°" onChange={(value) => update('phaseA', value)} />
@@ -269,9 +374,15 @@ export default function OamSolitonSim({ onBack }) {
       <details className="oam-operator-controls" open>
         <summary>Quantum operator</summary>
         <ParamSelect className="signal-select" label="Visualization" value={settings.viewMode} options={VIEW_OPTIONS} onChange={(value) => update('viewMode', value)} />
-        <ParamSelect className="signal-select" label="Apply operator" value={settings.operator} options={OAM_OPERATOR_OPTIONS} onChange={(value) => update('operator', value)} />
-        <NumericParamControl className="signal-range" label={settings.operator === 'beam-splitter' ? 'Coupling angle' : 'Operator angle'} value={settings.angleDegrees} min={-180} max={180} step={1} suffix="°" disabled={settings.operator === 'identity' || settings.operator === 'swap' || settings.operator === 'hadamard'} onChange={(value) => update('angleDegrees', value)} />
-        <div className="oam-operator-equation">{operatorEquation(settings.operator, matrix, angleRadians, settings.modeA)}</div>
+        <ParamSelect className="signal-select" label="Apply operator" value={settings.operator} options={OAM_OPERATOR_OPTIONS} onChange={updateOperator} />
+        {binaryOperator && <>
+          <ParamSelect className="signal-select" label="OAM qudit dimension (m)" value={settings.quditDimension} options={QUDIT_DIMENSIONS.filter((dimension) => dimension >= operatorMetadata.minimumQuditDimension).map((dimension) => ({ value: dimension, label: `${dimension} levels` }))} onChange={updateQuditDimension} />
+          <p className="oam-register-note">{operatorMetadata.arity}-register operation · dual-rail qubit × {settings.quditDimension}-level OAM qudit</p>
+        </>}
+        {operatorMetadata.parameter && <NumericParamControl className="signal-range" label={operatorMetadata.parameter.name} value={settings.angleDegrees} min={operatorMetadata.parameter.min} max={operatorMetadata.parameter.max} step={1} suffix="°" onChange={(value) => update('angleDegrees', value)} />}
+        <div className="oam-operator-equation">{operatorEquation(settings.operator, matrix, angleRadians, settings.modeA, settings.quditDimension)}</div>
+        <SelectedOperatorMatrix operator={settings.operator} angleRadians={angleRadians} quditDimension={settings.quditDimension} orbitalMode={settings.modeA} />
+        <OperatorCatalog />
       </details>
       <details className="oam-output-details" open>
         <summary>Output measurement</summary>
