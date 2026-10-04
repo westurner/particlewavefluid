@@ -7,6 +7,10 @@ import { applyOamOperator, createOamInputState, getOamOperatorMatrix, measureOam
 const MODE_OPTIONS = OAM_MODES.map((mode) => ({ value: mode, label: `ℓ = ${mode}` }));
 const MODE_COLORS = ['#e69a5b', '#72b9e8', '#df789b', '#8dd59d', '#bd9be9', '#edca68', '#64d5ce'];
 const OPERATOR_MARKS = { 'beam-splitter': 'BS', 'phase-shift': 'Rφ', hadamard: 'H', swap: 'X', 'oam-rotation': 'Rℓ', identity: 'I' };
+const BUS_SIGNAL_START_X = 55;
+const BUS_GATE_START_X = 434;
+const BUS_GATE_END_X = 566;
+const BUS_SIGNAL_END_X = 946;
 const VIEW_OPTIONS = [
   { value: '3d', label: '3D soliton field' },
   { value: 'bus', label: '2D bus diagram' },
@@ -17,28 +21,82 @@ function phaseText(value) {
   return `${value >= 0 ? '+' : ''}${value.toFixed(2)} rad`;
 }
 
-function wavePath(value, orbitalMode, centerY, startX, endX, elapsed) {
+function smoothStep(value) {
+  const clamped = Math.max(0, Math.min(1, value));
+  return clamped * clamped * (3 - 2 * clamped);
+}
+
+function branchCoefficient(operator, matrix, mode, angleRadians, outputRail, inputRail) {
+  if (operator !== 'oam-rotation') return matrix[outputRail][inputRail];
+  if (outputRail !== inputRail) return { re: 0, im: 0 };
+  return { re: Math.cos(mode * angleRadians), im: Math.sin(mode * angleRadians) };
+}
+
+function wavePath(value, orbitalMode, inputY, outputY, coefficient, elapsed, pulseOffset) {
   const amplitude = Math.hypot(value.re, value.im);
-  if (amplitude < 0.004) return '';
-  const phase = Math.atan2(value.im, value.re);
-  const travelLength = Math.max(endX - startX - 38, 1);
-  const centerX = startX + 21 + (elapsed * 96) % travelLength;
+  const coefficientMagnitude = Math.hypot(coefficient.re, coefficient.im);
+  if (amplitude < 0.004 || coefficientMagnitude < 0.01) return '';
+  const inputPhase = Math.atan2(value.im, value.re);
+  const operatorPhase = Math.atan2(coefficient.im, coefficient.re);
+  const travelLength = Math.max(BUS_SIGNAL_END_X - BUS_SIGNAL_START_X - 38, 1);
+  const centerX = BUS_SIGNAL_START_X + 21 + (elapsed * 96 + pulseOffset) % travelLength;
   const points = [];
   for (let index = 0; index <= 76; index += 1) {
-    const x = startX + (endX - startX) * index / 76;
+    const x = BUS_SIGNAL_START_X + (BUS_SIGNAL_END_X - BUS_SIGNAL_START_X) * index / 76;
     const envelope = 1 / Math.cosh((x - centerX) / 45);
-    const carrier = (x - startX) * 0.14 + phase + orbitalMode * 0.42 - elapsed * 1.8;
-    const y = centerY + Math.sin(carrier) * Math.min(amplitude, 1.45) * 25 * envelope;
+    const gateProgress = smoothStep((x - BUS_GATE_START_X) / (BUS_GATE_END_X - BUS_GATE_START_X));
+    const routeY = inputY + (outputY - inputY) * gateProgress;
+    const routeAmplitude = 1 + (coefficientMagnitude - 1) * gateProgress;
+    const carrier = (x - BUS_SIGNAL_START_X) * 0.14 + inputPhase + orbitalMode * 0.42 + operatorPhase * gateProgress - elapsed * 1.8;
+    const y = routeY + Math.sin(carrier) * Math.min(amplitude * routeAmplitude, 1.45) * 25 * envelope;
     points.push(`${x.toFixed(1)},${y.toFixed(1)}`);
   }
   return `M ${points.join(' L ')}`;
 }
 
-function WaveComponents({ state, rail, y, startX, endX, elapsed, opacity, className = '' }) {
-  return OAM_MODES.map((mode, index) => {
-    const path = wavePath(state[index][rail], mode, y, startX, endX, elapsed);
-    return path && <path key={`${rail}:${mode}`} d={path} className={className} stroke={MODE_COLORS[index]} opacity={opacity} />;
-  });
+function WaveComponents({ state, inputRail, inputYs, outputYs, operator, matrix, angleRadians, elapsed, opacity, lineWidth }) {
+  return OAM_MODES.flatMap((mode, modeIndex) => [0, 1].map((outputRail) => {
+    const coefficient = branchCoefficient(operator, matrix, mode, angleRadians, outputRail, inputRail);
+    const coefficientMagnitude = Math.hypot(coefficient.re, coefficient.im);
+    const path = wavePath(state[modeIndex][inputRail], mode, inputYs[inputRail], outputYs[outputRail], coefficient, elapsed, inputRail * 24 + modeIndex * 5);
+    return path && <path
+      key={`${inputRail}:${outputRail}:${mode}`}
+      className="oam-signal-branch"
+      data-input-rail={inputRail}
+      data-output-rail={outputRail}
+      data-oam-mode={mode}
+      d={path}
+      stroke={MODE_COLORS[modeIndex]}
+      strokeWidth={lineWidth}
+      opacity={opacity * Math.min(1, coefficientMagnitude)}
+    />;
+  }));
+}
+
+function TravelingPackets({ input, inputYs, outputYs, operator, matrix, angleRadians, elapsed, opacity }) {
+  const travelLength = BUS_SIGNAL_END_X - BUS_SIGNAL_START_X - 38;
+  return input.flatMap((pair, modeIndex) => [0, 1].flatMap((inputRail) => [0, 1].map((outputRail) => {
+    const coefficient = branchCoefficient(operator, matrix, OAM_MODES[modeIndex], angleRadians, outputRail, inputRail);
+    const branchMagnitude = Math.hypot(coefficient.re, coefficient.im);
+    const signalMagnitude = Math.hypot(pair[inputRail].re, pair[inputRail].im);
+    if (branchMagnitude < 0.01 || signalMagnitude < 0.01) return null;
+    const pulseOffset = inputRail * 24 + modeIndex * 5;
+    const x = BUS_SIGNAL_START_X + 21 + (elapsed * 96 + pulseOffset) % travelLength;
+    const gateProgress = smoothStep((x - BUS_GATE_START_X) / (BUS_GATE_END_X - BUS_GATE_START_X));
+    const y = inputYs[inputRail] + (outputYs[outputRail] - inputYs[inputRail]) * gateProgress;
+    return <circle
+      key={`${inputRail}:${outputRail}:${OAM_MODES[modeIndex]}`}
+      className="oam-moving-packet"
+      data-input-rail={inputRail}
+      data-output-rail={outputRail}
+      data-oam-mode={OAM_MODES[modeIndex]}
+      cx={x}
+      cy={y}
+      r={2 + Math.min(signalMagnitude * branchMagnitude, 1.5) * 1.6}
+      fill={MODE_COLORS[modeIndex]}
+      opacity={opacity * Math.min(1, signalMagnitude * branchMagnitude)}
+    />;
+  })));
 }
 
 function formatComplex({ re, im }) {
@@ -53,7 +111,7 @@ function operatorEquation(operator, matrix, angleRadians, orbitalMode) {
   return `U = [ ${entries[0]}  ${entries[1]} ; ${entries[2]}  ${entries[3]} ]`;
 }
 
-function BusDiagram({ input, output, operator, matrix, elapsed, settings, signalOpacity }) {
+function BusDiagram({ input, output, operator, matrix, angleRadians, elapsed, settings, signalOpacity, signalLineWidth }) {
   const inputYs = [177, 354];
   const outputYs = [177, 354];
   const operatorLabel = OPERATOR_MARKS[operator];
@@ -79,16 +137,13 @@ function BusDiagram({ input, output, operator, matrix, elapsed, settings, signal
       const endY = outputYs[outputRail];
       return <path key={`${inputRail}:${outputRail}`} d={`M 434 ${startY} C 470 ${startY}, 530 ${endY}, 566 ${endY}`} className="oam-coupling" stroke={inputRail === outputRail ? '#72c7c0' : '#e6a45d'} strokeWidth={1 + magnitude * 2.4} opacity={0.2 + magnitude * 0.46} />;
     }))}
-    <WaveComponents state={input} rail={0} y={inputYs[0]} startX={55} endX={430} elapsed={elapsed} opacity={signalOpacity} />
-    <WaveComponents state={input} rail={1} y={inputYs[1]} startX={55} endX={430} elapsed={elapsed} opacity={signalOpacity} />
-    <WaveComponents state={output} rail={0} y={outputYs[0]} startX={570} endX={946} elapsed={elapsed} opacity={signalOpacity} />
-    <WaveComponents state={output} rail={1} y={outputYs[1]} startX={570} endX={946} elapsed={elapsed} opacity={signalOpacity} />
+    <WaveComponents state={input} inputRail={0} inputYs={inputYs} outputYs={outputYs} operator={operator} matrix={matrix} angleRadians={angleRadians} elapsed={elapsed} opacity={signalOpacity} lineWidth={signalLineWidth} />
+    <WaveComponents state={input} inputRail={1} inputYs={inputYs} outputYs={outputYs} operator={operator} matrix={matrix} angleRadians={angleRadians} elapsed={elapsed} opacity={signalOpacity} lineWidth={signalLineWidth} />
     <rect x="449" y="222" width="102" height="88" rx="3" className="oam-gate" />
     <circle cx="500" cy="256" r="17" className="oam-gate-ring" />
     <text x="500" y="262" textAnchor="middle" className="oam-gate-mark">{operatorLabel}</text>
     <text x="500" y="291" textAnchor="middle" className="oam-gate-name">{OAM_OPERATOR_OPTIONS.find(({ value }) => value === operator)?.label.toUpperCase()}</text>
-    <circle cx={76 + (elapsed * 96) % 337} cy={inputYs[0]} r="3" className="oam-travel-dot" />
-    <circle cx={591 + (elapsed * 96) % 337} cy={outputYs[1]} r="3" className="oam-travel-dot secondary" />
+    <TravelingPackets input={input} inputYs={inputYs} outputYs={outputYs} operator={operator} matrix={matrix} angleRadians={angleRadians} elapsed={elapsed} opacity={signalOpacity} />
     <text x="54" y="441" className="oam-axis-label">SOLITON ENVELOPE · SECH PROFILE</text>
     <text x="946" y="441" textAnchor="end" className="oam-axis-label">IDEAL LOSSLESS PROPAGATION</text>
   </svg>;
@@ -129,8 +184,9 @@ export default function OamSolitonSim({ onBack }) {
     modeB: -1,
     operator: 'beam-splitter',
     angleDegrees: 45,
-    simulationSpeed: 0,
-    signalOpacity: 0.2,
+    simulationSpeed: 1,
+    signalOpacity: 0.3,
+    signalLineWidth: 2.5,
     amplitudeSizeVariation: 1,
     viewMode: '3d'
   });
@@ -152,17 +208,13 @@ export default function OamSolitonSim({ onBack }) {
   const update = (key, value) => setSettings((current) => ({ ...current, [key]: value }));
 
   useEffect(() => {
-    if (!running || settings.viewMode !== 'bus') return undefined;
+    if (!running || settings.viewMode !== 'bus' || settings.simulationSpeed <= 0) return undefined;
     let frameId;
     let previousFrame = 0;
-    let lastUpdate = 0;
     const tick = (timestamp) => {
-      if (timestamp - lastUpdate >= 48) {
-        const delta = previousFrame ? Math.min((timestamp - previousFrame) / 1000, 0.08) : 0;
-        setElapsed((current) => current + delta * settings.simulationSpeed);
-        previousFrame = timestamp;
-        lastUpdate = timestamp;
-      }
+      const delta = previousFrame ? Math.min((timestamp - previousFrame) / 1000, 0.08) : 0;
+      if (delta > 0) setElapsed((current) => current + delta * settings.simulationSpeed);
+      previousFrame = timestamp;
       frameId = requestAnimationFrame(tick);
     };
     frameId = requestAnimationFrame(tick);
@@ -181,7 +233,7 @@ export default function OamSolitonSim({ onBack }) {
       {settings.viewMode !== '3d' && <div className="oam-stage">
         <div className="oam-stage-heading"><span>FIELD PROPAGATION</span><span className={running ? 'oam-live' : ''}>{running ? 'LIVE' : 'PAUSED'} <i /></span></div>
         {settings.viewMode === 'bus'
-          ? <BusDiagram input={input} output={output} operator={settings.operator} matrix={matrix} elapsed={elapsed} settings={settings} signalOpacity={settings.signalOpacity} />
+          ? <BusDiagram input={input} output={output} operator={settings.operator} matrix={matrix} angleRadians={angleRadians} elapsed={elapsed} settings={settings} signalOpacity={settings.signalOpacity} signalLineWidth={settings.signalLineWidth} />
           : <SpectrumDiagram output={output} />}
         <div className="oam-stage-footer">
           <span>{operatorEquation(settings.operator, matrix, angleRadians, settings.modeA)}</span>
@@ -211,7 +263,8 @@ export default function OamSolitonSim({ onBack }) {
         <summary>Signal motion and appearance</summary>
         <NumericParamControl className="signal-range" label="Simulation speed" value={settings.simulationSpeed} min={0} max={10} step={0.01} suffix="x" onChange={(value) => update('simulationSpeed', value)} />
         <NumericParamControl className="signal-range" label="Signal opacity" value={settings.signalOpacity} min={0} max={1} step={0.01} onChange={(value) => update('signalOpacity', value)} />
-        <NumericParamControl className="signal-range" label="Beam width vs amplitude" value={settings.amplitudeSizeVariation} min={0} max={5} step={0.01} suffix="x" onChange={(value) => update('amplitudeSizeVariation', value)} />
+        <NumericParamControl className="signal-range" label="Signal line width (2D)" value={settings.signalLineWidth} min={0.5} max={8} step={0.1} suffix="px" onChange={(value) => update('signalLineWidth', value)} />
+        <NumericParamControl className="signal-range" label="Beam width vs amplitude (3D)" value={settings.amplitudeSizeVariation} min={0} max={5} step={0.01} suffix="x" onChange={(value) => update('amplitudeSizeVariation', value)} />
       </details>
       <details className="oam-operator-controls" open>
         <summary>Quantum operator</summary>
