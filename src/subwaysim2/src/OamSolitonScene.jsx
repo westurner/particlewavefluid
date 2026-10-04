@@ -41,10 +41,11 @@ function createSolitonGeometry() {
   return geometry;
 }
 
-function SolitonBeam({ coefficients, rail, startX, endX, running, timeRef, pulseOffset = 0 }) {
+function SolitonBeam({ coefficients, rail, startX, endX, running, timeRef, signalOpacity, amplitudeSizeVariation, pulseOffset = 0 }) {
   const geometry = useMemo(createSolitonGeometry, []);
   const phaseColor = useMemo(() => new Color(), []);
   const totalAmplitude = coefficients.reduce((sum, value) => sum + Math.hypot(value.re, value.im), 0);
+  const amplitudeScale = Math.min(1.5, totalAmplitude) * amplitudeSizeVariation;
   const laneY = RAIL_HEIGHTS[rail];
 
   useEffect(() => () => geometry.dispose(), [geometry]);
@@ -56,7 +57,7 @@ function SolitonBeam({ coefficients, rail, startX, endX, running, timeRef, pulse
     const positions = positionAttribute.array;
     const colors = colorAttribute.array;
     const span = endX - startX;
-    const travelLength = Math.max(span - 1.4, 0.1);
+    const travelLength = Math.max(span - 38, 1);
     const pulseCenter = startX + 0.7 + ((timeRef.current * 0.82 + pulseOffset) % travelLength);
 
     for (let longitudinal = 0; longitudinal <= LONGITUDINAL_SEGMENTS; longitudinal += 1) {
@@ -80,7 +81,7 @@ function SolitonBeam({ coefficients, rail, startX, endX, running, timeRef, pulse
 
         const phase = Math.atan2(fieldImaginary, fieldReal);
         const localIntensity = Math.min(1, Math.hypot(fieldReal, fieldImaginary) / totalAmplitude) * envelope;
-        const radius = 0.13 + localIntensity * (0.025 + 0.065 * Math.cos(phase));
+        const radius = Math.max(0.025, 0.13 + localIntensity * amplitudeScale * (0.055 + 0.025 * Math.cos(phase)));
         const vertex = (longitudinal * (ANGULAR_SEGMENTS + 1) + angular) * 3;
         positions[vertex] = x;
         positions[vertex + 1] = laneY + Math.cos(theta) * radius;
@@ -98,7 +99,7 @@ function SolitonBeam({ coefficients, rail, startX, endX, running, timeRef, pulse
 
   if (totalAmplitude < 0.001) return null;
   return <mesh geometry={geometry} frustumCulled={false}>
-    <meshBasicMaterial vertexColors side={DoubleSide} transparent opacity={0.94} blending={AdditiveBlending} depthWrite={false} />
+    <meshBasicMaterial vertexColors side={DoubleSide} transparent opacity={signalOpacity} blending={AdditiveBlending} depthWrite={false} />
   </mesh>;
 }
 
@@ -109,7 +110,7 @@ function SignalRails() {
   </mesh>);
 }
 
-function SolitonField({ input, output, operator, running, modeA, modeB, angleRadians, railProbabilities }) {
+function SolitonField({ input, output, operator, running, simulationSpeed, signalOpacity, amplitudeSizeVariation, modeA, modeB, angleRadians, railProbabilities }) {
   const timeRef = useRef(0);
   const { camera, size } = useThree();
   const compactViewport = size.width < 650;
@@ -123,7 +124,7 @@ function SolitonField({ input, output, operator, running, modeA, modeB, angleRad
   }, [camera, compactViewport]);
 
   useFrame((_, delta) => {
-    if (running) timeRef.current += Math.min(delta, 0.05);
+    if (running) timeRef.current += Math.min(delta, 0.05) * simulationSpeed;
   });
 
   return <>
@@ -142,6 +143,8 @@ function SolitonField({ input, output, operator, running, modeA, modeB, angleRad
       endX={RAIL_ENDS[0]}
       running={running}
       timeRef={timeRef}
+      signalOpacity={signalOpacity}
+      amplitudeSizeVariation={amplitudeSizeVariation}
       pulseOffset={rail * 0.16}
     />)}
     {RAIL_HEIGHTS.map((_, rail) => <SolitonBeam
@@ -152,6 +155,8 @@ function SolitonField({ input, output, operator, running, modeA, modeB, angleRad
       endX={RAIL_ENDS[1]}
       running={running}
       timeRef={timeRef}
+      signalOpacity={signalOpacity}
+      amplitudeSizeVariation={amplitudeSizeVariation}
       pulseOffset={rail * 0.16}
     />)}
     {matrix.map((row, outputRail) => row.map((coefficient, inputRail) => {
