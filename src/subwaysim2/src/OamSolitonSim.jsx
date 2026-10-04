@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
-import { SimulatorBase } from './lib/SimulatorBase.jsx';
+import { NumericParamControl, ParamSelect, SimulatorParameterControls } from './lib/ParamControls.jsx';
+import { CameraPerspectiveToolbar, SimulatorBase, SimulatorPresetControls, SimulatorViewParameters } from './lib/SimulatorBase.jsx';
 import OamSolitonScene from './OamSolitonScene.jsx';
 import { applyOamOperator, createOamInputState, getActiveOamModes, getOamOperatorMatrix, getQuantumOperatorMatrix, measureOamState, OAM_MODES, OAM_OPERATOR_OPTIONS, QUDIT_DIMENSIONS, QUANTUM_OPERATOR_SCHEMA } from './oamSolitonModel.js';
+import { createCameraViews, DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, DEFAULT_SIMULATOR_3D_PARAMETERS, readPresetLibrary, writePresetLibrary } from './lib/simulator-base.js';
+import PaletteParamControl from './lib/PaletteParamControl.jsx';
+import { sampleColorPalette } from './lib/color-palettes.js';
+import { SOLITON_GATE_END_X, SOLITON_OUTPUT_END_X } from './solitonMotion.js';
 
 const MODE_OPTIONS = OAM_MODES.map((mode) => ({ value: mode, label: `ℓ = ${mode}` }));
 const MODE_COLORS = ['#e69a5b', '#72b9e8', '#df789b', '#8dd59d', '#bd9be9', '#edca68', '#64d5ce'];
@@ -11,14 +15,59 @@ const BUS_SIGNAL_START_X = 55;
 const BUS_GATE_START_X = 434;
 const BUS_GATE_END_X = 566;
 const BUS_SIGNAL_END_X = 946;
+const OAM_PRESET_STORAGE_KEY = 'sqgsim-oam-snapshots';
+const DEFAULT_OAM_SIMULATION_SETTINGS = {
+  amplitudeA: 1,
+  amplitudeB: 0.7,
+  phaseA: 0,
+  phaseB: 90,
+  modeA: 1,
+  modeB: -1,
+  operator: 'beam-splitter',
+  angleDegrees: 45,
+  quditDimension: OAM_MODES.length,
+  simulationSpeed: 1,
+  signalOpacity: 0.3,
+  signalLineWidth: 2.5,
+  amplitudeSizeVariation: 1,
+  viewMode: '3d'
+};
+const DEFAULT_OAM_VIEW_SETTINGS = {
+  ...DEFAULT_SIMULATOR_3D_PARAMETERS,
+  showWaveRepresentation: true,
+  waveOpacity: 0.3,
+  outputRepresentationMode: 'separate',
+  wavePalette: 'native',
+  splatterPalette: 'native',
+  modePalette: 'native',
+  particleAppearance: { ...DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, splatterEnabled: true }
+};
+const DEFAULT_OAM_PRESET = { simulation: DEFAULT_OAM_SIMULATION_SETTINGS, viewSettings: DEFAULT_OAM_VIEW_SETTINGS };
 const VIEW_OPTIONS = [
   { value: '3d', label: '3D soliton field' },
   { value: 'bus', label: '2D bus diagram' },
   { value: 'spectrum', label: 'OAM spectrum' }
 ];
 
+function normalizeOamPreset(preset = {}) {
+  return {
+    simulation: { ...DEFAULT_OAM_SIMULATION_SETTINGS, ...(preset.simulation ?? {}) },
+    viewSettings: {
+      ...DEFAULT_OAM_VIEW_SETTINGS,
+      ...(preset.viewSettings ?? {}),
+      particleAppearance: { ...DEFAULT_OAM_VIEW_SETTINGS.particleAppearance, ...(preset.viewSettings?.particleAppearance ?? {}) }
+    }
+  };
+}
+
 function phaseText(value) {
   return `${value >= 0 ? '+' : ''}${value.toFixed(2)} rad`;
+}
+
+function getOamModeColors(palette) {
+  return OAM_MODES.map((_, index) => palette === 'native'
+    ? MODE_COLORS[index]
+    : sampleColorPalette(palette, index / (OAM_MODES.length - 1)).getStyle());
 }
 
 function smoothStep(value) {
@@ -76,7 +125,44 @@ function targetOamMode(operator, inputRail, orbitalMode, quditDimension) {
   return orbitalMode;
 }
 
-function WaveComponents({ state, inputRail, inputYs, outputYs, operator, matrix, angleRadians, quditDimension, elapsed, opacity, lineWidth }) {
+function createSolitonBranches(input, operator, matrix, angleRadians, quditDimension) {
+  return [0, 1].flatMap((inputRail) => {
+    const branches = [0, 1].map((outputRail) => {
+    const inputCoefficients = OAM_MODES.map((_, modeIndex) => input[modeIndex][inputRail]);
+    const outputCoefficients = OAM_MODES.map(() => ({ re: 0, im: 0 }));
+    let branchStrength = 0;
+    for (let modeIndex = 0; modeIndex < OAM_MODES.length; modeIndex += 1) {
+      const mode = OAM_MODES[modeIndex];
+      const coefficient = branchCoefficient(operator, matrix, mode, angleRadians, outputRail, inputRail, quditDimension);
+      branchStrength = Math.max(branchStrength, Math.hypot(coefficient.re, coefficient.im));
+      const targetIndex = OAM_MODES.indexOf(targetOamMode(operator, inputRail, mode, quditDimension));
+      const source = inputCoefficients[modeIndex];
+      outputCoefficients[targetIndex].re += source.re * coefficient.re - source.im * coefficient.im;
+      outputCoefficients[targetIndex].im += source.re * coefficient.im + source.im * coefficient.re;
+    }
+    const branchPower = outputCoefficients.reduce((sum, value) => sum + value.re ** 2 + value.im ** 2, 0);
+    return { branchKind: 'separate', inputRail, outputRail, inputCoefficients, outputCoefficients, branchOpacity: Math.min(1, branchStrength), branchPower };
+    });
+    const totalPower = branches.reduce((sum, branch) => sum + branch.branchPower, 0);
+    return branches.map((branch) => ({ ...branch, splatterOpacityScale: totalPower > 0 ? branch.branchPower / totalPower : 0 }));
+  });
+}
+
+function createCombinedOutputBranches(output) {
+  return [0, 1].map((outputRail) => ({
+    branchKind: 'combined',
+    inputRail: outputRail,
+    outputRail,
+    inputCoefficients: OAM_MODES.map(() => ({ re: 0, im: 0 })),
+    outputCoefficients: output.map((pair) => pair[outputRail]),
+    branchOpacity: 1,
+    splatterOpacityScale: 1,
+    startX: SOLITON_GATE_END_X,
+    endX: SOLITON_OUTPUT_END_X
+  }));
+}
+
+function WaveComponents({ state, inputRail, inputYs, outputYs, operator, matrix, angleRadians, quditDimension, elapsed, opacity, lineWidth, modeColors }) {
   return OAM_MODES.flatMap((mode, modeIndex) => [0, 1].map((outputRail) => {
     const coefficient = branchCoefficient(operator, matrix, mode, angleRadians, outputRail, inputRail, quditDimension);
     const coefficientMagnitude = Math.hypot(coefficient.re, coefficient.im);
@@ -90,14 +176,14 @@ function WaveComponents({ state, inputRail, inputYs, outputYs, operator, matrix,
       data-oam-mode={mode}
       data-output-oam-mode={outputMode}
       d={path}
-      stroke={MODE_COLORS[modeIndex]}
+      stroke={modeColors[modeIndex]}
       strokeWidth={lineWidth}
       opacity={opacity * Math.min(1, coefficientMagnitude)}
     />;
   }));
 }
 
-function TravelingPackets({ input, inputYs, outputYs, operator, matrix, angleRadians, quditDimension, elapsed, opacity }) {
+function TravelingPackets({ input, inputYs, outputYs, operator, matrix, angleRadians, quditDimension, elapsed, opacity, modeColors }) {
   const travelLength = BUS_SIGNAL_END_X - BUS_SIGNAL_START_X - 38;
   return input.flatMap((pair, modeIndex) => [0, 1].flatMap((inputRail) => [0, 1].map((outputRail) => {
     const coefficient = branchCoefficient(operator, matrix, OAM_MODES[modeIndex], angleRadians, outputRail, inputRail, quditDimension);
@@ -118,7 +204,7 @@ function TravelingPackets({ input, inputYs, outputYs, operator, matrix, angleRad
       cx={x}
       cy={y}
       r={2 + Math.min(signalMagnitude * branchMagnitude, 1.5) * 1.6}
-      fill={MODE_COLORS[modeIndex]}
+      fill={modeColors[modeIndex]}
       opacity={opacity * Math.min(1, signalMagnitude * branchMagnitude)}
     />;
   })));
@@ -189,7 +275,7 @@ function OperatorCatalog() {
   </details>;
 }
 
-function BusDiagram({ input, output, operator, matrix, angleRadians, angleSymbol, quditDimension, elapsed, settings, signalOpacity, signalLineWidth }) {
+function BusDiagram({ input, output, operator, matrix, angleRadians, angleSymbol, quditDimension, elapsed, settings, signalOpacity, signalLineWidth, modeColors }) {
   const inputYs = [177, 354];
   const outputYs = [177, 354];
   const operatorLabel = OPERATOR_MARKS[operator];
@@ -217,20 +303,20 @@ function BusDiagram({ input, output, operator, matrix, angleRadians, angleSymbol
       const endY = outputYs[outputRail];
       return <path key={`${inputRail}:${outputRail}`} d={`M 434 ${startY} C 470 ${startY}, 530 ${endY}, 566 ${endY}`} className="oam-coupling" stroke={inputRail === outputRail ? '#72c7c0' : '#e6a45d'} strokeWidth={1 + magnitude * 2.4} opacity={0.2 + magnitude * 0.46} />;
     }))}
-    <WaveComponents state={input} inputRail={0} inputYs={inputYs} outputYs={outputYs} operator={operator} matrix={matrix} angleRadians={angleRadians} quditDimension={quditDimension} elapsed={elapsed} opacity={signalOpacity} lineWidth={signalLineWidth} />
-    <WaveComponents state={input} inputRail={1} inputYs={inputYs} outputYs={outputYs} operator={operator} matrix={matrix} angleRadians={angleRadians} quditDimension={quditDimension} elapsed={elapsed} opacity={signalOpacity} lineWidth={signalLineWidth} />
+    <WaveComponents state={input} inputRail={0} inputYs={inputYs} outputYs={outputYs} operator={operator} matrix={matrix} angleRadians={angleRadians} quditDimension={quditDimension} elapsed={elapsed} opacity={signalOpacity} lineWidth={signalLineWidth} modeColors={modeColors} />
+    <WaveComponents state={input} inputRail={1} inputYs={inputYs} outputYs={outputYs} operator={operator} matrix={matrix} angleRadians={angleRadians} quditDimension={quditDimension} elapsed={elapsed} opacity={signalOpacity} lineWidth={signalLineWidth} modeColors={modeColors} />
     <rect x="419" y="212" width="162" height="108" rx="3" className="oam-gate" />
     <circle cx="500" cy="256" r="17" className="oam-gate-ring" />
     <text x="500" y="262" textAnchor="middle" className="oam-gate-mark">{operatorLabel}</text>
     <text x="500" y="291" textAnchor="middle" className="oam-gate-name">{operatorType} · {metadata?.shortName}</text>
     <text x="500" y="306" textAnchor="middle" className="oam-gate-angle">{angleSymbol ? `${angleSymbol} ${settings.angleDegrees}°` : ''}</text>
-    <TravelingPackets input={input} inputYs={inputYs} outputYs={outputYs} operator={operator} matrix={matrix} angleRadians={angleRadians} quditDimension={quditDimension} elapsed={elapsed} opacity={signalOpacity} />
+    <TravelingPackets input={input} inputYs={inputYs} outputYs={outputYs} operator={operator} matrix={matrix} angleRadians={angleRadians} quditDimension={quditDimension} elapsed={elapsed} opacity={signalOpacity} modeColors={modeColors} />
     <text x="54" y="441" className="oam-axis-label">SOLITON ENVELOPE · SECH PROFILE</text>
     <text x="946" y="441" textAnchor="end" className="oam-axis-label">IDEAL LOSSLESS PROPAGATION</text>
   </svg>;
 }
 
-function SpectrumDiagram({ output }) {
+function SpectrumDiagram({ output, modeColors }) {
   const perMode = OAM_MODES.map((mode, index) => ({
     mode,
     power: output[index].reduce((sum, value) => sum + value.re ** 2 + value.im ** 2, 0)
@@ -247,7 +333,7 @@ function SpectrumDiagram({ output }) {
       return <g key={mode}>
         <text x="72" y={y + 5} className="oam-spectrum-mode">ℓ {mode}</text>
         <line x1="160" x2="852" y1={y} y2={y} className="oam-spectrum-track" />
-        <rect x="160" y={y - 8} width={692 * probability} height="16" fill={MODE_COLORS[index]} className="oam-spectrum-bar" />
+        <rect x="160" y={y - 8} width={692 * probability} height="16" fill={modeColors[index]} className="oam-spectrum-bar" />
         <text x="930" y={y + 5} textAnchor="end" className="oam-spectrum-value">{(probability * 100).toFixed(1)}%</text>
       </g>;
     })}
@@ -256,25 +342,30 @@ function SpectrumDiagram({ output }) {
 }
 
 export default function OamSolitonSim({ onBack }) {
-  const [settings, setSettings] = useState({
-    amplitudeA: 1,
-    amplitudeB: 0.7,
-    phaseA: 0,
-    phaseB: 90,
-    modeA: 1,
-    modeB: -1,
-    operator: 'beam-splitter',
-    angleDegrees: 45,
-    quditDimension: OAM_MODES.length,
-    simulationSpeed: 1,
-    signalOpacity: 0.3,
-    signalLineWidth: 2.5,
-    amplitudeSizeVariation: 1,
-    viewMode: '3d'
-  });
+  const [presetLibrary, setPresetLibrary] = useState(() => readPresetLibrary(typeof window === 'undefined' ? null : window.localStorage, OAM_PRESET_STORAGE_KEY, { Default: DEFAULT_OAM_PRESET }));
+  const [currentPreset, setCurrentPreset] = useState('Default');
+  const [presetName, setPresetName] = useState('');
+  const initialPreset = normalizeOamPreset(presetLibrary.Default ?? DEFAULT_OAM_PRESET);
+  const [settings, setSettings] = useState(() => initialPreset.simulation);
+  const [viewSettings, setViewSettings] = useState(() => initialPreset.viewSettings);
   const [panelVisible, setPanelVisible] = useState(true);
   const [running, setRunning] = useState(true);
   const [elapsed, setElapsed] = useState(0);
+  const [cameraViewMode, setCameraViewMode] = useState('front');
+  const [orbitPlaying, setOrbitPlaying] = useState(true);
+  const [compactViewport, setCompactViewport] = useState(() => typeof window !== 'undefined' && window.innerWidth < 650);
+  useEffect(() => {
+    const updateViewport = () => setCompactViewport(window.innerWidth < 650);
+    window.addEventListener('resize', updateViewport);
+    return () => window.removeEventListener('resize', updateViewport);
+  }, []);
+  const cameraViews = useMemo(() => createCameraViews({
+    target: [0, 0, 0],
+    distance: compactViewport ? 30 : 14,
+    frontDistance: compactViewport ? 32 : 16,
+    ortho1Offset: compactViewport ? [24, 20, 34] : [12, 10, 18],
+    ortho2Offset: compactViewport ? [-24, 18, -34] : [-12, 8, -18]
+  }), [compactViewport]);
   const angleRadians = settings.angleDegrees * Math.PI / 180;
   const input = useMemo(() => createOamInputState({
     amplitudeA: settings.amplitudeA,
@@ -286,12 +377,20 @@ export default function OamSolitonSim({ onBack }) {
   }), [settings.amplitudeA, settings.amplitudeB, settings.modeA, settings.modeB, settings.phaseA, settings.phaseB]);
   const output = useMemo(() => applyOamOperator(input, { operator: settings.operator, angleRadians, quditDimension: settings.quditDimension }), [angleRadians, input, settings.operator, settings.quditDimension]);
   const measurement = useMemo(() => measureOamState(output), [output]);
+  const modeColors = useMemo(() => getOamModeColors(viewSettings.modePalette), [viewSettings.modePalette]);
   const matrix = useMemo(() => getOamOperatorMatrix(settings.operator, angleRadians), [angleRadians, settings.operator]);
   const operatorMetadata = OAM_OPERATOR_OPTIONS.find(({ value }) => value === settings.operator);
   const angleSymbol = operatorMetadata?.parameter?.symbol;
   const binaryOperator = operatorMetadata?.type !== 'unary';
   const inputModes = binaryOperator ? getActiveOamModes(settings.quditDimension) : OAM_MODES;
   const modeOptions = inputModes.map((mode) => ({ value: mode, label: `ℓ = ${mode}` }));
+  const separateBranches = useMemo(() => createSolitonBranches(input, settings.operator, matrix, angleRadians, settings.quditDimension), [angleRadians, input, matrix, settings.operator, settings.quditDimension]);
+  const combinedOutputBranches = useMemo(() => createCombinedOutputBranches(output), [output]);
+  const branches = useMemo(() => {
+    if (viewSettings.outputRepresentationMode === 'combined') return combinedOutputBranches;
+    if (viewSettings.outputRepresentationMode === 'both') return [...separateBranches, ...combinedOutputBranches];
+    return separateBranches;
+  }, [combinedOutputBranches, separateBranches, viewSettings.outputRepresentationMode]);
   const update = (key, value) => setSettings((current) => ({ ...current, [key]: value }));
   const updateOperator = (operator) => {
     const metadata = OAM_OPERATOR_OPTIONS.find((entry) => entry.value === operator);
@@ -311,6 +410,22 @@ export default function OamSolitonSim({ onBack }) {
       modeB: activeModes.includes(current.modeB) ? current.modeB : nearestMode(current.modeB)
     }));
   };
+  const applyOamPreset = (name) => {
+    const preset = normalizeOamPreset(presetLibrary[name] ?? DEFAULT_OAM_PRESET);
+    setSettings(preset.simulation);
+    setViewSettings(preset.viewSettings);
+    setCurrentPreset(name);
+  };
+  const saveOamPreset = () => {
+    const name = presetName.trim();
+    if (!name) return;
+    const nextLibrary = { ...presetLibrary, [name]: { simulation: { ...settings }, viewSettings: { ...viewSettings, particleAppearance: { ...viewSettings.particleAppearance } } } };
+    setPresetLibrary(nextLibrary);
+    setCurrentPreset(name);
+    setPresetName('');
+    writePresetLibrary(window.localStorage, OAM_PRESET_STORAGE_KEY, nextLibrary);
+  };
+  const currentViewPreset = normalizeOamPreset(presetLibrary[currentPreset] ?? DEFAULT_OAM_PRESET).viewSettings;
 
   useEffect(() => {
     if (!running || settings.viewMode !== 'bus' || settings.simulationSpeed <= 0) return undefined;
@@ -329,17 +444,18 @@ export default function OamSolitonSim({ onBack }) {
   return <SimulatorBase mode={settings.viewMode === '3d' ? '3d' : 'non-3d'} className="signal-app oam-app" headerClassName="signal-topbar oam-topbar" brandClassName="signal-brand" mark="ℓ / OAM" markClassName="signal-mark oam-mark" title="OAM SOLITON OPERATOR LAB" subtitle="Orbital modes / dual-rail unitaries / photonic bus" actions={<div className="oam-top-actions">
     <button type="button" onClick={() => setRunning((value) => !value)} aria-pressed={running}>{running ? 'Pause propagation' : 'Resume propagation'}</button>
     <button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button>
-  </div>} onHome={onBack}>
-    {settings.viewMode === '3d' && <div className="oam-3d-field" role="img" aria-label="3D OAM soliton interference field" data-oam-simulation="3d">
-      <OamSolitonScene input={input} output={output} operator={settings.operator} running={running} simulationSpeed={settings.simulationSpeed} signalOpacity={settings.signalOpacity} amplitudeSizeVariation={settings.amplitudeSizeVariation} modeA={settings.modeA} modeB={settings.modeB} angleRadians={angleRadians} quditDimension={settings.quditDimension} railProbabilities={measurement.railProbabilities} />
+  </div>} onHome={onBack} parameterValue={viewSettings} presetValue={currentViewPreset} onParameterChange={setViewSettings}>
+    {settings.viewMode === '3d' && <div className="oam-3d-field" role="img" aria-label="3D OAM soliton interference field" data-oam-simulation="3d" data-output-representation={viewSettings.outputRepresentationMode} data-oam-branch-count={branches.length}>
+      <OamSolitonScene branches={branches} operator={settings.operator} running={running} simulationSpeed={settings.simulationSpeed} waveOpacity={viewSettings.waveOpacity} amplitudeSizeVariation={settings.amplitudeSizeVariation} particleAppearance={viewSettings.particleAppearance} waveRepresentationVisible={viewSettings.showWaveRepresentation} wavePalette={viewSettings.wavePalette} splatterPalette={viewSettings.splatterPalette} modeA={settings.modeA} modeB={settings.modeB} angleRadians={angleRadians} quditDimension={settings.quditDimension} viewMode={cameraViewMode} orbitPlaying={orbitPlaying} orbitSettings={viewSettings} cameraViews={cameraViews} onCameraInteraction={() => setCameraViewMode(null)} railProbabilities={measurement.railProbabilities} />
     </div>}
+    {settings.viewMode === '3d' && <CameraPerspectiveToolbar views={cameraViews} viewMode={cameraViewMode} orbitPlaying={orbitPlaying} onViewChange={setCameraViewMode} onToggleOrbit={() => setOrbitPlaying((playing) => !playing)} />}
     <section className={`signal-workbench oam-workbench${settings.viewMode === '3d' ? ' is-3d' : ''}`}>
       <div className="signal-heading oam-heading"><span>DUAL-RAIL / OAM {-3}…+3 / COMPLEX AMPLITUDE</span><h1>Compose a soliton state.</h1><p>Set two coherent inputs, apply a unitary, and inspect the output mode probabilities.</p></div>
       {settings.viewMode !== '3d' && <div className="oam-stage">
         <div className="oam-stage-heading"><span>FIELD PROPAGATION</span><span className={running ? 'oam-live' : ''}>{running ? 'LIVE' : 'PAUSED'} <i /></span></div>
         {settings.viewMode === 'bus'
-          ? <BusDiagram input={input} output={output} operator={settings.operator} matrix={matrix} angleRadians={angleRadians} angleSymbol={angleSymbol} quditDimension={settings.quditDimension} elapsed={elapsed} settings={settings} signalOpacity={settings.signalOpacity} signalLineWidth={settings.signalLineWidth} />
-          : <SpectrumDiagram output={output} />}
+          ? <BusDiagram input={input} output={output} operator={settings.operator} matrix={matrix} angleRadians={angleRadians} angleSymbol={angleSymbol} quditDimension={settings.quditDimension} elapsed={elapsed} settings={settings} signalOpacity={settings.signalOpacity} signalLineWidth={settings.signalLineWidth} modeColors={modeColors} />
+          : <SpectrumDiagram output={output} modeColors={modeColors} />}
         <div className="oam-stage-footer">
           <span>{operatorEquation(settings.operator, matrix, angleRadians, settings.modeA, settings.quditDimension)}</span>
           <span>‖ψ‖² {measurement.totalIntensity.toFixed(3)}</span>
@@ -347,10 +463,16 @@ export default function OamSolitonSim({ onBack }) {
       </div>}
       {settings.viewMode === '3d' && <div className="oam-scene-readout"><span>{operatorEquation(settings.operator, matrix, angleRadians, settings.modeA, settings.quditDimension)}</span><strong>‖ψ‖² {measurement.totalIntensity.toFixed(3)}</strong></div>}
       <div className="oam-mode-legend" aria-label="OAM mode colors">
-        {OAM_MODES.map((mode, index) => <span key={mode}><i style={{ background: MODE_COLORS[index] }} />ℓ {mode}</span>)}
+        {OAM_MODES.map((mode, index) => <span key={mode}><i style={{ background: modeColors[index] }} />ℓ {mode}</span>)}
       </div>
     </section>
     <aside className={`signal-panel oam-panel${panelVisible ? '' : ' is-hidden'}`}>
+
+      <details className="oam-preset-group">
+        <summary>Saved Snapshots</summary>
+        <SimulatorPresetControls className="oam-preset-controls" name={presetName} onNameChange={setPresetName} presets={presetLibrary} currentPreset={currentPreset} onApply={applyOamPreset} onSave={saveOamPreset} onReset={() => applyOamPreset('Default')} />
+      </details>
+
       <div className="signal-panel-heading"><div><span>INPUT STATE</span><h2>Soliton pair</h2></div></div>
       <div className="oam-control-pair">
         <NumericParamControl className="signal-range" label="Signal A amplitude" value={settings.amplitudeA} min={0} max={1} step={0.01} onChange={(value) => update('amplitudeA', value)} />
@@ -367,9 +489,40 @@ export default function OamSolitonSim({ onBack }) {
       <details className="oam-signal-controls" open>
         <summary>Signal motion and appearance</summary>
         <NumericParamControl className="signal-range" label="Simulation speed" value={settings.simulationSpeed} min={0} max={10} step={0.01} suffix="x" onChange={(value) => update('simulationSpeed', value)} />
-        <NumericParamControl className="signal-range" label="Signal opacity" value={settings.signalOpacity} min={0} max={1} step={0.01} onChange={(value) => update('signalOpacity', value)} />
+        <NumericParamControl className="signal-range" label="2D bus signal opacity" value={settings.signalOpacity} min={0} max={1} step={0.01} onChange={(value) => update('signalOpacity', value)} />
         <NumericParamControl className="signal-range" label="Signal line width (2D)" value={settings.signalLineWidth} min={0.5} max={8} step={0.1} suffix="px" onChange={(value) => update('signalLineWidth', value)} />
         <NumericParamControl className="signal-range" label="Beam width vs amplitude (3D)" value={settings.amplitudeSizeVariation} min={0} max={5} step={0.01} suffix="x" onChange={(value) => update('amplitudeSizeVariation', value)} />
+        <SimulatorParameterControls
+            className="parameter-group oam-representation-settings"
+            title="Wave and splatter representation"
+            configuration={viewSettings} onChange={setViewSettings} open
+          fields={[
+            { type: 'select', label: 'Circuit output representation', path: 'outputRepresentationMode', value: viewSettings.outputRepresentationMode, options: [
+              { value: 'separate', label: 'Separate beams' },
+              { value: 'combined', label: 'Combined output' },
+              { value: 'both', label: 'Both' }
+            ] },
+            { type: 'toggle', label: 'Show wave representation', path: 'showWaveRepresentation', checked: viewSettings.showWaveRepresentation },
+            { type: 'toggle', label: 'Show EM tensor-Gaussian splatters', path: 'particleAppearance.splatterEnabled', checked: viewSettings.particleAppearance.splatterEnabled },
+            { type: 'range', label: 'Wave representation opacity', path: 'waveOpacity', value: viewSettings.waveOpacity, min: 0, max: 1, step: 0.01 },
+            { type: 'range', label: 'Soliton splatter opacity', path: 'particleAppearance.opacity', value: viewSettings.particleAppearance.opacity, min: 0, max: 1, step: 0.01 }
+          ]} />
+      </details>
+      <details className="oam-color-controls">
+        <summary>Color palettes</summary>
+        <PaletteParamControl label="OAM beam colors" value={viewSettings.wavePalette} onChange={(value) => setViewSettings((current) => ({ ...current, wavePalette: value }))} />
+        <PaletteParamControl label="OAM splatter colors" value={viewSettings.splatterPalette} onChange={(value) => setViewSettings((current) => ({ ...current, splatterPalette: value }))} />
+        <PaletteParamControl label="OAM mode colors" value={viewSettings.modePalette} onChange={(value) => setViewSettings((current) => ({ ...current, modePalette: value }))} />
+      </details>
+      <details className="oam-base-view-controls">
+        <summary>Camera and particle settings</summary>
+        <SimulatorViewParameters configuration={viewSettings} onChange={setViewSettings} cameraClassName="oam-camera-settings" particleClassName="oam-particle-settings" appearanceFields={[
+          { key: 'sizeScale', type: 'range', label: 'Particle size scale', min: 0.25, max: 3, step: 0.05, suffix: 'x' },
+          { key: 'shape', type: 'select', label: 'Particle shape', options: ['native', 'circle', 'square', 'sphere', 'vector'] },
+          { key: 'derivativeOrder', type: 'range', label: 'Particle derivative order', min: 0, max: 4, step: 1 },
+          { key: 'colorMode', type: 'select', label: 'Particle color mode', options: [{ value: 'native', label: 'Native / encoded' }, { value: 'custom', label: 'Custom color' }] },
+          { key: 'color', type: 'color', label: 'Particle color', disabled: viewSettings.particleAppearance.colorMode !== 'custom' }
+        ]} />
       </details>
       <details className="oam-operator-controls" open>
         <summary>Quantum operator</summary>
@@ -390,10 +543,11 @@ export default function OamSolitonSim({ onBack }) {
         <div className="signal-readout"><span>Rail B probability</span><strong>{(measurement.railProbabilities[1] * 100).toFixed(1)}%</strong></div>
         <div className="signal-readout"><span>Total intensity</span><strong>{measurement.totalIntensity.toFixed(3)}</strong></div>
         <div className="oam-mode-readout">{OAM_MODES.map((mode, index) => <div key={mode}>
-          <span style={{ color: MODE_COLORS[index] }}>ℓ {mode}</span><div><i style={{ width: `${measurement.modeProbabilities[index] * 100}%`, background: MODE_COLORS[index] }} /></div><strong>{(measurement.modeProbabilities[index] * 100).toFixed(1)}%</strong>
+          <span style={{ color: modeColors[index] }}>ℓ {mode}</span><div><i style={{ width: `${measurement.modeProbabilities[index] * 100}%`, background: modeColors[index] }} /></div><strong>{(measurement.modeProbabilities[index] * 100).toFixed(1)}%</strong>
         </div>)}</div>
       </details>
       <p className="oam-model-note">Ideal lossless dual-rail model. Soliton envelopes visualize the complex amplitudes; this is not a device-level optical solver or a claim of fault-tolerant gate performance.</p>
+
     </aside>
   </SimulatorBase>;
 }

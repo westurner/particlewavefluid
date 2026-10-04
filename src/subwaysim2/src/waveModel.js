@@ -4,6 +4,8 @@ export const DEFAULT_SIGNAL_ORIGIN = { x: 0, y: 0, z: 0 };
 export const DEFAULT_SIGNAL_DIRECTION = { x: 1, y: 0, z: 0 };
 export const DEFAULT_SIGNAL_ROTATION = { x: 0, y: 0, z: 0 };
 export const HELICAL_TOPOLOGICAL_CHARGE = 1;
+export const OAM_CHARGE_MIN = -3;
+export const OAM_CHARGE_MAX = 3;
 export const DEFAULT_BEAM_WAIST = 6;
 export const DOUBLE_SLIT_SCREEN_X = 0;
 export const DOUBLE_SLIT_CENTERS = [-2.1, 2.1];
@@ -85,6 +87,17 @@ export function normalizeInterferenceModes(value) {
   };
 }
 
+export function getOrbitalAngularMomentum(wave) {
+  const fallback = wave.phaseMode === 'Helical-Right'
+    ? -HELICAL_TOPOLOGICAL_CHARGE
+    : wave.phaseMode === 'Helical-Left'
+      ? HELICAL_TOPOLOGICAL_CHARGE
+      : 0;
+  const requested = Number(wave.orbitalAngularMomentum);
+  const charge = Number.isFinite(requested) ? Math.round(requested) : fallback;
+  return Math.max(OAM_CHARGE_MIN, Math.min(OAM_CHARGE_MAX, charge));
+}
+
 function cloneWave(wave) {
   return {
     ...wave,
@@ -93,6 +106,7 @@ function cloneWave(wave) {
     rotation: { ...DEFAULT_SIGNAL_ROTATION, ...(wave.rotation || {}) },
     decayRate: Math.max(0, Number(wave.decayRate) || 0),
     beamWaist: Math.max(0.1, Number(wave.beamWaist) || DEFAULT_BEAM_WAIST),
+    orbitalAngularMomentum: getOrbitalAngularMomentum(wave),
     polarization: POLARIZATION_MODES.includes(wave.polarization) ? wave.polarization : 'Scalar'
   };
 }
@@ -445,6 +459,31 @@ export function calculateWaveFrame(wave, x = 0, y = 0, z = 0) {
   };
 }
 
+function calculateHelicalPhase(wave, travel, angle) {
+  return travel + getOrbitalAngularMomentum(wave) * angle;
+}
+
+export function calculateWaveOrbitalPhase(waves, x, z, time, y = 0) {
+  let real = 0;
+  let imaginary = 0;
+  for (let index = 0; index < Math.min(waves.length, MAX_WAVES); index += 1) {
+    const wave = waves[index];
+    if (wave.enabled === false || wave.polarization !== 'EM-Tensor-Gaussian') continue;
+    if (wave.phaseMode !== 'Helical-Left' && wave.phaseMode !== 'Helical-Right') continue;
+    const wavelength = Math.max(0.1, Number(wave.wavelength) || 0.1);
+    const waveNumber = (Math.PI * 2) / wavelength;
+    const temporalPhase = time * (Number(wave.phaseRate) || 0);
+    const frame = calculateWaveFrame(wave, x, y, z);
+    const travel = waveNumber * frame.longitudinal - temporalPhase + (Number(wave.phaseOffset) || 0);
+    const gaussian = Math.exp(-(frame.transverseRadius * frame.transverseRadius) / (2 * Math.max(0.1, Number(wave.beamWaist) || DEFAULT_BEAM_WAIST) ** 2));
+    const amplitude = (Number(wave.amplitude) || 0) * calculateWaveEnvelope(wave, frame.longitudinal) * gaussian;
+    const phase = calculateHelicalPhase(wave, travel, frame.angle);
+    real += amplitude * Math.cos(phase);
+    imaginary += amplitude * Math.sin(phase);
+  }
+  return Math.hypot(real, imaginary) > 0 ? Math.atan2(imaginary, real) : null;
+}
+
 export function calculateWaveEnvelope(wave, longitudinal) {
   const decayRate = Math.max(0, Number(wave.decayRate) || 0);
   return Math.exp(-decayRate * Math.max(0, longitudinal));
@@ -472,9 +511,8 @@ export function calculateWaveSample(wave, x, z, time, y = 0) {
     case 'Circular-Right':
       return Math.sin(waveNumber * transverseRadius - temporalPhase + phase - angle) * envelope;
     case 'Helical-Left':
-      return Math.sin(travel + HELICAL_TOPOLOGICAL_CHARGE * angle) * envelope;
     case 'Helical-Right':
-      return Math.sin(travel - HELICAL_TOPOLOGICAL_CHARGE * angle) * envelope;
+      return Math.sin(calculateHelicalPhase(wave, travel, angle)) * envelope;
     case 'Standard':
     default:
       return Math.sin(travel) * envelope;
@@ -509,11 +547,9 @@ export function calculateElectromagneticField(wave, x, z, time, y = 0, includeTe
   const beamWaist = Math.max(0.1, Number(wave.beamWaist) || DEFAULT_BEAM_WAIST);
   const gaussian = Math.exp(-(frame.transverseRadius * frame.transverseRadius) / (2 * beamWaist * beamWaist));
   const handedness = wave.phaseMode === 'Helical-Right' || wave.phaseMode === 'Circular-Right' ? -1 : 1;
-  const vortexPhase = wave.phaseMode === 'Helical-Left'
-    ? travel + HELICAL_TOPOLOGICAL_CHARGE * frame.angle
-    : wave.phaseMode === 'Helical-Right'
-      ? travel - HELICAL_TOPOLOGICAL_CHARGE * frame.angle
-      : travel;
+  const vortexPhase = wave.phaseMode === 'Helical-Left' || wave.phaseMode === 'Helical-Right'
+    ? calculateHelicalPhase(wave, travel, frame.angle)
+    : travel;
   const carrier = wave.phaseMode === 'Quadrature'
     ? Math.cos(vortexPhase)
     : wave.phaseMode === 'Inverted'
@@ -752,11 +788,9 @@ export function calculateWaveTensorGaussian(waves, x, z, time, interferenceModes
     const gaussian = Math.exp(-(frame.transverseRadius * frame.transverseRadius) / (2 * Math.max(0.1, Number(wave.beamWaist) || DEFAULT_BEAM_WAIST) ** 2));
     const magnitude = (Number(wave.amplitude) || 0) * calculateWaveEnvelope(wave, frame.longitudinal) * gaussian;
     const travel = waveNumber * frame.longitudinal - temporalPhase + phaseOffset;
-    const vortexPhase = wave.phaseMode === 'Helical-Left'
-      ? travel + HELICAL_TOPOLOGICAL_CHARGE * frame.angle
-      : wave.phaseMode === 'Helical-Right'
-        ? travel - HELICAL_TOPOLOGICAL_CHARGE * frame.angle
-        : travel;
+    const vortexPhase = wave.phaseMode === 'Helical-Left' || wave.phaseMode === 'Helical-Right'
+      ? calculateHelicalPhase(wave, travel, frame.angle)
+      : travel;
     const isCircular = wave.phaseMode === 'Circular-Left'
       || wave.phaseMode === 'Circular-Right'
       || wave.phaseMode === 'Helical-Left'

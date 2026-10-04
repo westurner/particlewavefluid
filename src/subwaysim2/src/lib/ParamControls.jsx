@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { changedPathsBetween, getAtPath, parseNumericValue, resetStatePaths, setAtPath } from "./simulation-state.js";
+import ConfirmButton from "./ConfirmButton.jsx";
 
 function formatNumber(value, step) {
   const precision = step < 0.01 ? 3 : step < 0.1 ? 2 : step < 1 ? 1 : 0;
@@ -33,7 +34,7 @@ export function ParameterGroup({ title, paths = [], children, className = 'param
     else preset?.resetPaths(changedPaths);
   };
   return <details className={`${className}${changedPaths.length ? ' has-preset-changes' : ''}`} open={open} defaultOpen={defaultOpen}>
-    <summary><span>{title}</span>{changedPaths.length > 0 && <span className="parameter-group-changes"><span>{changedPaths.length} changed</span><button type="button" aria-label={`Reset ${title} to current preset`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); resetGroup(); }}>Reset group</button></span>}</summary>
+    <summary><span>{title}</span>{changedPaths.length > 0 && <span className="parameter-group-changes"><span>{changedPaths.length} changed</span><ConfirmButton className="parameter-reset-trigger" actionName={`Reset ${title} to current preset`} triggerAriaLabel={`Reset ${title} to current preset`} confirmationMessage={`Reset ${title} to the current preset?`} onConfirm={resetGroup}>Reset group</ConfirmButton></span>}</summary>
     {children}
   </details>;
 }
@@ -63,7 +64,7 @@ export function usePresetParameter(path, suppliedIsDefault = true, onReset) {
 
 function PresetFieldStatus({ path, label, isDefault, onReset }) {
   if (!path || isDefault) return null;
-  return <span className="parameter-changed-field"><span>Changed</span><button type="button" className="param-reset" aria-label={`Reset ${label} to current preset`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onReset?.(); }}>Reset</button></span>;
+  return <span className="parameter-changed-field"><span>Changed</span><ConfirmButton className="param-reset" actionName={`Reset ${label} to current preset`} triggerAriaLabel={`Reset ${label} to current preset`} confirmationMessage={`Reset ${label} to the current preset?`} onConfirm={onReset}>Reset</ConfirmButton></span>;
 }
 
 export function ParamEditingProvider({ editing, children }) {

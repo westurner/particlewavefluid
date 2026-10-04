@@ -6,6 +6,7 @@ import { NumericParamControl } from './ParamControls.jsx';
 import { changedParameterPaths, cloneState, getAtPath, resetStatePaths, statesEqual } from './simulation-state.js';
 import { appendJournalEntry, CAMERA_WHEEL_MODE_OPTIONS, createCameraViews, createOrbitCameraParams, DEFAULT_CAMERA_VIEWS, DEFAULT_ORBITAL_TRACKING_CONFIGURATION, DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, rewindJournal, snapshotAtJournalTime } from './simulator-base.js';
 import { Euler, Vector3 } from 'three';
+import ConfirmButton from './ConfirmButton.jsx';
 
 export const OrbitCameraControls = forwardRef(function OrbitCameraControls({ cameraParams, ...props }, ref) {
   const cameraParamsKey = JSON.stringify(cameraParams);
@@ -287,7 +288,7 @@ export function SimulatorPresetControls({ name, onNameChange, presets, currentPr
   if (currentPreset && !Object.hasOwn(presets, currentPreset)) presetOptions.unshift(currentPreset);
   return (
     <section className={`simulator-preset-controls ${className}`}>
-      <div className="simulator-preset-heading"><span>Saved snapshots</span>{onReset && <button type="button" onClick={onReset}>Reset</button>}</div>
+      <div className="simulator-preset-heading"><span>Saved snapshots</span>{onReset && <ConfirmButton className="simulator-preset-reset-trigger" actionName="Reset simulator settings" confirmationMessage="Reset simulator settings to the default preset?" onConfirm={onReset}>Reset</ConfirmButton>}</div>
       <ParamSelect className={selectClassName} ariaLabel="Saved snapshot" value={currentPreset} options={presetOptions} onChange={onApply} />
       <div className="simulator-preset-save"><input value={name} onChange={(event) => onNameChange(event.target.value)} placeholder="Name this snapshot" aria-label="Snapshot name" /><button type="button" onClick={onSave} disabled={!name.trim()}>Save snapshot</button></div>
     </section>
@@ -370,10 +371,10 @@ export function PresetChangeSummary({ value, preset, onChange }) {
     <div className="simulator-preset-change-list">
       {visiblePaths.map((path) => <div className="simulator-preset-change" key={path}>
         <span><strong>{path || 'configuration'}</strong><small>{displayParameterValue(getAtPath(value, path))} / {displayParameterValue(getAtPath(preset, path))}</small></span>
-        <button type="button" aria-label={`Reset ${path || 'configuration'} to current preset`} onClick={() => onChange(resetStatePaths(value, preset, [path]))}>Reset</button>
+        <ConfirmButton className="simulator-preset-field-reset" actionName={`Reset ${path || 'configuration'} to current preset`} confirmationMessage={`Reset ${path || 'configuration'} to the current preset?`} onConfirm={() => onChange(resetStatePaths(value, preset, [path]))}>Reset</ConfirmButton>
       </div>)}
       {changedPaths.length > visiblePaths.length && <p>{changedPaths.length - visiblePaths.length} more changed fields</p>}
-      <button type="button" className="simulator-preset-reset-all" onClick={() => onChange(cloneState(preset))}>Reset all to preset</button>
+      <ConfirmButton className="simulator-preset-reset-all" containerClassName="confirm-button-block" actionName="Reset all to preset" confirmationMessage="Reset all changed parameters to the current preset?" onConfirm={() => onChange(cloneState(preset))}>Reset all to preset</ConfirmButton>
     </div>
   </details>;
 }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Euler, Vector3 } from 'three';
-import { advanceDetectorResponse, calculateDoubleSlitField, calculateElectromagneticField, calculateOcclusionTransmission, calculatePinholeField, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveDisplacementAndTensorGaussian, calculateWaveEnvelope, calculateWaveFrame, calculateWaveSample, calculateWaveTensorGaussian, cloneWaveState, combineWaves, createApertureSamplePoints, DEFAULT_APERTURE_SETTINGS, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_COUNT, DEFAULT_WAVE_STATES, DEFAULT_WAVES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, detectorDistanceForSlitScreenPosition, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, getSlitGeometry, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, SIGNAL_SOURCE_PRESETS, slitScreenLocalToWorld, slitScreenWorldToLocal } from './waveModel.js';
+import { advanceDetectorResponse, calculateDoubleSlitField, calculateElectromagneticField, calculateOcclusionTransmission, calculatePinholeField, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveDisplacementAndTensorGaussian, calculateWaveEnvelope, calculateWaveFrame, calculateWaveOrbitalPhase, calculateWaveSample, calculateWaveTensorGaussian, cloneWaveState, combineWaves, createApertureSamplePoints, DEFAULT_APERTURE_SETTINGS, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_COUNT, DEFAULT_WAVE_STATES, DEFAULT_WAVES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, detectorDistanceForSlitScreenPosition, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, getSlitGeometry, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, SIGNAL_SOURCE_PRESETS, slitScreenLocalToWorld, slitScreenWorldToLocal } from './waveModel.js';
 
 test('wave configuration exposes eight phase modes and eight defaults', () => {
   assert.equal(MAX_WAVES, 8);
@@ -111,6 +111,29 @@ test('helical phase winds once around its directed propagation axis', () => {
   assert.ok(Math.abs(calculateWaveSample(wave, 0, 1, 0, 0) - 1) < 1e-12);
   assert.ok(Math.abs(calculateWaveSample(wave, 0, 0, 0, -1)) < 1e-12);
   assert.ok(Math.abs(calculateWaveSample(wave, 0, -1, 0, 0) + 1) < 1e-12);
+});
+
+test('helical orbital angular momentum controls signed phase winding', () => {
+  const wave = { wavelength: 8, phaseMode: 'Helical-Left', phaseOffset: 0, phaseRate: 0, origin: { x: 0, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 }, orbitalAngularMomentum: 2 };
+  const theta = Math.PI / 4;
+  assert.ok(Math.abs(calculateWaveSample(wave, 0, Math.sin(theta), 0, Math.cos(theta)) - 1) < 1e-12);
+  assert.ok(Math.abs(calculateWaveSample({ ...wave, orbitalAngularMomentum: -2 }, 0, Math.sin(theta), 0, Math.cos(theta) ) + 1) < 1e-12);
+
+  const normalized = cloneWaveState({ name: 'OAM defaults', waveCount: 2, waves: [
+    { phaseMode: 'Helical-Right' },
+    { phaseMode: 'Helical-Left', orbitalAngularMomentum: 9 }
+  ] });
+  assert.equal(normalized.waves[0].orbitalAngularMomentum, -1);
+  assert.equal(normalized.waves[1].orbitalAngularMomentum, 3);
+});
+
+test('tensor-Gaussian orbital phase samples the configured OAM winding', () => {
+  const wave = { wavelength: 8, amplitude: 1, phaseMode: 'Helical-Left', phaseOffset: 0, phaseRate: 0, polarization: 'EM-Tensor-Gaussian', orbitalAngularMomentum: 2 };
+  const theta = Math.PI / 4;
+  const phase = calculateWaveOrbitalPhase([wave], 0, Math.sin(theta), 0, Math.cos(theta));
+  assert.ok(Math.abs(phase - Math.PI / 2) < 1e-12);
+  assert.ok(Math.abs(calculateWaveOrbitalPhase([{ ...wave, orbitalAngularMomentum: -2 }], 0, Math.sin(theta), 0, Math.cos(theta)) + Math.PI / 2) < 1e-12);
+  assert.equal(calculateWaveOrbitalPhase([{ ...wave, polarization: 'Electromagnetic' }], 0, 1, 0), null);
 });
 
 test('signal rotation rotates the complete directed frame', () => {

@@ -118,9 +118,40 @@ test('shared particle appearance controls reset to the current preset and clear 
   await changedSummary.waitFor({ state: 'visible' });
   assert.match(await changedSummary.textContent(), /2 changed/);
 
-  await appearanceGroup.getByRole('button', { name: 'Reset Particle appearance to current preset' }).click();
+  const resetGroup = appearanceGroup.getByRole('button', { name: 'Reset Particle appearance to current preset' });
+  await resetGroup.click();
+  const confirmGroup = appearanceGroup.getByRole('button', { name: 'Confirm Reset Particle appearance to current preset' });
+  await confirmGroup.waitFor({ state: 'visible' });
+  assert.equal(await particleSize.inputValue(), '0.1', 'opening confirmation must not apply the reset');
+  assert.equal(await confirmGroup.evaluate((element) => document.activeElement === element), true, 'confirmation should receive keyboard focus');
+  await confirmGroup.press('Escape');
+  assert.equal(await resetGroup.evaluate((element) => document.activeElement === element), true, 'Escape should cancel and restore focus');
+  assert.equal(await particleSize.inputValue(), '0.1');
+
+  await resetGroup.click();
+  await appearanceGroup.getByRole('button', { name: 'Confirm Reset Particle appearance to current preset' }).click();
   assert.equal(await particleSize.inputValue(), '0.075');
   assert.equal(await particleOpacity.inputValue(), '0.9');
+  await changedSummary.waitFor({ state: 'detached' });
+
+  await particleSize.fill('0.1');
+  const resetSize = appearanceGroup.getByRole('button', { name: 'Reset Particle size to current preset' });
+  await resetSize.click();
+  const confirmSize = appearanceGroup.getByRole('button', { name: 'Confirm Reset Particle size to current preset' });
+  await confirmSize.waitFor({ state: 'visible' });
+  assert.equal(await particleSize.inputValue(), '0.1');
+  await confirmSize.click();
+  assert.equal(await particleSize.inputValue(), '0.075');
+
+  await particleSize.fill('0.1');
+  await changedSummary.click();
+  const resetAll = page.getByRole('button', { name: 'Reset all to preset' });
+  await resetAll.click();
+  const confirmAll = page.getByRole('button', { name: 'Confirm Reset all to preset' });
+  await confirmAll.waitFor({ state: 'visible' });
+  assert.equal(await particleSize.inputValue(), '0.1');
+  await confirmAll.click();
+  assert.equal(await particleSize.inputValue(), '0.075');
   await changedSummary.waitFor({ state: 'detached' });
 });
 

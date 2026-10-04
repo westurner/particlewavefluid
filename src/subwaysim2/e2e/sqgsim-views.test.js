@@ -199,3 +199,42 @@ test('SQGSIM rotation controls follow an attractor rotation', async (t) => {
   const afterRotation = await canvas.screenshot({ type: 'png' });
   assert.notDeepEqual(afterRotation, beforeRotation, 'rotation gizmo should follow the attractor rotation');
 });
+
+test('OAM output representation switches between separate and combined circuit beams', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+  const duplicateKeyWarnings = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error' && message.text().includes('same key')) duplicateKeyWarnings.push(message.text());
+  });
+
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /13 \/ LOAD FIELD/ }).click();
+  const scene = page.locator('.oam-3d-field');
+  await scene.waitFor();
+
+  assert.equal(await page.locator('.oam-representation-settings').count(), 1);
+  assert.equal(await page.locator('.oam-wave-representation-settings, .oam-splatter-settings').count(), 0);
+  assert.equal(await scene.getAttribute('data-output-representation'), 'separate');
+  assert.equal(await scene.getAttribute('data-oam-branch-count'), '4');
+  if (!(await page.locator('.oam-representation-settings').evaluate((group) => group.open))) {
+    await page.locator('.oam-representation-settings > summary').evaluate((summary) => summary.click());
+  }
+  const opacity = page.getByRole('slider', { name: 'Wave representation opacity' });
+  assert.equal(await opacity.count(), 1);
+  const modeSelector = page.getByRole('combobox', { name: 'Circuit output representation' });
+  assert.equal(await modeSelector.count(), 1);
+
+  await selectParam(page, 'Circuit output representation', 'combined');
+  assert.equal(await scene.getAttribute('data-output-representation'), 'combined');
+  assert.equal(await scene.getAttribute('data-oam-branch-count'), '2');
+
+  await selectParam(page, 'Circuit output representation', 'both');
+  assert.equal(await scene.getAttribute('data-output-representation'), 'both');
+  assert.equal(await scene.getAttribute('data-oam-branch-count'), '6');
+  assert.deepEqual(duplicateKeyWarnings, []);
+
+  await selectParam(page, 'Circuit output representation', 'separate');
+  assert.equal(await scene.getAttribute('data-oam-branch-count'), '4');
+});

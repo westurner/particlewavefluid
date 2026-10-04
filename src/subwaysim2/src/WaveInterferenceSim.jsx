@@ -1,12 +1,14 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DataTexture, DoubleSide, FloatType, FrontSide, Mesh, NearestFilter, NoBlending, OrthographicCamera, RGBAFormat, Scene, ShaderMaterial, UnsignedByteType, Vector3, WebGLRenderTarget } from 'three';
-import { advanceDetectorResponse, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacementAndTensorGaussian, calculateWaveFrame, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_APERTURE_SETTINGS, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, DOUBLE_SLIT_SCREEN_THICKNESS, DOUBLE_SLIT_SCREEN_X, DOUBLE_SLIT_WIDTH, APERTURE_SCREEN_DEPTH, APERTURE_SCREEN_HEIGHT, DETECTOR_TRANSVERSE_SPAN, detectorDistanceForSlitScreenPosition, getSlitGeometry, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, GRATING_SLIT_WIDTH, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, readSavedWaveStates, sampleApertureField, SIGNAL_SOURCE_PRESETS, SINGLE_SLIT_WIDTH, TWO_SOURCE_CENTERS, writeSavedWaveStates } from './waveModel.js';
+import { advanceDetectorResponse, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacementAndTensorGaussian, calculateWaveFrame, calculateWaveOrbitalPhase, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_APERTURE_SETTINGS, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, DOUBLE_SLIT_SCREEN_THICKNESS, DOUBLE_SLIT_SCREEN_X, DOUBLE_SLIT_WIDTH, APERTURE_SCREEN_DEPTH, APERTURE_SCREEN_HEIGHT, DETECTOR_TRANSVERSE_SPAN, detectorDistanceForSlitScreenPosition, getOrbitalAngularMomentum, getSlitGeometry, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, GRATING_SLIT_WIDTH, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, OAM_CHARGE_MAX, OAM_CHARGE_MIN, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, readSavedWaveStates, sampleApertureField, SIGNAL_SOURCE_PRESETS, SINGLE_SLIT_WIDTH, TWO_SOURCE_CENTERS, writeSavedWaveStates } from './waveModel.js';
 import { HistoryControls, NumericParamControl, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 import { CameraPerspectiveToolbar, OrbitalTrackingParameters, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase, SimulatorExportModal, SimulatorIOJournal, SimulatorPresetControls, useSimulatorJournal } from './lib/SimulatorBase.jsx';
 import { buildParameterReplayJournal, DEFAULT_CAMERA_VIEWS, DEFAULT_SIMULATOR_3D_PARAMETERS, deletePresetLibrary, parseParameterEditLogYaml, parseSimulatorJson, readPresetLibrary, serializeParameterEditLog, writePresetLibrary } from './lib/simulator-base.js';
 import { evaluateGpeResponse, WAVE_EVOLUTION_OPTIONS } from './mechanicsModels.js';
+import { COLOR_PALETTES, sampleColorPalette } from './lib/color-palettes.js';
+import PaletteParamControl from './lib/PaletteParamControl.jsx';
 
 const FIELD_SIZE = 18;
 const DEFAULT_PARTICLE_COUNT = 2 ** 10;
@@ -27,13 +29,7 @@ const DETECTOR_IMPLEMENTATION_OPTIONS = [
   { value: 'classic', label: 'Classic pixels' },
   { value: 'native', label: 'Native resolution (GPU)' }
 ];
-const DETECTOR_PALETTES = [
-  { value: 'thermal', label: 'Thermal', stops: ['#10242d', '#37c4c8', '#f4bf66', '#fff4dc'] },
-  { value: 'phosphor', label: 'Phosphor', stops: ['#071b19', '#187b59', '#a6df75', '#f3ffd1'] },
-  { value: 'monochrome', label: 'Monochrome', stops: ['#101820', '#63737a', '#c5d3d2', '#ffffff'] },
-  { value: 'plasma', label: 'Plasma', stops: ['#15132c', '#285ab5', '#e84e86', '#ffd77b'] },
-  { value: 'black-red', label: 'Black & red', stops: ['#030405', '#26050a', '#a10e1c', '#ff3948'] }
-];
+const DETECTOR_PALETTES = COLOR_PALETTES;
 const DETECTOR_PALETTE_COLORS = Object.fromEntries(DETECTOR_PALETTES.map(({ value, stops }) => [value, stops.map((stop) => new Color(stop))]));
 
 function normalizeWaveSnapshot(snapshot, defaults) {
@@ -156,6 +152,11 @@ const EXPERIMENT_MODE_BY_STATE = Object.fromEntries(Object.entries(EXPERIMENT_ST
 const EXPERIMENT_PRESET_IDS = { 'single-slit': 'single-slit', 'double-slit': 'double-slit', pinhole: 'pinhole', grating: 'diffraction-grating', 'two-source': 'none' };
 const EXPERIMENT_MODE_BY_PRESET = Object.fromEntries(Object.entries(EXPERIMENT_PRESET_IDS).filter(([, preset]) => preset !== 'none').map(([mode, preset]) => [preset, mode]));
 const WAVE_COLORS = ['#f4bf66', '#66d5d1', '#df7d8d', '#a899ed', '#d7e681', '#7da8ec', '#f28e5d', '#86d3a5'];
+
+function paletteWaveColor(palette, index, count = WAVE_COLORS.length) {
+  if (palette === 'native') return WAVE_COLORS[index % WAVE_COLORS.length];
+  return sampleColorPalette(palette, count < 2 ? 0.5 : index / (count - 1)).getStyle();
+}
 const PARTICLE_SHAPES = ['square', 'circle', 'vector'];
 
 const WAVE_VERTEX_SHADER = `
@@ -628,7 +629,7 @@ function ExperimentDetector({ implementation, experimentMode, ...props }) {
     : <ClassicExperimentDetector {...props} experimentMode={experimentMode} />;
 }
 
-function WaveField({ waves, waveCount, interferenceModes, running, timeRef, experimentMode, apertureField, apertureSettings, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, particleAppearance, occlusionPreset, waveMechanics }) {
+function WaveField({ waves, waveCount, interferenceModes, running, timeRef, experimentMode, apertureField, apertureSettings, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, particleAppearance, occlusionPreset, waveMechanics, showWaveRepresentation, showTensorGaussianSplatters, classicalWavePalette, superpositionPalette, oamSplatterPalette }) {
   const geometry = useMemo(() => createFieldGeometry(particleCount), [particleCount]);
   const usesApertureExperiment = APERTURE_EXPERIMENT_MODES.includes(experimentMode);
   const fieldUpdateTime = useRef(0);
@@ -667,11 +668,12 @@ function WaveField({ waves, waveCount, interferenceModes, running, timeRef, expe
     material.uniforms.uTintEnabled.value = particleAppearance.colorMode === 'custom';
   }, [material, particleAppearance.color, particleAppearance.colorMode]);
   useEffect(() => {
-    material.uniforms.uTensorSplatters.value = waves.slice(0, waveCount).some((wave) => wave.polarization === 'EM-Tensor-Gaussian');
-  }, [material, waveCount, waves]);
+    material.uniforms.uTensorSplatters.value = showTensorGaussianSplatters && waves.slice(0, waveCount).some((wave) => wave.enabled !== false && wave.polarization === 'EM-Tensor-Gaussian');
+  }, [material, showTensorGaussianSplatters, waveCount, waves]);
 
   useFrame((_, delta) => {
     if (running) timeRef.current += Math.min(delta, 0.05);
+    if (!showWaveRepresentation) return;
     if (usesApertureExperiment) {
       fieldUpdateTime.current += delta;
       if (fieldUpdateTime.current < 1 / 20) return;
@@ -684,6 +686,10 @@ function WaveField({ waves, waveCount, interferenceModes, running, timeRef, expe
     const tensorGaussians = geometry.attributes.aTensorGaussian.array;
     const occlusions = geometry.attributes.aOcclusion.array;
     const activeWaves = waves.slice(0, waveCount);
+    const activeWaveCount = activeWaves.filter((wave) => wave.enabled !== false).length;
+    const hasOrbitalWaves = activeWaves.some((wave) => wave.enabled !== false
+      && wave.polarization === 'EM-Tensor-Gaussian'
+      && (wave.phaseMode === 'Helical-Left' || wave.phaseMode === 'Helical-Right'));
     const tensorWaves = usesApertureExperiment
       ? activeWaves.filter((wave) => wave.enabled !== false && wave.polarization === 'EM-Tensor-Gaussian')
       : null;
@@ -722,6 +728,7 @@ function WaveField({ waves, waveCount, interferenceModes, running, timeRef, expe
         ? calculateWaveDerivative(activeWaves, x, z, timeRef.current, particleDerivativeOrder, interferenceModes)
         : 0;
       const normalized = Math.min(1, Math.abs(height) / Math.max(1, activeWaves.reduce((sum, wave) => sum + Math.abs(wave.amplitude), 0)));
+      const orbitalPhase = hasOrbitalWaves ? calculateWaveOrbitalPhase(activeWaves, x, z, timeRef.current) : null;
       positions[index * 3] = x + displacement.x * transmission * 0.9;
       positions[index * 3 + 1] = basePositions[index * 3 + 1] + displacement.y * transmission * 0.9;
       positions[index * 3 + 2] = z + displacement.z * transmission * 0.9;
@@ -729,10 +736,22 @@ function WaveField({ waves, waveCount, interferenceModes, running, timeRef, expe
       vectorAngles[index] = Math.atan(derivative * 0.35);
       tensorGaussians[index] = tensorGaussian;
       const modelDifference = Math.min(1, Math.abs(height - linearHeight));
-      const hue = waveMechanics.showDifference
-        ? 0.55 - modelDifference * 0.43
-        : height >= 0 ? 0.12 - normalized * 0.06 : 0.52 + normalized * 0.08;
-      color.setHSL(hue, 0.72, 0.42 + normalized * 0.18);
+      const palette = orbitalPhase !== null
+        ? oamSplatterPalette
+        : activeWaveCount > 1 ? superpositionPalette : classicalWavePalette;
+      if (waveMechanics.showDifference || palette === 'native') {
+        const hue = waveMechanics.showDifference
+          ? 0.55 - modelDifference * 0.43
+          : orbitalPhase !== null
+            ? (orbitalPhase / (Math.PI * 2) + 1) % 1
+            : height >= 0 ? 0.12 - normalized * 0.06 : 0.52 + normalized * 0.08;
+        color.setHSL(hue, orbitalPhase === null ? 0.72 : 0.88, 0.42 + normalized * 0.18);
+      } else {
+        const palettePosition = orbitalPhase !== null
+          ? (orbitalPhase / (Math.PI * 2) + 1) % 1
+          : Math.max(0, Math.min(1, 0.5 + (height >= 0 ? normalized : -normalized) * 0.5));
+        sampleColorPalette(palette, palettePosition, color);
+      }
       colors[index * 3] = color.r;
       colors[index * 3 + 1] = color.g;
       colors[index * 3 + 2] = color.b;
@@ -744,10 +763,10 @@ function WaveField({ waves, waveCount, interferenceModes, running, timeRef, expe
     geometry.attributes.aOcclusion.needsUpdate = true;
   });
 
-  return <points geometry={geometry} material={material} frustumCulled={false} />;
+  return <points geometry={geometry} material={material} frustumCulled={false} visible={showWaveRepresentation} />;
 }
 
-function SignalSourceArrows({ waves, waveCount, visible }) {
+function SignalSourceArrows({ waves, waveCount, visible, palette }) {
   const sources = useMemo(() => waves.slice(0, waveCount).map((wave, index) => {
     if (wave.enabled === false) return null;
     const frame = calculateWaveFrame(wave);
@@ -756,12 +775,12 @@ function SignalSourceArrows({ waves, waveCount, visible }) {
   if (!visible) return null;
   return (
     <group>
-      {sources.map(({ index, origin, direction }) => <arrowHelper key={index} args={[new Vector3(direction.x, direction.y, direction.z), new Vector3(origin.x, origin.y, origin.z), 2.4, WAVE_COLORS[index], 0.38, 0.22]} />)}
+      {sources.map(({ index, origin, direction }) => <arrowHelper key={index} args={[new Vector3(direction.x, direction.y, direction.z), new Vector3(origin.x, origin.y, origin.z), 2.4, paletteWaveColor(palette, index, waveCount), 0.38, 0.22]} />)}
     </group>
   );
 }
 
-function WaveScene({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, occlusionPreset, orbitControlsVisible, sourceVectorsVisible, waveMechanics, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation, onDetectorResolutionChange }) {
+function WaveScene({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, occlusionPreset, orbitControlsVisible, sourceVectorsVisible, waveMechanics, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation, onDetectorResolutionChange, showWaveRepresentation, showTensorGaussianSplatters, classicalWavePalette, superpositionPalette, oamSplatterPalette }) {
   const { viewMode, orbitPlaying, orbitSettings, particleAppearance, onManualInteraction } = useContext(PerspectiveCameraContext);
   const contextDetectorVisible = useContext(DetectorVisibilityContext);
   const showDetector = detectorVisible ?? contextDetectorVisible;
@@ -775,11 +794,11 @@ function WaveScene({ waves, waveCount, interferenceModes, running, particleCount
       <fog attach="fog" args={['#080d17', 17, 34]} />
       <ambientLight intensity={0.7} color="#b5d8d1" />
       <gridHelper args={[FIELD_SIZE, 18, '#294555', '#142631']} position={[0, -1.35, 0]} />
-      <SignalSourceArrows waves={waves} waveCount={waveCount} visible={sourceVectorsVisible} />
+      <SignalSourceArrows waves={waves} waveCount={waveCount} visible={sourceVectorsVisible} palette={classicalWavePalette} />
       {['single-slit', 'double-slit', 'grating'].includes(experimentMode) && <SlitScreen experimentMode={experimentMode} apertureSettings={apertureSettings} />}
       {experimentMode === 'pinhole' && <PinholeScreen />}
       {experimentMode === 'two-source' && <TwoSourceMarkers />}
-      <WaveField waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} timeRef={timeRef} experimentMode={experimentMode} apertureField={apertureField} apertureSettings={apertureSettings} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} particleAppearance={particleAppearance} occlusionPreset={occlusionPreset} waveMechanics={waveMechanics} />
+      <WaveField waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} timeRef={timeRef} experimentMode={experimentMode} apertureField={apertureField} apertureSettings={apertureSettings} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} particleAppearance={particleAppearance} occlusionPreset={occlusionPreset} waveMechanics={waveMechanics} showWaveRepresentation={showWaveRepresentation} showTensorGaussianSplatters={showTensorGaussianSplatters} classicalWavePalette={classicalWavePalette} superpositionPalette={superpositionPalette} oamSplatterPalette={oamSplatterPalette} />
       {showDetector && (experimentMode === 'field' || APERTURE_EXPERIMENT_MODES.includes(experimentMode)) && <ExperimentDetector key={`${experimentMode}:${detectorImplementation}`} implementation={detectorImplementation} experimentMode={experimentMode} waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} apertureField={apertureField} running={running} timeRef={timeRef} detectionTime={detectionTime} glowTime={glowTime} detectorBrightness={detectorBrightness} detectorPalette={detectorPalette} maskEnabled={detectorMaskEnabled} pixelDensity={detectorPixelDensity} onResolutionChange={onDetectorResolutionChange} />}
       <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={orbitSettings} cameraParams={{ minDistance: 7, maxDistance: 32, enabled: orbitControlsVisible }} onUserInteraction={onManualInteraction} />
     </>
@@ -903,13 +922,21 @@ function SourceOrbitControl({ wave, index, onChange, editing = false }) {
   );
 }
 
-function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate, canRemove, editing = false, isDefault = () => true, onResetPath = () => {} }) {
+function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate, canRemove, editing = false, isDefault = () => true, onResetPath = () => {}, classicalWavePalette = 'native', waveCount = MAX_WAVES }) {
   const [parameterPlacement, setParameterPlacement] = useState('auto');
   const update = (field, value) => onChange(index, { ...wave, [field]: value });
   const updateVector = (field, axis, value, fallback) => update(field, { ...(wave[field] || fallback), [axis]: value });
+  const isHelical = (phaseMode) => phaseMode === 'Helical-Left' || phaseMode === 'Helical-Right';
+  const changePhaseMode = (phaseMode) => onChange(index, {
+    ...wave,
+    phaseMode,
+    ...(!isHelical(wave.phaseMode) && isHelical(phaseMode)
+      ? { orbitalAngularMomentum: phaseMode === 'Helical-Right' ? -HELICAL_TOPOLOGICAL_CHARGE : HELICAL_TOPOLOGICAL_CHARGE }
+      : {})
+  });
   return (
     <details className="wave-editor" open={index < 3}>
-      <summary><span className="wave-swatch" style={{ backgroundColor: WAVE_COLORS[index] }} />Wave {index + 1}<strong>{wave.enabled ? 'ON' : 'OFF'} / {wave.phaseMode}</strong></summary>
+      <summary><span className="wave-swatch" style={{ backgroundColor: paletteWaveColor(classicalWavePalette, index, waveCount) }} />Wave {index + 1}<strong>{wave.enabled ? 'ON' : 'OFF'} / {wave.phaseMode}{isHelical(wave.phaseMode) ? ` / OAM ℓ=${getOrbitalAngularMomentum(wave)}` : ''}</strong></summary>
       <div className="wave-editor-actions">
         <label className="wave-toggle"><input type="checkbox" checked={wave.enabled} onChange={(event) => update('enabled', event.target.checked)} /><span>{wave.enabled ? 'Enabled' : 'Disabled'}</span></label>
         <div className="wave-editor-buttons"><button type="button" onClick={() => onDuplicate(index)} disabled={!canDuplicate}>Duplicate</button><button type="button" className="wave-remove-button" onClick={() => onRemove(index)} disabled={!canRemove}>Remove</button></div>
@@ -923,7 +950,8 @@ function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate
           <RangeControl label="Decay rate" value={wave.decayRate ?? 0} min={0} max={1} step={0.01} suffix=" /u" editing={editing} isDefault={isDefault(['waves', index, 'decayRate'])} onReset={() => onResetPath(['waves', index, 'decayRate'])} onChange={(value) => update('decayRate', value)} />
           <RangeControl label="Phase offset" value={wave.phaseOffset} min={-Math.PI} max={Math.PI} step={0.01} suffix=" rad" editing={editing} isDefault={isDefault(['waves', index, 'phaseOffset'])} onReset={() => onResetPath(['waves', index, 'phaseOffset'])} onChange={(value) => update('phaseOffset', value)} />
           <RangeControl label="Phase rate" value={wave.phaseRate} min={-2} max={2} step={0.01} suffix=" /s" editing={editing} isDefault={isDefault(['waves', index, 'phaseRate'])} onReset={() => onResetPath(['waves', index, 'phaseRate'])} onChange={(value) => update('phaseRate', value)} />
-          <ParamSelect className="wave-select" label="Phase mode" value={wave.phaseMode} options={PHASE_MODES} onChange={(value) => update('phaseMode', value)} />
+          <ParamSelect className="wave-select" label="Phase mode" value={wave.phaseMode} options={PHASE_MODES} onChange={changePhaseMode} />
+          {isHelical(wave.phaseMode) && <RangeControl label="OAM charge (ℓ)" value={getOrbitalAngularMomentum(wave)} min={OAM_CHARGE_MIN} max={OAM_CHARGE_MAX} step={1} editing={editing} isDefault={isDefault(['waves', index, 'orbitalAngularMomentum'])} onReset={() => onResetPath(['waves', index, 'orbitalAngularMomentum'])} onChange={(value) => update('orbitalAngularMomentum', value)} />}
           <ParamSelect className="wave-select" label="Polarization" value={wave.polarization ?? 'Scalar'} options={POLARIZATION_MODES} onChange={(value) => update('polarization', value)} />
           {(['Electromagnetic', 'EM-Tensor-Gaussian'].includes(wave.polarization)) && <RangeControl label="Beam waist" value={wave.beamWaist ?? DEFAULT_BEAM_WAIST} min={0.5} max={9} step={0.1} suffix=" u" editing={editing} isDefault={isDefault(['waves', index, 'beamWaist'])} onReset={() => onResetPath(['waves', index, 'beamWaist'])} onChange={(value) => update('beamWaist', value)} />}
           <VectorControl label="Signal origin" value={wave.origin} min={-9} max={9} step={0.1} editing={editing} isDefault={(axis) => isDefault(['waves', index, 'origin', axis])} onReset={(axis) => onResetPath(['waves', index, 'origin', axis])} onChange={(axis, value) => updateVector('origin', axis, value, DEFAULT_SIGNAL_ORIGIN)} />
@@ -935,7 +963,7 @@ function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate
   );
 }
 
-function WavePanel({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, orbitControlsVisible, sourceVectorsVisible, sourcePreset, occlusionPreset, stateOptions, selectedState, stateDescription, stateName, stateMessage, paramsVisible, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation, onExperimentModeChange, onDetectionTime, onGlowTime, onApertureSettingsChange, onDetectorVisible, onDetectorBrightness, onDetectorPalette, onDetectorMaskEnabled, onDetectorPixelDensity, onDetectorImplementation, onSourcePreset, onOcclusionPreset, onStateChange, onStateName, onSaveState, onChange, onWaveCountChange, onInterferenceChange, onRunning, onReset, onDuplicate, onRemove, onDoubleSided, onParticleCount, onParticleSize, onParticleOpacity, onParticleShape, onParticleDerivativeOrder, onOrbitControls, onSourceVectors, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {}, isDefault = () => true, onResetPath = () => {}, simulatorPresets = {}, currentSimulatorPreset = 'Default', simulatorPresetName = '', onSimulatorPresetName = () => {}, onApplySimulatorPreset = () => {}, onSaveSimulatorPreset = () => {}, currentValue = {}, jsonText = '', onJsonText = () => {}, onLoadJson = () => {}, onExport = () => {}, onDeleteSimulatorPresets = () => {}, showEditLog = false, onShowEditLog = () => {}, editLogYaml = '[]\n', onReplayLog = () => {}, replayMessage = '', replaying = false, journal = [], recording = false, onRecording = () => {}, playing = false, onTogglePlayback = () => {}, onStop = () => {}, playbackTime = 0, onPlaybackTime = () => {}, playbackSpeed = 1, onPlaybackSpeed = () => {} }) {
+function WavePanel({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, orbitControlsVisible, sourceVectorsVisible, sourcePreset, occlusionPreset, stateOptions, selectedState, stateDescription, stateName, stateMessage, paramsVisible, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation, onExperimentModeChange, onDetectionTime, onGlowTime, onApertureSettingsChange, onDetectorVisible, onDetectorBrightness, onDetectorPalette, onDetectorMaskEnabled, onDetectorPixelDensity, onDetectorImplementation, onSourcePreset, onOcclusionPreset, onStateChange, onStateName, onSaveState, onChange, onWaveCountChange, onInterferenceChange, onRunning, onReset, onDuplicate, onRemove, onDoubleSided, onParticleCount, onParticleSize, onParticleOpacity, onParticleShape, onParticleDerivativeOrder, onOrbitControls, onSourceVectors, showWaveRepresentation = true, showTensorGaussianSplatters = true, classicalWavePalette = 'native', superpositionPalette = 'native', oamSplatterPalette = 'native', onVisualizationChange = () => {}, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {}, isDefault = () => true, onResetPath = () => {}, simulatorPresets = {}, currentSimulatorPreset = 'Default', simulatorPresetName = '', onSimulatorPresetName = () => {}, onApplySimulatorPreset = () => {}, onSaveSimulatorPreset = () => {}, currentValue = {}, jsonText = '', onJsonText = () => {}, onLoadJson = () => {}, onExport = () => {}, onDeleteSimulatorPresets = () => {}, showEditLog = false, onShowEditLog = () => {}, editLogYaml = '[]\n', onReplayLog = () => {}, replayMessage = '', replaying = false, journal = [], recording = false, onRecording = () => {}, playing = false, onTogglePlayback = () => {}, onStop = () => {}, playbackTime = 0, onPlaybackTime = () => {}, playbackSpeed = 1, onPlaybackSpeed = () => {} }) {
   const enabledCount = waves.slice(0, waveCount).filter((wave) => wave.enabled).length;
   const activeModeLabels = Object.entries(INTERFERENCE_MODES).filter(([mode]) => interferenceModes[mode]).map(([, details]) => details.label);
   const defaultSlitCount = experimentMode === 'single-slit' ? 1 : experimentMode === 'grating' ? GRATING_SLIT_CENTERS.length : DOUBLE_SLIT_CENTERS.length;
@@ -976,6 +1004,14 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
       <p className="wave-intro">Compose one or more travelling, circular, and helical waves across a live field.</p>
       <div className="wave-status"><span><i /> {enabledCount} enabled / {waveCount} {waveCount === 1 ? 'wave slot' : 'wave slots'}</span><strong>{running ? 'RUNNING' : 'PAUSED'}</strong></div><div className="wave-editor-toolbar"><ParamEditingToggle checked={editing} onChange={onEditing} /><HistoryControls canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} /></div>
       <OrbitalTrackingParameters configuration={currentValue} className="wave-control-section wave-state-section" />
+      <section className="wave-control-section wave-state-section">
+        <span className="wave-section-label">FIELD REPRESENTATION</span>
+        <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={showWaveRepresentation} onChange={(event) => onVisualizationChange('showWaveRepresentation', event.target.checked)} /><span>Show wave representation</span></label>
+        <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={showTensorGaussianSplatters} onChange={(event) => onVisualizationChange('showTensorGaussianSplatters', event.target.checked)} /><span>Show EM tensor-Gaussian splatters</span></label>
+        <PaletteParamControl label="Classical wave colors" value={classicalWavePalette} onChange={(value) => onVisualizationChange('classicalWavePalette', value)} />
+        <PaletteParamControl label="Superposition particle colors" value={superpositionPalette} onChange={(value) => onVisualizationChange('superpositionPalette', value)} />
+        <PaletteParamControl label="OAM splatter colors" value={oamSplatterPalette} onChange={(value) => onVisualizationChange('oamSplatterPalette', value)} />
+      </section>
       <ParticleAppearanceSettings configuration={currentValue} className="wave-control-section wave-state-section" capabilities={{ shape: true, derivativeOrder: true, colorMode: true, color: true }} fields={[
         { key: 'sizeScale', path: 'particleSize', type: 'range', label: 'Particle size', min: 0.02, max: 0.4, step: 0.005, suffix: ' u' },
         { key: 'shape', path: 'particleShape', type: 'select', label: 'Particle shape', options: PARTICLE_SHAPES },
@@ -1082,7 +1118,7 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
       </section>
       <section className="wave-control-section">
         <span className="wave-section-label">WAVE PARAMETERS</span>
-        {waves.slice(0, waveCount).map((wave, index) => <WaveEditor key={index} wave={wave} index={index} onChange={onChange} onDuplicate={onDuplicate} onRemove={onRemove} canDuplicate={waveCount < MAX_WAVES} canRemove={waveCount > 1} editing={editing} isDefault={isDefault} onResetPath={onResetPath} />)}
+        {waves.slice(0, waveCount).map((wave, index) => <WaveEditor key={index} wave={wave} index={index} onChange={onChange} onDuplicate={onDuplicate} onRemove={onRemove} canDuplicate={waveCount < MAX_WAVES} canRemove={waveCount > 1} editing={editing} isDefault={isDefault} onResetPath={onResetPath} classicalWavePalette={classicalWavePalette} waveCount={waveCount} />)}
       </section>
       <section className="wave-control-section">
         <span className="wave-section-label">VISUALIZATION</span>
@@ -1118,6 +1154,11 @@ export default function WaveInterferenceSim({ onBack }) {
     particleOpacity: 0.9,
     particleShape: 'circle',
     particleDerivativeOrder: 1,
+    showWaveRepresentation: true,
+    showTensorGaussianSplatters: true,
+    classicalWavePalette: 'native',
+    superpositionPalette: 'native',
+    oamSplatterPalette: 'native',
     orbitControlsVisible: true,
     sourceVectorsVisible: true,
     occlusionPreset: 'none',
@@ -1430,19 +1471,33 @@ export default function WaveInterferenceSim({ onBack }) {
       value: type === 'current' ? waveEditor.value : value
     });
   };
+  const orbitalStates = waves.slice(0, waveCount)
+    .map((wave, index) => ({ wave, index, charge: getOrbitalAngularMomentum(wave) }))
+    .filter(({ wave }) => wave.enabled !== false && (wave.phaseMode === 'Helical-Left' || wave.phaseMode === 'Helical-Right'));
 
   return (
     <DetectorVisibilityContext.Provider value={detectorVisible}>
     <PerspectiveCameraContext.Provider value={{ viewMode, orbitPlaying, orbitControlsVisible, orbitSettings: waveEditor.value, particleAppearance: waveEditor.value.particleAppearance, onManualInteraction: () => setViewMode(null) }}>
     <SimulatorBase className="wave-app" headerClassName="wave-topbar" brandClassName="wave-brand" markClassName="wave-mark" mark="WAV" title="WAVE FIELD LAB" subtitle="Phase geometry / interference study" meta="WEBGL / FIELD SYNTHESIS" metaClassName="wave-top-meta" homeUrl="/" onHome={onBack} homeClassName="wave-hide-button" parameterValue={waveEditor.value} presetValue={waveEditor.baseline} onParameterChange={(next) => waveEditor.commit(next)} actions={<><button type="button" className="wave-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button><button type="button" className="wave-run-toggle" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></>}>
-      <div className="wave-scene" data-particle-count={particleCount} data-occlusion-preset={occlusionPreset} data-experiment-mode={experimentMode} data-detection-time={detectionTime} data-glow-time={glowTime} data-slit-position={apertureSettings.slitPosition} data-slit-width-a={apertureSettings.slitWidthA} data-slit-width-b={apertureSettings.slitWidthB} data-slit-widths-linked={apertureSettings.slitWidthsLinked} data-detector-brightness={detectorBrightness} data-detector-palette={detectorPalette} data-detector-mask={detectorMaskEnabled} data-detector-pixel-density={detectorPixelDensity} data-detector-implementation={detectorImplementation} data-detector-resolution={detectorResolution} data-orbit-controls={orbitControlsVisible} data-source-vectors={sourceVectorsVisible} data-source-frame={JSON.stringify({ origin: sourceFrame.origin, direction: sourceFrame.direction })}><Canvas camera={{ position: [11, 8, 12], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><WaveScene waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} occlusionPreset={occlusionPreset} orbitControlsVisible={orbitControlsVisible} sourceVectorsVisible={sourceVectorsVisible} waveMechanics={waveMechanics} experimentMode={experimentMode} detectionTime={detectionTime} glowTime={glowTime} apertureSettings={apertureSettings} detectorBrightness={detectorBrightness} detectorPalette={detectorPalette} detectorMaskEnabled={detectorMaskEnabled} detectorPixelDensity={detectorPixelDensity} detectorImplementation={detectorImplementation} onDetectorResolutionChange={setDetectorResolution} /></Canvas></div>
+      <div className="wave-scene" data-particle-count={particleCount} data-occlusion-preset={occlusionPreset} data-experiment-mode={experimentMode} data-detection-time={detectionTime} data-glow-time={glowTime} data-slit-position={apertureSettings.slitPosition} data-slit-width-a={apertureSettings.slitWidthA} data-slit-width-b={apertureSettings.slitWidthB} data-slit-widths-linked={apertureSettings.slitWidthsLinked} data-detector-brightness={detectorBrightness} data-detector-palette={detectorPalette} data-detector-mask={detectorMaskEnabled} data-detector-pixel-density={detectorPixelDensity} data-detector-implementation={detectorImplementation} data-detector-resolution={detectorResolution} data-orbit-controls={orbitControlsVisible} data-source-vectors={sourceVectorsVisible} data-source-frame={JSON.stringify({ origin: sourceFrame.origin, direction: sourceFrame.direction })}><Canvas camera={{ position: [11, 8, 12], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><WaveScene waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} occlusionPreset={occlusionPreset} orbitControlsVisible={orbitControlsVisible} sourceVectorsVisible={sourceVectorsVisible} waveMechanics={waveMechanics} experimentMode={experimentMode} detectionTime={detectionTime} glowTime={glowTime} apertureSettings={apertureSettings} detectorBrightness={detectorBrightness} detectorPalette={detectorPalette} detectorMaskEnabled={detectorMaskEnabled} detectorPixelDensity={detectorPixelDensity} detectorImplementation={detectorImplementation} onDetectorResolutionChange={setDetectorResolution} showWaveRepresentation={waveEditor.value.showWaveRepresentation} showTensorGaussianSplatters={waveEditor.value.showTensorGaussianSplatters} classicalWavePalette={waveEditor.value.classicalWavePalette} superpositionPalette={waveEditor.value.superpositionPalette} oamSplatterPalette={waveEditor.value.oamSplatterPalette} /></Canvas></div>
       <CameraPerspectiveToolbar className="simulator-perspective-toolbar" modesClassName="simulator-perspective-modes" viewMode={viewMode} orbitPlaying={orbitPlaying} onViewChange={setViewMode} onToggleOrbit={() => setOrbitPlaying((value) => !value)} />
+      {orbitalStates.length > 0 && <aside className="wave-oam-readout" aria-label="Active orbital angular momentum states">
+        <span className="wave-oam-kicker">ORBITAL STATES</span>
+        <div className="wave-oam-state-list">{orbitalStates.map(({ index, charge }) => <span className="wave-oam-state" key={index}>W{index + 1} ℓ={charge > 0 ? `+${charge}` : charge}</span>)}</div>
+        {orbitalStates.some(({ wave }) => wave.polarization === 'EM-Tensor-Gaussian') && !waveEditor.value.waveMechanics?.showDifference && <small>Hue: local helical phase / opacity: tensor weight</small>}
+      </aside>}
       <section className="wave-title"><p>Animated phase experiment</p><h1>Shape the interference.</h1><span>Independent wavelength, amplitude, phase mode, and phase parameters for every active wave.</span></section>
       <WavePanel
         waves={waves}
         waveCount={waveCount}
         interferenceModes={interferenceModes}
         running={running}
+        showWaveRepresentation={waveEditor.value.showWaveRepresentation}
+        showTensorGaussianSplatters={waveEditor.value.showTensorGaussianSplatters}
+        classicalWavePalette={waveEditor.value.classicalWavePalette}
+        superpositionPalette={waveEditor.value.superpositionPalette}
+        oamSplatterPalette={waveEditor.value.oamSplatterPalette}
+        onVisualizationChange={(field, value) => waveEditor.commit((current) => ({ ...current, [field]: value }))}
         particleCount={particleCount}
         doubleSided={doubleSided}
         particleSize={particleSize}
