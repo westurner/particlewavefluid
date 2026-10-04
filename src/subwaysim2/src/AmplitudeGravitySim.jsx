@@ -20,8 +20,8 @@ import {
   updateAmplitudeGravityStreamlines
 } from './amplitudeGravityModel.js';
 import { ColorParamControl, NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
-import { CameraPerspectiveToolbar, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
-import { DEFAULT_CAMERA_VIEWS } from './lib/simulator-base.js';
+import { CameraPerspectiveToolbar, OrbitalTrackingParameters, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { DEFAULT_CAMERA_VIEWS, DEFAULT_ORBITAL_TRACKING_CONFIGURATION, DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION } from './lib/simulator-base.js';
 
 const BODY_COLORS = ['#f5c65d', '#68d5cc', '#e98567', '#8f9ff2', '#d7e77b'];
 const INITIAL_BODIES = [
@@ -220,11 +220,11 @@ function NBodyField({ configuration, running, resetToken, onTelemetry }) {
       {INITIAL_BODIES.map((body, index) => (
         <group key={body.name}>
           <mesh ref={(node) => { bodyRefs.current[index] = node; }} position={body.position}>
-            <sphereGeometry args={[body.radius, 24, 16]} />
-            <meshStandardMaterial color={BODY_COLORS[index]} emissive={BODY_COLORS[index]} emissiveIntensity={index === 0 ? 0.8 : 0.2} roughness={0.45} />
+            <sphereGeometry args={[body.radius * configuration.particleAppearance.sizeScale, 24, 16]} />
+            <meshStandardMaterial color={BODY_COLORS[index]} emissive={BODY_COLORS[index]} emissiveIntensity={index === 0 ? 0.8 : 0.2} roughness={0.45} transparent={configuration.particleAppearance.opacity < 1} opacity={configuration.particleAppearance.opacity} />
           </mesh>
           <mesh ref={(node) => { haloRefs.current[index] = node; }} position={body.position} visible={false}>
-            <sphereGeometry args={[body.radius, 20, 12]} />
+            <sphereGeometry args={[body.radius * configuration.particleAppearance.sizeScale, 20, 12]} />
             <meshBasicMaterial color="#f7d84c" wireframe transparent opacity={0.75} />
           </mesh>
         </group>
@@ -250,7 +250,7 @@ function AmplitudeScene({ configuration, running, resetToken, onTelemetry, viewM
       <gridHelper args={[24, 24, '#244247', '#12272b']} position={[0, -1.4, 0]} />
       <NBodyField configuration={configuration} running={running} resetToken={resetToken} onTelemetry={onTelemetry} />
       <CellGeometry cell={cell} />
-      <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} cameraParams={{ minDistance: 7, maxDistance: 34 }} onUserInteraction={onUserInteraction} />
+      <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={configuration} cameraParams={{ minDistance: 7, maxDistance: 34 }} onUserInteraction={onUserInteraction} />
     </>
   );
 }
@@ -260,7 +260,8 @@ function Slider({ label, value, min, max, step, onChange, suffix = '' }) {
 }
 
 export default function AmplitudeGravitySim({ onBack }) {
-  const [configuration, setConfiguration] = useState(() => ({ ...DEFAULT_AMPLITUDE_GRAVITY, timeScale: 0.42 }));
+  const [configuration, setConfiguration] = useState(() => ({ ...DEFAULT_AMPLITUDE_GRAVITY, ...DEFAULT_ORBITAL_TRACKING_CONFIGURATION, particleAppearance: { ...DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION }, timeScale: 0.42 }));
+  const presetConfiguration = useRef(configuration);
   const [running, setRunning] = useState(true);
   const [resetToken, setResetToken] = useState(0);
   const [panelVisible, setPanelVisible] = useState(true);
@@ -273,14 +274,17 @@ export default function AmplitudeGravitySim({ onBack }) {
   const weakField = useMemo(() => calculateWeakFieldObservables({ centralMass: 12, semiMajorAxis: 3.2, eccentricity: 0.2, impactParameter: 4, asymptoticSpeed: 2 }, settings), [settings]);
   const update = (patch) => setConfiguration((current) => ({ ...current, ...patch }));
   const updateGap = (index, value) => update({ cellGaps: settings.cellGaps.map((gap, gapIndex) => gapIndex === index ? value : gap) });
+  const sceneConfiguration = { ...settings, ...DEFAULT_ORBITAL_TRACKING_CONFIGURATION, ...Object.fromEntries(Object.keys(DEFAULT_ORBITAL_TRACKING_CONFIGURATION).map((key) => [key, configuration[key]])), particleAppearance: configuration.particleAppearance, timeScale: configuration.timeScale };
 
   return (
-    <SimulatorBase className="amplitude-app" headerClassName="amplitude-topbar" mark="AMP" markClassName="amplitude-mark" title="AMPLITUDE GEOMETRY GRAVITY LAB" subtitle="Positive geometry / EFT comparison" actions={<><button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button><button type="button" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></>} onHome={onBack}>
-      <div className="amplitude-scene"><Canvas camera={{ position: [10, 8, 12], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AmplitudeScene configuration={{ ...settings, timeScale: configuration.timeScale }} running={running} resetToken={resetToken} onTelemetry={setTelemetry} viewMode={viewMode} orbitPlaying={orbitPlaying} onUserInteraction={() => setViewMode(null)} /></Canvas></div>
+    <SimulatorBase className="amplitude-app" headerClassName="amplitude-topbar" mark="AMP" markClassName="amplitude-mark" title="AMPLITUDE GEOMETRY GRAVITY LAB" subtitle="Positive geometry / EFT comparison" parameterValue={configuration} presetValue={presetConfiguration.current} onParameterChange={setConfiguration} actions={<><button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button><button type="button" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></>} onHome={onBack}>
+      <div className="amplitude-scene"><Canvas camera={{ position: [10, 8, 12], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AmplitudeScene configuration={sceneConfiguration} running={running} resetToken={resetToken} onTelemetry={setTelemetry} viewMode={viewMode} orbitPlaying={orbitPlaying} onUserInteraction={() => setViewMode(null)} /></Canvas></div>
       <CameraPerspectiveToolbar className="simulator-perspective-toolbar" modesClassName="simulator-perspective-modes" views={DEFAULT_CAMERA_VIEWS} viewMode={viewMode} orbitPlaying={orbitPlaying} onViewChange={setViewMode} onToggleOrbit={() => setOrbitPlaying((value) => !value)} />
       <section className="amplitude-title"><span>ACTIVE FIELD / N-BODY AMPLITUDE PROXY</span><h1>Geometric gravity.<br />Conservation of motion.</h1><p>Compare a Newtonian reference, spin-2 EFT proxy, and an explicitly speculative QED derived scattering gravituhedron modulation.</p></section>
       <aside className={`amplitude-panel ${panelVisible ? '' : 'is-hidden'}`}>
         <div className="amplitude-panel-heading"><div><span>GR(2,4) / TOP CELL</span><h2>Amplitude gravity</h2></div><button type="button" onClick={onBack}>Lab menu</button></div>
+        <OrbitalTrackingParameters configuration={configuration} onChange={setConfiguration} className="amplitude-control-section" />
+        <ParticleAppearanceSettings configuration={configuration} onChange={setConfiguration} className="amplitude-control-section" capabilities={{ shape: false, derivativeOrder: false, colorMode: false, color: false }} />
         <p className="amplitude-warning">QED photon exchange does not itself produce gravity. The gravity channel here is a spin-2 EFT proxy; “gravituhedron” is a testable visualization hypothesis.</p>
         <ParamSelect className="amplitude-select" label="Gravity model" value={settings.mode} options={AMPLITUDE_GRAVITY_MODES} onChange={(mode) => update({ mode })} />
         <label className="amplitude-toggle"><input type="checkbox" checked={settings.showDifference} onChange={(event) => update({ showDifference: event.target.checked })} /><span>Show acceleration difference from Newtonian</span></label>

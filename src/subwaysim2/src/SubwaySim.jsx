@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState, forwardRef } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { ContactShadows } from '@react-three/drei';
-import { AdditiveBlending, BackSide, Color, DoubleSide, ExtrudeGeometry, InstancedBufferAttribute, MathUtils, Shape, ShapeGeometry, ShaderMaterial, SphereGeometry, Vector3 } from 'three';
+import { AdditiveBlending, BackSide, Color, DoubleSide, Euler, ExtrudeGeometry, InstancedBufferAttribute, MathUtils, Shape, ShapeGeometry, ShaderMaterial, SphereGeometry, Vector3 } from 'three';
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
 import { HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
-import { CameraPerspectiveToolbar, OrbitCameraControls, SimulatorBase } from './lib/SimulatorBase.jsx';
-import { createCameraViews } from './lib/simulator-base.js';
+import { CameraPerspectiveToolbar, OrbitCameraControls, OrbitalTrackingParameters, ParticleAppearanceSettings, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { createCameraViews, DEFAULT_SIMULATOR_3D_PARAMETERS } from './lib/simulator-base.js';
 import { FLUID_MODEL_OPTIONS, fluidModelIndex } from './mechanicsModels.js';
 import {
   AIRFLOW_PARAMS,
@@ -43,6 +43,7 @@ import {
 } from './routeModel.js';
 
 const INITIALS = {
+  ...DEFAULT_SIMULATOR_3D_PARAMETERS,
   surfaceTemperature: 81.5,
   roadSurfaceTemperature: 92,
   ambientAirTemperature: 72,
@@ -603,6 +604,7 @@ const particleVertexShader = `
 `;
 
 const particleFragmentShader = `
+  uniform float uParticleOpacity;
   uniform vec3 uCoolColor;
   uniform vec3 uWarmColor;
   uniform vec3 uHotColor;
@@ -612,7 +614,7 @@ const particleFragmentShader = `
     vec3 color = vThermal < 0.5
       ? mix(uCoolColor, uWarmColor, vThermal * 2.0)
       : mix(uWarmColor, uHotColor, (vThermal - 0.5) * 2.0);
-    gl_FragColor = vec4(color, 0.76);
+    gl_FragColor = vec4(color, 0.76 * uParticleOpacity);
   }
 `;
 
@@ -642,6 +644,7 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
       uVelocityTex: { value: null },
       uParticleDiameter: { value: INITIALS.particleDiameter },
       uParticleMagnitudeScale: { value: INITIALS.particleMagnitudeScale },
+      uParticleOpacity: { value: INITIALS.particleAppearance.opacity },
       uCoolColor: { value: new Color('#3a9bb4') },
       uWarmColor: { value: new Color('#f0a23a') },
       uHotColor: { value: new Color('#f45b4f') }
@@ -841,6 +844,7 @@ function ParticleField({ settings, trainRef, onTelemetry, onGpuError }) {
     particleMaterial.uniforms.uVelocityTex.value = velocityTarget.texture;
     particleMaterial.uniforms.uParticleDiameter.value = currentSettings.particleDiameter;
     particleMaterial.uniforms.uParticleMagnitudeScale.value = currentSettings.particleMagnitudeScale;
+    particleMaterial.uniforms.uParticleOpacity.value = currentSettings.particleAppearance.opacity;
 
     telemetryTimer.current += frameDelta;
     if (telemetryTimer.current > 0.4) {
@@ -1480,7 +1484,7 @@ function StationArchitecture({ landingY, surfaceY }) {
   );
 }
 
-function CameraController({ viewMode, orbitalPlaying, parametersVisible, onManualChange }) {
+function CameraController({ viewMode, orbitalPlaying, orbitSettings, parametersVisible, onManualChange }) {
   const { camera, gl, size } = useThree();
   const controlsRef = useRef();
   const destinationRef = useRef(new Vector3(...CAMERA_VIEWS.find((view) => view.id === 'ortho1').position));
@@ -1511,6 +1515,13 @@ function CameraController({ viewMode, orbitalPlaying, parametersVisible, onManua
       if (viewMode !== 'orbital') basePosition.lerp(destinationRef.current, blend);
       controlsRef.current.target.lerp(targetRef.current, blend);
     }
+    if (!manualInteractionRef.current && viewMode === 'orbital' && orbitalPlaying && orbitSettings.cameraOrbitOn) {
+      const target = controlsRef.current.target;
+      const offset = basePosition.clone().sub(target);
+      const angle = Math.max(0, Number(orbitSettings.replayCameraOrbitSpeed) || 0) * delta;
+      offset.applyEuler(new Euler(angle * (orbitSettings.replayCameraOrbitX || 0), angle * (orbitSettings.replayCameraOrbitY || 0), angle * (orbitSettings.replayCameraOrbitZ || 0)));
+      basePosition.copy(target).add(offset);
+    }
     const frameReference = !manualInteractionRef.current && viewMode && viewMode !== 'orbital'
       ? destinationRef.current
       : basePosition;
@@ -1537,7 +1548,7 @@ function CameraController({ viewMode, orbitalPlaying, parametersVisible, onManua
   return (
     <OrbitCameraControls
       ref={controlsRef}
-      cameraParams={{ target: CAMERA_TARGET, minDistance: 12, maxDistance: 90, autoRotate: viewMode === 'orbital' && orbitalPlaying, autoRotateSpeed: 0.55 }}
+      cameraParams={{ target: CAMERA_TARGET, minDistance: 12, maxDistance: 90, autoRotate: false, enabled: orbitSettings.cameraControlsEnabled ?? true, enableZoom: orbitSettings.cameraZoomEnabled && orbitSettings.cameraWheelMode === 'dolly' }}
       onStart={handleManualChange}
     />
   );
@@ -1564,7 +1575,7 @@ function SimulationScene({ settings, viewMode, orbitalPlaying, parametersVisible
       <Train ref={trainRef} active={settings.train} brakes={settings.brakes} />
       <ParticleField key={settings.particleCount} settings={settings} trainRef={trainRef} onTelemetry={onTelemetry} onGpuError={onGpuError} />
       <ContactShadows position={[9, -4, 0]} opacity={0.42} scale={56} blur={2.5} far={8} />
-      <CameraController viewMode={viewMode} orbitalPlaying={orbitalPlaying} parametersVisible={parametersVisible} onManualChange={onManualViewChange} />
+      <CameraController viewMode={viewMode} orbitalPlaying={orbitalPlaying} orbitSettings={settings} parametersVisible={parametersVisible} onManualChange={onManualViewChange} />
     </>
   );
 }
@@ -1764,6 +1775,14 @@ function TelemetryPanel({ settings, onSettingsChange, telemetry, gpuError, susta
         <ParamEditingToggle checked={editing} onChange={onEditing} />
         <HistoryControls canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} />
       </div>
+      <OrbitalTrackingParameters configuration={settings} onChange={onSettingsChange} className="parameter-group" />
+      <ParticleAppearanceSettings configuration={settings} onChange={onSettingsChange} className="parameter-group" capabilities={{ shape: false, derivativeOrder: false, colorMode: false, color: false }} fields={[
+        { key: 'sizeScale', path: 'particleDiameter', type: 'range', label: 'Particle diameter', min: 0.2, max: 1.4, step: 0.05, suffix: ' m' },
+        { key: 'shape', path: 'particleAppearance.shape', type: 'select', label: 'Particle shape', options: ['native'], disabled: true },
+        { key: 'derivativeOrder', path: 'particleAppearance.derivativeOrder', type: 'range', label: 'Derivative order', min: 0, max: 4, step: 1, disabled: true },
+        { key: 'color', path: 'particleAppearance.color', type: 'color', label: 'Particle tint', disabled: true },
+        { key: 'opacity', path: 'particleAppearance.opacity', type: 'range', label: 'Particle opacity', min: 0, max: 1, step: 0.01 }
+      ]} />
       <div className="telemetry-heading"><span>Ambient field</span><strong>{temperature.toFixed(1)}°F</strong></div>
       <Sparkline values={temperatureHistory} />
       {gpuError && <p className="error-copy">GPU field offline: {gpuError}</p>}
@@ -1821,7 +1840,6 @@ function TelemetryPanel({ settings, onSettingsChange, telemetry, gpuError, susta
         <ControlSlider label="Train stop frequency" value={settings.trainStopFrequency} min={0} max={1} step={0.05} suffix="" description="Sets the fraction of train passes that stop at the platform." showDescription={showDescriptions} onChange={(trainStopFrequency) => onSettingsChange({ trainStopFrequency })} />
         <ControlSlider label="Train stop duration" value={settings.trainStopDuration} min={0} max={30} step={1} suffix=" s" description="Sets how long a stopping train dwells at the platform." showDescription={showDescriptions} onChange={(trainStopDuration) => onSettingsChange({ trainStopDuration })} />
         <ControlSlider label="Particle count" value={settings.particleCount} min={1024} max={9216} step={512} suffix="" description="Rebuilds the GPU field with the selected number of rendered particles." showDescription={showDescriptions} onChange={(particleCount) => onSettingsChange({ particleCount })} />
-        <ControlSlider label="Particle diameter" value={settings.particleDiameter} min={0.2} max={1.4} step={0.05} suffix=" m" description="Changes the rendered diameter of each airflow particle." showDescription={showDescriptions} onChange={(particleDiameter) => onSettingsChange({ particleDiameter })} />
         <ControlSlider label="Velocity diameter response" value={settings.particleMagnitudeScale} min={0} max={2} step={0.05} suffix="" description="Scales individual particle diameter according to velocity magnitude." showDescription={showDescriptions} onChange={(particleMagnitudeScale) => onSettingsChange({ particleMagnitudeScale })} />
       </div>
       <VentFlowCharts settings={settings} telemetry={telemetry} onSettingsChange={onSettingsChange} showDescriptions={showDescriptions} />
@@ -1863,7 +1881,7 @@ export function SubwaySim({ onBack }) {
   }, [reportOpen]);
 
   return (
-    <SimulatorBase className="app-shell" headerClassName="topbar" brandClassName="brand-lockup" mark="T" markClassName="brand-mark" title="TRANSIT / UNDERGROUND" subtitle="Thermodynamics lab" meta={<><span>GPGPU / SPH</span><span>FIELD 04</span></>} metaClassName="subway-base-actions" metaContentClassName="topbar-meta" onHome={onBack} homeClassName="mode-switch">
+    <SimulatorBase className="app-shell" headerClassName="topbar" brandClassName="brand-lockup" mark="T" markClassName="brand-mark" title="TRANSIT / UNDERGROUND" subtitle="Thermodynamics lab" meta={<><span>GPGPU / SPH</span><span>FIELD 04</span></>} metaClassName="subway-base-actions" metaContentClassName="topbar-meta" parameterValue={settings} presetValue={editor.baseline} onParameterChange={(next) => commit(next)} onHome={onBack} homeClassName="mode-switch">
       <div className="scene-layer">
         <Canvas camera={{ position: [7, 20, 55], fov: 45, near: 0.1, far: 1000 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}>
           <color attach="background" args={['#071316']} />

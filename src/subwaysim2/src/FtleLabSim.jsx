@@ -4,8 +4,8 @@ import { Line } from '@react-three/drei';
 import { BufferAttribute, BufferGeometry, Color } from 'three';
 import { FTLE_FLOW_PRESETS, integrateTrajectory, sampleFtleGrid, velocityAt } from './ftleModel.js';
 import { NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
-import { CameraPerspectiveToolbar, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
-import { DEFAULT_CAMERA_VIEWS } from './lib/simulator-base.js';
+import { CameraPerspectiveToolbar, OrbitalTrackingParameters, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { DEFAULT_CAMERA_VIEWS, DEFAULT_SIMULATOR_3D_PARAMETERS } from './lib/simulator-base.js';
 
 const METRIC_OPTIONS = [
   { value: 'ftle', label: 'FTLE' },
@@ -30,7 +30,7 @@ function scenePoint(point, bounds, height = 0) {
   return [x, height, z];
 }
 
-function FtleField({ grid, bounds, metric }) {
+function FtleField({ grid, bounds, metric, particleAppearance }) {
   const { geometry, range } = useMemo(() => {
     const values = grid.samples.map((sample) => metric === 'volume'
       ? Math.abs(sample.volumeChange - 1)
@@ -61,7 +61,7 @@ function FtleField({ grid, bounds, metric }) {
   return (
     <group>
       <points geometry={geometry}>
-        <pointsMaterial size={0.16} vertexColors sizeAttenuation transparent opacity={0.92} />
+        <pointsMaterial size={0.16 * particleAppearance.sizeScale} vertexColors sizeAttenuation transparent opacity={0.92 * particleAppearance.opacity} />
       </points>
       <mesh position={[0, -0.04, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[12.4, 8.4]} />
@@ -88,16 +88,16 @@ function Trajectory({ trajectory, bounds }) {
   );
 }
 
-function FtleScene({ grid, bounds, metric, trajectory, viewMode, orbitPlaying, onUserInteraction }) {
+function FtleScene({ grid, bounds, metric, trajectory, particleAppearance, orbitSettings, viewMode, orbitPlaying, onUserInteraction }) {
   return (
     <>
       <color attach="background" args={['#071215']} />
       <fog attach="fog" args={['#071215', 14, 30]} />
       <ambientLight intensity={0.7} color="#a6d4d0" />
       <directionalLight position={[5, 9, 4]} intensity={1.4} color="#ffe7b1" />
-      <FtleField grid={grid} bounds={bounds} metric={metric} />
+      <FtleField grid={grid} bounds={bounds} metric={metric} particleAppearance={particleAppearance} />
       <Trajectory trajectory={trajectory} bounds={bounds} />
-      <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} cameraParams={{ minDistance: 7, maxDistance: 28, target: [0, 0.5, 0] }} onUserInteraction={onUserInteraction} />
+      <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={orbitSettings} cameraParams={{ minDistance: 7, maxDistance: 28, target: [0, 0.5, 0] }} onUserInteraction={onUserInteraction} />
     </>
   );
 }
@@ -107,6 +107,7 @@ function Slider({ label, value, min, max, step, onChange }) {
 }
 
 export default function FtleLabSim({ onBack }) {
+  const [presetParameters] = useState(() => ({ flow: 'double-gyre', direction: 'forward', metric: 'ftle', horizon: 2.5, rate: 0.65, resolution: 28, seedX: 0.6, seedY: 0.5, ...DEFAULT_SIMULATOR_3D_PARAMETERS }));
   const [flow, setFlow] = useState('double-gyre');
   const [direction, setDirection] = useState('forward');
   const [metric, setMetric] = useState('ftle');
@@ -116,6 +117,19 @@ export default function FtleLabSim({ onBack }) {
   const [seedX, setSeedX] = useState(0.6);
   const [seedY, setSeedY] = useState(0.5);
   const [panelVisible, setPanelVisible] = useState(true);
+  const [viewSettings, setViewSettings] = useState(() => ({ ...DEFAULT_SIMULATOR_3D_PARAMETERS }));
+  const parameterValue = { ...presetParameters, ...viewSettings, flow, direction, metric, horizon, rate, resolution, seedX, seedY };
+  const updateParameterValue = (next) => {
+    setFlow(next.flow);
+    setDirection(next.direction);
+    setMetric(next.metric);
+    setHorizon(next.horizon);
+    setRate(next.rate);
+    setResolution(next.resolution);
+    setSeedX(next.seedX);
+    setSeedY(next.seedY);
+    setViewSettings(Object.fromEntries(Object.keys(DEFAULT_SIMULATOR_3D_PARAMETERS).map((key) => [key, next[key]])));
+  };
   const [viewMode, setViewMode] = useState('ortho1');
   const [orbitPlaying, setOrbitPlaying] = useState(true);
   const bounds = flowBounds(flow);
@@ -146,12 +160,14 @@ export default function FtleLabSim({ onBack }) {
   };
 
   return (
-    <SimulatorBase className="ftle-app" headerClassName="ftle-topbar" mark="FTL" markClassName="ftle-mark" title="FINITE-TIME LYAPUNOV LAB" subtitle="Trajectory deformation / coherent structures" actions={<button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button>} onHome={onBack}>
-      <div className="ftle-scene"><Canvas camera={{ position: [9, 9, 11], fov: 43, near: 0.1, far: 80 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><FtleScene grid={grid} bounds={bounds} metric={metric} trajectory={trajectory} viewMode={viewMode} orbitPlaying={orbitPlaying} onUserInteraction={() => setViewMode(null)} /></Canvas></div>
+    <SimulatorBase className="ftle-app" headerClassName="ftle-topbar" mark="FTL" markClassName="ftle-mark" title="FINITE-TIME LYAPUNOV LAB" subtitle="Trajectory deformation / coherent structures" parameterValue={parameterValue} presetValue={presetParameters} onParameterChange={updateParameterValue} actions={<button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button>} onHome={onBack}>
+      <div className="ftle-scene"><Canvas camera={{ position: [9, 9, 11], fov: 43, near: 0.1, far: 80 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><FtleScene grid={grid} bounds={bounds} metric={metric} trajectory={trajectory} particleAppearance={viewSettings.particleAppearance} orbitSettings={viewSettings} viewMode={viewMode} orbitPlaying={orbitPlaying} onUserInteraction={() => setViewMode(null)} /></Canvas></div>
       <CameraPerspectiveToolbar className="simulator-perspective-toolbar" modesClassName="simulator-perspective-modes" views={DEFAULT_CAMERA_VIEWS} viewMode={viewMode} orbitPlaying={orbitPlaying} onViewChange={setViewMode} onToggleOrbit={() => setOrbitPlaying((value) => !value)} />
       <section className="ftle-title"><span>ACTIVE FIELD / {direction.toUpperCase()} FTLE</span><h1>Trace deformation.<br />Reveal transport.</h1><p>Finite-time diagnostics describe the selected velocity field; they do not by themselves prove a singularity or event horizon.</p></section>
       <aside className={`ftle-panel ${panelVisible ? '' : 'is-hidden'}`}>
         <div className="ftle-panel-heading"><div><span>FLOW MAP / CAUCHY-GREEN</span><h2>FTLE and LCS</h2></div><button type="button" onClick={onBack}>Lab menu</button></div>
+        <OrbitalTrackingParameters configuration={parameterValue} className="ftle-control-group" />
+        <ParticleAppearanceSettings configuration={parameterValue} className="ftle-control-group" capabilities={{ shape: false, derivativeOrder: false, colorMode: false, color: false }} />
         <p className="ftle-warning">Forward FTLE highlights repelling material structures. Backward FTLE highlights attracting structures. Particle trajectories remain distinct from acoustic characteristics.</p>
         <ParamSelect className="ftle-select" label="Velocity field" value={flow} options={FTLE_FLOW_PRESETS} onChange={setFlow} />
         <ParamSelect className="ftle-select" label="Time direction" value={direction} options={DIRECTION_OPTIONS} onChange={setDirection} />

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
-import { createHistoryState, diffParameterValues, getAtPath, historyReducer, parseNumericValue, setAtPath, useSimulationEditor } from './simulation-state.js';
+import { changedParameterPaths, changedPathsBetween, createHistoryState, diffParameterValues, getAtPath, historyReducer, parseNumericValue, resetStatePaths, setAtPath, useSimulationEditor } from './simulation-state.js';
 
 test('simulation editor exposes an empty parameter log as valid YAML', () => {
   function LogProbe() {
@@ -36,6 +36,21 @@ test('parameter edit diffs include nested configuration values and array paths',
     { type: 'parameter-edit', path: 'detector.brightness', oldValue: 1, newValue: 1.5, value: 1.5, oldExists: true, newExists: true, offsetMs: 20 },
     { type: 'parameter-edit', path: 'waves[0].amplitude', oldValue: 0.5, newValue: 0.8, value: 0.8, oldExists: true, newExists: true, offsetMs: 20 }
   ]);
+});
+
+test('preset parameter groups identify changed fields and reset only their paths', () => {
+  const preset = { camera: { zoom: 1, fov: 42 }, waves: [{ amplitude: 0.5 }] };
+  const current = { camera: { zoom: 2, fov: 55 }, waves: [{ amplitude: 1 }] };
+  const cameraPaths = ['camera.zoom', 'camera.fov'];
+  assert.deepEqual(changedPathsBetween(current, preset, cameraPaths), cameraPaths);
+  assert.deepEqual(resetStatePaths(current, preset, cameraPaths), { camera: { zoom: 1, fov: 42 }, waves: [{ amplitude: 1 }] });
+});
+
+test('preset change summary lists only changed leaf paths and groups resized arrays', () => {
+  assert.deepEqual(changedParameterPaths(
+    { waves: [{ amplitude: 1 }, { amplitude: 0.4 }], cameraZoom: 2, mode: 'a' },
+    { waves: [{ amplitude: 0.5 }], cameraZoom: 1, mode: 'a' }
+  ), ['waves', 'cameraZoom']);
 });
 
 test('undo and redo include old/new values in an enabled parameter log', () => {

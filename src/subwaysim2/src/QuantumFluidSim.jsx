@@ -12,8 +12,8 @@ import {
   stepGrossPitaevskii
 } from './quantumFluidModel.js';
 import { NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
-import { CameraPerspectiveToolbar, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
-import { DEFAULT_CAMERA_VIEWS } from './lib/simulator-base.js';
+import { CameraPerspectiveToolbar, OrbitalTrackingParameters, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { DEFAULT_CAMERA_VIEWS, DEFAULT_SIMULATOR_3D_PARAMETERS } from './lib/simulator-base.js';
 
 const VIEW_OPTIONS = [
   { value: 'side-by-side', label: 'GPE / Euler-Korteweg' },
@@ -113,11 +113,11 @@ function updateDifferenceGeometry(geometry, size, comparison, width = 9) {
   geometry.attributes.color.needsUpdate = true;
 }
 
-function FieldPoints({ geometry, position, visible }) {
-  return <points geometry={geometry} position={position} visible={visible}><pointsMaterial size={0.13} vertexColors sizeAttenuation transparent opacity={0.94} /></points>;
+function FieldPoints({ geometry, position, visible, particleAppearance }) {
+  return <points geometry={geometry} position={position} visible={visible}><pointsMaterial size={0.13 * particleAppearance.sizeScale} vertexColors sizeAttenuation transparent opacity={0.94 * particleAppearance.opacity} /></points>;
 }
 
-function QuantumEvolution({ settings, running, resetToken, onTelemetry }) {
+function QuantumEvolution({ settings, running, resetToken, onTelemetry, particleAppearance }) {
   const gpeGeometry = useMemo(() => createGridGeometry(settings.size), [settings.size]);
   const hydrodynamicGeometry = useMemo(() => createGridGeometry(settings.size), [settings.size]);
   const differenceGeometry = useMemo(() => createGridGeometry(settings.size), [settings.size]);
@@ -187,21 +187,21 @@ function QuantumEvolution({ settings, running, resetToken, onTelemetry }) {
 
   const sideBySide = settings.view === 'side-by-side';
   return <group>
-    <FieldPoints geometry={gpeGeometry} position={sideBySide ? [-4.6, 0, 0] : [0, 0, 0]} visible={sideBySide || settings.view === 'gpe'} />
-    <FieldPoints geometry={hydrodynamicGeometry} position={sideBySide ? [4.6, 0, 0] : [0, 0, 0]} visible={sideBySide || settings.view === 'euler-korteweg'} />
-    <FieldPoints geometry={differenceGeometry} position={[0, 0, 0]} visible={settings.view === 'difference'} />
+    <FieldPoints geometry={gpeGeometry} position={sideBySide ? [-4.6, 0, 0] : [0, 0, 0]} visible={sideBySide || settings.view === 'gpe'} particleAppearance={particleAppearance} />
+    <FieldPoints geometry={hydrodynamicGeometry} position={sideBySide ? [4.6, 0, 0] : [0, 0, 0]} visible={sideBySide || settings.view === 'euler-korteweg'} particleAppearance={particleAppearance} />
+    <FieldPoints geometry={differenceGeometry} position={[0, 0, 0]} visible={settings.view === 'difference'} particleAppearance={particleAppearance} />
   </group>;
 }
 
-function QuantumScene({ viewMode, orbitPlaying, onUserInteraction, ...props }) {
+function QuantumScene({ viewMode, orbitPlaying, orbitSettings, particleAppearance, onUserInteraction, ...props }) {
   return <>
     <color attach="background" args={['#071117']} />
     <fog attach="fog" args={['#071117', 16, 34]} />
     <ambientLight intensity={0.65} color="#b8dcd5" />
     <directionalLight intensity={1.3} position={[5, 10, 5]} color="#ffe8b5" />
     <gridHelper args={[20, 40, '#244d55', '#112b31']} position={[0, -0.08, 0]} />
-    <QuantumEvolution {...props} />
-    <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} cameraParams={{ minDistance: 8, maxDistance: 34, target: [0, 0.5, 0] }} onUserInteraction={onUserInteraction} />
+    <QuantumEvolution {...props} particleAppearance={particleAppearance} />
+    <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={orbitSettings} cameraParams={{ minDistance: 8, maxDistance: 34, target: [0, 0.5, 0] }} onUserInteraction={onUserInteraction} />
   </>;
 }
 
@@ -210,6 +210,7 @@ function Slider({ label, value, min, max, step, onChange }) {
 }
 
 export default function QuantumFluidSim({ onBack }) {
+  const [presetSettings] = useState({ size: 32, domainSize: 12, preset: 'vortex', view: 'side-by-side', field: 'density', interaction: 0.8, potentialStrength: 0, stepSize: 0.002, timeScale: 1, running: true, ...DEFAULT_SIMULATOR_3D_PARAMETERS });
   const [settings, setSettings] = useState({
     size: 32,
     domainSize: 12,
@@ -225,16 +226,25 @@ export default function QuantumFluidSim({ onBack }) {
   const [panelVisible, setPanelVisible] = useState(true);
   const [viewMode, setViewMode] = useState('ortho1');
   const [orbitPlaying, setOrbitPlaying] = useState(true);
+  const [viewSettings, setViewSettings] = useState(() => ({ ...DEFAULT_SIMULATOR_3D_PARAMETERS }));
   const [resetToken, setResetToken] = useState(0);
   const [telemetry, setTelemetry] = useState({ time: 0, norm: 0, energy: 0, normDrift: 0, energyDrift: 0, vortexCount: 0, totalCharge: 0, phaseSlips: 0, rmsDifference: 0, maximumDifference: 0 });
   const update = (patch) => setSettings((current) => ({ ...current, ...patch }));
+  const parameterValue = { ...settings, ...viewSettings, running };
+  const updateParameterValue = (next) => {
+    setSettings((current) => Object.fromEntries(Object.keys(current).map((key) => [key, next[key]])));
+    setRunning(next.running);
+    setViewSettings(Object.fromEntries(Object.keys(DEFAULT_SIMULATOR_3D_PARAMETERS).map((key) => [key, next[key]])));
+  };
 
-  return <SimulatorBase className="quantum-app" headerClassName="quantum-topbar" mark="QFL" markClassName="quantum-mark" title="QUANTUM FLUID LAB" subtitle="Gross-Pitaevskii / Euler-Korteweg" actions={<><button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button><button type="button" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></>} onHome={onBack}>
-    <div className="quantum-scene"><Canvas camera={{ position: [11, 9, 13], fov: 43, near: 0.1, far: 90 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><QuantumScene settings={settings} running={running} resetToken={resetToken} onTelemetry={setTelemetry} viewMode={viewMode} orbitPlaying={orbitPlaying} onUserInteraction={() => setViewMode(null)} /></Canvas></div>
+  return <SimulatorBase className="quantum-app" headerClassName="quantum-topbar" mark="QFL" markClassName="quantum-mark" title="QUANTUM FLUID LAB" subtitle="Gross-Pitaevskii / Euler-Korteweg" parameterValue={parameterValue} presetValue={presetSettings} onParameterChange={updateParameterValue} actions={<><button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button><button type="button" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></>} onHome={onBack}>
+    <div className="quantum-scene"><Canvas camera={{ position: [11, 9, 13], fov: 43, near: 0.1, far: 90 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><QuantumScene settings={settings} running={running} resetToken={resetToken} onTelemetry={setTelemetry} viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={viewSettings} particleAppearance={viewSettings.particleAppearance} onUserInteraction={() => setViewMode(null)} /></Canvas></div>
     <CameraPerspectiveToolbar className="simulator-perspective-toolbar" modesClassName="simulator-perspective-modes" views={DEFAULT_CAMERA_VIEWS} viewMode={viewMode} orbitPlaying={orbitPlaying} onViewChange={setViewMode} onToggleOrbit={() => setOrbitPlaying((value) => !value)} />
     <section className="quantum-title"><span>ACTIVE FIELD / COMPLEX ORDER PARAMETER</span><h1>Evolve phase.<br />Measure conservation.</h1><p>Split-step Fourier GPE and finite-difference Euler-Korteweg states advance from identical initial conditions.</p></section>
     <aside className={`quantum-panel ${panelVisible ? '' : 'is-hidden'}`}>
       <div className="quantum-panel-heading"><div><span>PERIODIC GRID / ℏ = m = 1</span><h2>Quantum fluid</h2></div><button type="button" onClick={onBack}>Lab menu</button></div>
+      <OrbitalTrackingParameters configuration={parameterValue} className="quantum-control-group" />
+      <ParticleAppearanceSettings configuration={parameterValue} className="quantum-control-group" capabilities={{ shape: false, derivativeOrder: false, colorMode: false, color: false }} />
       <p className="quantum-warning">The hydrodynamic map is singular at vacuum nodes; this implementation uses a declared density floor for finite diagnostics.</p>
       <ParamSelect className="quantum-select" label="Initial state" value={settings.preset} options={QUANTUM_FLUID_PRESETS} onChange={(preset) => update({ preset })} />
       <ParamSelect className="quantum-select" label="View" value={settings.view} options={VIEW_OPTIONS} onChange={(view) => update({ view })} />

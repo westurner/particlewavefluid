@@ -8,8 +8,8 @@ import { calculateFocusBeamDirection, calculatePlasmaFocusBeam, PLASMA_FOCUS_ION
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
 import { ColorParamControl, HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
-import { CameraPerspectiveToolbar, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
-import { DEFAULT_CAMERA_VIEWS } from './lib/simulator-base.js';
+import { CameraPerspectiveToolbar, OrbitalTrackingParameters, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { DEFAULT_CAMERA_VIEWS, DEFAULT_SIMULATOR_3D_PARAMETERS } from './lib/simulator-base.js';
 import { QUANTUM_TRANSPORT_OPTIONS, quantumTransportIndex } from './mechanicsModels.js';
 
 const DEFAULT_PLASMA_COLOR = '#ff4fa3';
@@ -26,6 +26,7 @@ const INITIAL_EXCITATION_CONFIGURATIONS = Object.fromEntries(
 );
 
 const INITIAL_CONFIGURATION = {
+  ...DEFAULT_SIMULATOR_3D_PARAMETERS,
   shape: 'elongated',
   configuration: 'thetaPinch',
   input: 'DT',
@@ -1273,7 +1274,7 @@ function PlasmaParticles({ configuration, model, onGpuError, focusedAnnotation }
       uPointSize: { value: 260 },
       uOpacity: { value: configuration.plasmaOpacity },
       uHighlight: { value: 0 },
-      uColor: { value: new Color(configuration.plasmaColor) }
+      uColor: { value: new Color(configuration.particleAppearance.colorMode === 'custom' ? configuration.particleAppearance.color : configuration.plasmaColor) }
     },
     vertexShader: plasmaVertexShader,
     fragmentShader: plasmaFragmentShader,
@@ -1424,10 +1425,10 @@ function PlasmaParticles({ configuration, model, onGpuError, focusedAnnotation }
     compute.compute();
     material.uniforms.uPositionTex.value = compute.getCurrentRenderTarget(positionVariable).texture;
     material.uniforms.uVelocityTex.value = compute.getCurrentRenderTarget(velocityVariable).texture;
-    material.uniforms.uOpacity.value = currentConfiguration.plasmaOpacity;
-    material.uniforms.uColor.value.set(currentConfiguration.plasmaColor);
+    material.uniforms.uOpacity.value = currentConfiguration.plasmaOpacity * currentConfiguration.particleAppearance.opacity;
+    material.uniforms.uColor.value.set(currentConfiguration.particleAppearance.colorMode === 'custom' ? currentConfiguration.particleAppearance.color : currentConfiguration.plasmaColor);
     material.uniforms.uHighlight.value = stateRef.current.focusedAnnotation === 'plasma' ? 1 : 0;
-    material.uniforms.uPointSize.value = stateRef.current.focusedAnnotation === 'plasma' ? 340 : 260;
+    material.uniforms.uPointSize.value = (stateRef.current.focusedAnnotation === 'plasma' ? 340 : 260) * currentConfiguration.particleAppearance.sizeScale;
   });
 
   return <points geometry={geometry} material={material} scale={configuration.vesselScale ?? 1} rotation={[0, MathUtils.degToRad(configuration.fieldTilt ?? 0), 0]} visible={configuration.showPlasma} renderOrder={20} frustumCulled={false} />;
@@ -1566,7 +1567,7 @@ function ReactorScene({ configuration, onGpuError, parametersVisible, focusedAnn
         {configuration.showAxis && <FieldAxis model={model} scale={scale} tilt={configuration.fieldTilt} />}
       </group>
       <gridHelper args={[36, 18, '#2b5b5a', '#153434']} position={[0, -5.2, 0]} />
-      <PerspectiveOrbitControls controlsRef={controlsRef} views={DEFAULT_CAMERA_VIEWS} viewMode={viewMode} orbitPlaying={orbitPlaying} cameraParams={{ minDistance: 9, maxDistance: 38, target: [0, 0, 0] }} onUserInteraction={onUserInteraction} />
+      <PerspectiveOrbitControls controlsRef={controlsRef} views={DEFAULT_CAMERA_VIEWS} viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={configuration} cameraParams={{ minDistance: 9, maxDistance: 38, target: [0, 0, 0] }} onUserInteraction={onUserInteraction} />
       <ReactorCameraFrame controlsRef={controlsRef} parametersVisible={parametersVisible} />
     </>
   );
@@ -1667,6 +1668,8 @@ function FrcPanel({ configuration, model, gpuError, onChange, onHide, editing = 
       <div className="frc-panel-topline"><span className="frc-panel-kicker"><i /> DEVICE + PLASMA / PHASE 02</span><button type="button" className="frc-hide-button" onClick={onHide}>Hide params</button></div>
       <div className="frc-status"><span>{deviceStatus}</span><strong>{selectedDevice.deviceTopology ? 'TOROIDAL GUIDE FIELD' : model.reversedField ? 'STABLE AXIAL BIAS' : 'OPEN AXIAL BIAS'}</strong></div>
       <div className="frc-editor-toolbar"><ParamEditingToggle checked={editing} onChange={onEditing} /><HistoryControls canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} /></div>
+      <OrbitalTrackingParameters configuration={configuration} onChange={onChange} className="frc-control-group" />
+      <ParticleAppearanceSettings configuration={configuration} onChange={onChange} className="frc-control-group" capabilities={{ shape: false, derivativeOrder: false, color: true }} />
       {gpuError && <p className="frc-gpu-error">GPU OFFLINE / {gpuError}</p>}
       <div className="frc-select-grid">
         <ParamSelect label="Vessel shape" value={configuration.shape} options={Object.entries(FRC_SHAPES).map(([id, shape]) => ({ value: id, label: shape.label }))} onChange={selectVesselShape} />
@@ -1959,7 +1962,7 @@ export default function FrcFusionSim({ onBack }) {
   });
 
   return (
-    <SimulatorBase className="frc-app" headerClassName="frc-topbar" brandClassName="frc-brand" mark="FRC" markClassName="frc-mark" title="FUSION DEVICE LAB" subtitle="Field-reversed configuration / phase 02" meta={<><span>PHYSICAL MODEL</span><span>GPGPU TRANSPORT ACTIVE</span></>} metaClassName="frc-header-actions" metaContentClassName="frc-top-meta" onHome={onBack} homeClassName="frc-back-button">
+    <SimulatorBase className="frc-app" headerClassName="frc-topbar" brandClassName="frc-brand" mark="FRC" markClassName="frc-mark" title="FUSION DEVICE LAB" subtitle="Field-reversed configuration / phase 02" meta={<><span>PHYSICAL MODEL</span><span>GPGPU TRANSPORT ACTIVE</span></>} metaClassName="frc-header-actions" metaContentClassName="frc-top-meta" parameterValue={configuration} presetValue={editor.baseline} onParameterChange={updateConfiguration} onHome={onBack} homeClassName="frc-back-button">
       <div className="frc-scene"><Canvas camera={{ position: [0, 0, 22], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><ReactorScene configuration={configuration} onGpuError={setGpuError} parametersVisible={parametersVisible} focusedAnnotation={focusedAnnotation} onHoverAnnotation={setHoveredAnnotation} onToggleAnnotation={toggleAnnotationFocus} viewMode={viewMode} orbitPlaying={orbitPlaying} onUserInteraction={() => setViewMode(null)} /></Canvas></div>
       <section className="frc-title"><p>Transparent reactor study</p><h1>Shape the vessel.<br />Read the field.</h1><span>GPU plasma transport is active inside the device. Kinetic solver dynamics work follows in phase 03.</span></section>
       <CameraPerspectiveToolbar className="frc-view-toolbar" modesClassName="simulator-perspective-modes" views={DEFAULT_CAMERA_VIEWS} viewMode={viewMode} orbitPlaying={orbitPlaying} onViewChange={setViewMode} onToggleOrbit={() => setOrbitPlaying((value) => !value)} controls={<><button type="button" onClick={() => setParametersVisible((visible) => !visible)}>{parametersVisible ? 'Hide params' : 'Show params'}</button><span>DEVICE SCALE 1:{configuration.vesselScale.toFixed(2)}</span></>} />

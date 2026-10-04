@@ -117,6 +117,38 @@ export function setAtPath(value, path, nextValue) {
   return next;
 }
 
+export function changedPathsBetween(value, baseline, paths) {
+  return paths.filter((path) => !statesEqual(getAtPath(value, path), getAtPath(baseline, path)));
+}
+
+export function resetStatePaths(value, baseline, paths) {
+  return paths.reduce((next, path) => setAtPath(next, path, getAtPath(baseline, path)), cloneState(value));
+}
+
+export function changedParameterPaths(value, baseline) {
+  const changed = [];
+  const visit = (current, preset, path) => {
+    if (statesEqual(current, preset)) return;
+    const currentIsRecord = current !== null && typeof current === 'object';
+    const presetIsRecord = preset !== null && typeof preset === 'object';
+    if (currentIsRecord && presetIsRecord && Array.isArray(current) === Array.isArray(preset)) {
+      if (Array.isArray(current) && current.length !== preset.length) {
+        changed.push(path);
+        return;
+      }
+      const keys = new Set([...Object.keys(current), ...Object.keys(preset)]);
+      for (const key of keys) {
+        const childPath = Array.isArray(current) ? `${path}[${key}]` : path ? `${path}.${key}` : key;
+        visit(current[key], preset[key], childPath);
+      }
+      return;
+    }
+    if (path) changed.push(path);
+  };
+  visit(value, baseline, '');
+  return changed;
+}
+
 export function parseNumericValue(rawValue, { min = -Infinity, max = Infinity, step = 0 } = {}) {
   const parsed = typeof rawValue === 'number' ? rawValue : Number(String(rawValue).trim());
   if (!Number.isFinite(parsed)) return null;

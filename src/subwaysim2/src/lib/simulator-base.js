@@ -2,6 +2,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { cloneState, setAtPath } from './simulation-state.js';
 
 export const DEFAULT_SIMULATOR_CAMERA_CONFIGURATION = Object.freeze({
+  cameraControlsEnabled: true,
   replayCameraTrack: 'easing',
   replayCameraEasing: 0.1,
   replayCameraOrbitSpeed: 0.1,
@@ -21,6 +22,31 @@ export const DEFAULT_SIMULATOR_CAMERA_CONFIGURATION = Object.freeze({
   cameraFov: 25,
   cameraNear: 0.1,
   cameraFar: 100
+});
+
+export const DEFAULT_ORBITAL_TRACKING_CONFIGURATION = Object.freeze({
+  cameraControlsEnabled: true,
+  cameraOrbitOn: true,
+  cameraZoomEnabled: true,
+  cameraWheelMode: 'zoom',
+  replayCameraOrbitSpeed: 0.55,
+  replayCameraOrbitX: 0,
+  replayCameraOrbitY: 1,
+  replayCameraOrbitZ: 0
+});
+
+export const DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION = Object.freeze({
+  sizeScale: 1,
+  shape: 'native',
+  derivativeOrder: 1,
+  colorMode: 'native',
+  color: '#ffffff',
+  opacity: 1
+});
+
+export const DEFAULT_SIMULATOR_3D_PARAMETERS = Object.freeze({
+  ...DEFAULT_ORBITAL_TRACKING_CONFIGURATION,
+  particleAppearance: DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION
 });
 
 export const DEFAULT_ORBIT_CAMERA_PARAMS = Object.freeze({

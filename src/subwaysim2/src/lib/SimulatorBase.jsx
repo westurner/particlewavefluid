@@ -1,10 +1,11 @@
-import { ParamSelect, YamlTextArea } from './ParamControls.jsx';
+import { BooleanParamControl, ColorParamControl, ParamSelect, PresetParametersProvider, SimulatorParameterControls, YamlTextArea } from './ParamControls.jsx';
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { OrbitControls } from '@react-three/drei';
-import { useThree } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { NumericParamControl } from './ParamControls.jsx';
-import { cloneState, statesEqual } from './simulation-state.js';
-import { appendJournalEntry, CAMERA_WHEEL_MODE_OPTIONS, createCameraViews, createOrbitCameraParams, DEFAULT_CAMERA_VIEWS, rewindJournal, snapshotAtJournalTime } from './simulator-base.js';
+import { changedParameterPaths, cloneState, getAtPath, resetStatePaths, statesEqual } from './simulation-state.js';
+import { appendJournalEntry, CAMERA_WHEEL_MODE_OPTIONS, createCameraViews, createOrbitCameraParams, DEFAULT_CAMERA_VIEWS, DEFAULT_ORBITAL_TRACKING_CONFIGURATION, DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, rewindJournal, snapshotAtJournalTime } from './simulator-base.js';
+import { Euler, Vector3 } from 'three';
 
 export const OrbitCameraControls = forwardRef(function OrbitCameraControls({ cameraParams, ...props }, ref) {
   const cameraParamsKey = JSON.stringify(cameraParams);
@@ -30,8 +31,8 @@ export function CameraPerspectiveToolbar({ views = DEFAULT_CAMERA_VIEWS, viewMod
   );
 }
 
-export function PerspectiveOrbitControls({ viewMode, orbitPlaying, views = DEFAULT_CAMERA_VIEWS, cameraParams = {}, onUserInteraction, controlsRef: forwardedControlsRef, children }) {
-  const { camera } = useThree();
+export function PerspectiveOrbitControls({ viewMode, orbitPlaying, views = DEFAULT_CAMERA_VIEWS, cameraParams = {}, orbitSettings = DEFAULT_ORBITAL_TRACKING_CONFIGURATION, onUserInteraction, controlsRef: forwardedControlsRef, children }) {
+  const { camera, gl } = useThree();
   const controlsRef = useRef(null);
   const assignControlsRef = useCallback((instance) => {
     controlsRef.current = instance;
@@ -43,6 +44,7 @@ export function PerspectiveOrbitControls({ viewMode, orbitPlaying, views = DEFAU
   const viewKey = JSON.stringify(views);
   const stableViews = useMemo(() => views, [viewKey]);
   const orbitTargetKey = JSON.stringify(stableCameraParams.target);
+  const orbitSettingsKey = JSON.stringify(orbitSettings);
 
   useEffect(() => {
     if (!viewMode || viewMode === 'orbital') return;
@@ -55,37 +57,112 @@ export function PerspectiveOrbitControls({ viewMode, orbitPlaying, views = DEFAU
     controlsRef.current?.update();
   }, [camera, orbitTargetKey, stableCameraParams.target, stableViews, viewMode]);
 
+  useFrame((_, delta) => {
+    const controls = controlsRef.current;
+    if (!controls || viewMode !== 'orbital' || !orbitPlaying || !orbitSettings.cameraOrbitOn) return;
+    const target = controls.target;
+    const offset = camera.position.clone().sub(target);
+    const angle = Math.max(0, Number(orbitSettings.replayCameraOrbitSpeed) || 0) * delta;
+    offset.applyEuler(new Euler(angle * (orbitSettings.replayCameraOrbitX || 0), angle * (orbitSettings.replayCameraOrbitY || 0), angle * (orbitSettings.replayCameraOrbitZ || 0)));
+    camera.position.copy(target).add(offset);
+    controls.update();
+  });
+
+  useEffect(() => {
+    if (!camera.isPerspectiveCamera) return undefined;
+    if (Number.isFinite(orbitSettings.cameraFov)) camera.fov = orbitSettings.cameraFov;
+    if (Number.isFinite(orbitSettings.cameraNear)) camera.near = orbitSettings.cameraNear;
+    if (Number.isFinite(orbitSettings.cameraFar)) camera.far = orbitSettings.cameraFar;
+    if (Number.isFinite(orbitSettings.cameraZoom)) camera.zoom = orbitSettings.cameraZoomEnabled ? orbitSettings.cameraZoom : 1;
+    camera.updateProjectionMatrix();
+  }, [camera, orbitSettingsKey]);
+
+  useEffect(() => {
+    const handleWheel = (event) => {
+      if (orbitSettings.cameraZoomEnabled && orbitSettings.cameraWheelMode === 'zoom') {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        camera.zoom = Math.min(10, Math.max(0.1, camera.zoom * Math.pow(0.95, event.deltaY / 100)));
+        camera.updateProjectionMatrix();
+        controlsRef.current?.update();
+        return;
+      }
+      onUserInteraction?.();
+    };
+    gl.domElement.addEventListener('wheel', handleWheel, { capture: true, passive: false });
+    return () => gl.domElement.removeEventListener('wheel', handleWheel, { capture: true });
+  }, [camera, gl, orbitSettings.cameraWheelMode, orbitSettings.cameraZoomEnabled, onUserInteraction]);
+
   return <>
     <OrbitCameraControls
       ref={assignControlsRef}
-      cameraParams={{ ...stableCameraParams, autoRotate: viewMode === 'orbital' && orbitPlaying }}
+      cameraParams={{ ...stableCameraParams, autoRotate: false, enabled: (orbitSettings.cameraControlsEnabled ?? true) && (stableCameraParams.enabled ?? true), enableZoom: orbitSettings.cameraZoomEnabled && orbitSettings.cameraWheelMode === 'dolly' }}
       onStart={() => onUserInteraction?.()}
     />
     {children}
   </>;
 }
 
-export function OrbitCameraSettings({ configuration, onChange, className = 'attractor-details', rangeClassName = 'attractor-control', selectClassName = 'attractor-select' }) {
-  const update = (field, value) => onChange({ [field]: value }, field);
-  const range = (label, field, min, max, step, disabled = false) => <NumericParamControl key={field} className={rangeClassName} label={label} value={configuration[field]} min={min} max={max} step={step} disabled={disabled} onChange={(value) => update(field, value)} />;
-  return (
-    <details className={className}>
-      <summary>Camera</summary>
-      <ParamSelect className={selectClassName} label="Replay mode" value={configuration.replayCameraTrack} options={['false', 'exact', 'easing', 'orbit']} onChange={(value) => update('replayCameraTrack', value)} />
-      <label className="simulator-camera-toggle"><input type="checkbox" checked={configuration.cameraOrbitOn} onChange={(event) => update('cameraOrbitOn', event.target.checked)} /><span>Orbit on</span></label>
-      <label className="simulator-camera-toggle"><input type="checkbox" checked={configuration.cameraZoomEnabled} onChange={(event) => update('cameraZoomEnabled', event.target.checked)} /><span>Enable zoom</span></label>
-      <ParamSelect className={selectClassName} label="Scroll mode" value={configuration.cameraWheelMode} options={CAMERA_WHEEL_MODE_OPTIONS} onChange={(value) => update('cameraWheelMode', value)} />
-      {range('Orbit speed', 'replayCameraOrbitSpeed', 0.01, 2, 0.01)}
-      {range('Orbit X', 'replayCameraOrbitX', -1, 1, 0.01)}
-      {range('Orbit Y', 'replayCameraOrbitY', -1, 1, 0.01)}
-      {range('Orbit Z', 'replayCameraOrbitZ', -1, 1, 0.01)}
-      {['cameraPosX', 'cameraPosY', 'cameraPosZ', 'cameraTargetX', 'cameraTargetY', 'cameraTargetZ'].map((field) => range(field.replace('camera', 'Camera '), field, -50, 50, 0.01))}
-      {range('Zoom', 'cameraZoom', 0.1, 10, 0.01, !configuration.cameraZoomEnabled)}
-      {range('FOV', 'cameraFov', 1, 179, 1)}
-      {range('Near', 'cameraNear', 0.001, 10, 0.001)}
-      {range('Far', 'cameraFar', 10, 10000, 1)}
-    </details>
+export function OrbitCameraSettings({ configuration, onChange = () => {}, className = 'attractor-details', rangeClassName = 'attractor-control', selectClassName = 'attractor-select', pathPrefix = '', compact = false }) {
+  const path = (field) => `${pathPrefix}${field}`;
+  const fields = [
+    { type: 'toggle', label: 'Enable camera controls', path: path('cameraControlsEnabled'), checked: configuration.cameraControlsEnabled ?? true },
+    { type: 'select', label: 'Replay mode', path: path('replayCameraTrack'), value: configuration.replayCameraTrack ?? 'easing', options: ['false', 'exact', 'easing', 'orbit'], className: selectClassName },
+    { type: 'toggle', label: 'Orbit on', path: path('cameraOrbitOn'), checked: configuration.cameraOrbitOn ?? true },
+    { type: 'toggle', label: 'Enable zoom', path: path('cameraZoomEnabled'), checked: configuration.cameraZoomEnabled ?? true },
+    { type: 'select', label: 'Scroll mode', path: path('cameraWheelMode'), value: configuration.cameraWheelMode ?? 'zoom', options: CAMERA_WHEEL_MODE_OPTIONS, className: selectClassName },
+    { type: 'range', label: 'Orbit speed', path: path('replayCameraOrbitSpeed'), value: configuration.replayCameraOrbitSpeed ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.replayCameraOrbitSpeed, min: 0.01, max: 2, step: 0.01, className: rangeClassName },
+    { type: 'range', label: 'Orbit X', path: path('replayCameraOrbitX'), value: configuration.replayCameraOrbitX ?? 0, min: -1, max: 1, step: 0.01, className: rangeClassName },
+    { type: 'range', label: 'Orbit Y', path: path('replayCameraOrbitY'), value: configuration.replayCameraOrbitY ?? 1, min: -1, max: 1, step: 0.01, className: rangeClassName },
+    { type: 'range', label: 'Orbit Z', path: path('replayCameraOrbitZ'), value: configuration.replayCameraOrbitZ ?? 0, min: -1, max: 1, step: 0.01, className: rangeClassName }
+  ];
+  if (!compact) fields.push(
+    ...['cameraPosX', 'cameraPosY', 'cameraPosZ', 'cameraTargetX', 'cameraTargetY', 'cameraTargetZ'].map((field) => ({ type: 'range', label: field.replace('camera', 'Camera '), path: path(field), value: configuration[field] ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION[field] ?? 0, min: -50, max: 50, step: 0.01, className: rangeClassName })),
+    { type: 'range', label: 'Zoom', path: path('cameraZoom'), value: configuration.cameraZoom ?? 1, min: 0.1, max: 10, step: 0.01, disabled: !(configuration.cameraZoomEnabled ?? true), className: rangeClassName },
+    { type: 'range', label: 'FOV', path: path('cameraFov'), value: configuration.cameraFov ?? 42, min: 1, max: 179, step: 1, className: rangeClassName },
+    { type: 'range', label: 'Near', path: path('cameraNear'), value: configuration.cameraNear ?? 0.1, min: 0.001, max: 10, step: 0.001, className: rangeClassName },
+    { type: 'range', label: 'Far', path: path('cameraFar'), value: configuration.cameraFar ?? 100, min: 10, max: 10000, step: 1, className: rangeClassName }
   );
+  return <SimulatorParameterControls title="Camera" className={className} configuration={configuration} fields={fields} onChange={onChange} />;
+}
+
+export function OrbitalTrackingParameters({ configuration, onChange = () => {}, className = 'parameter-group', pathPrefix = '' }) {
+  return <SimulatorParameterControls title="Orbital tracking" className={className} configuration={configuration} onChange={onChange} fields={[
+    { type: 'toggle', label: 'Enable camera controls', path: `${pathPrefix}cameraControlsEnabled`, checked: configuration.cameraControlsEnabled ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.cameraControlsEnabled },
+    { type: 'toggle', label: 'Allow orbital camera motion', path: `${pathPrefix}cameraOrbitOn`, checked: configuration.cameraOrbitOn ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.cameraOrbitOn },
+    { type: 'range', label: 'Orbit speed', path: `${pathPrefix}replayCameraOrbitSpeed`, value: configuration.replayCameraOrbitSpeed ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.replayCameraOrbitSpeed, min: 0.01, max: 2, step: 0.01 },
+    { type: 'range', label: 'Orbit X axis', path: `${pathPrefix}replayCameraOrbitX`, value: configuration.replayCameraOrbitX ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.replayCameraOrbitX, min: -1, max: 1, step: 0.01 },
+    { type: 'range', label: 'Orbit Y axis', path: `${pathPrefix}replayCameraOrbitY`, value: configuration.replayCameraOrbitY ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.replayCameraOrbitY, min: -1, max: 1, step: 0.01 },
+    { type: 'range', label: 'Orbit Z axis', path: `${pathPrefix}replayCameraOrbitZ`, value: configuration.replayCameraOrbitZ ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.replayCameraOrbitZ, min: -1, max: 1, step: 0.01 },
+    { type: 'toggle', label: 'Enable camera zoom', path: `${pathPrefix}cameraZoomEnabled`, checked: configuration.cameraZoomEnabled ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.cameraZoomEnabled },
+    { type: 'select', label: 'Scroll mode', path: `${pathPrefix}cameraWheelMode`, value: configuration.cameraWheelMode ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.cameraWheelMode, options: CAMERA_WHEEL_MODE_OPTIONS }
+  ]} />;
+}
+
+export function ParticleAppearanceSettings({ configuration, onChange = () => {}, className = 'parameter-group', fields, pathPrefix = 'particleAppearance', capabilities = {} }) {
+  const appearance = configuration?.[pathPrefix] ?? DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION;
+  const support = { sizeScale: true, shape: true, derivativeOrder: true, colorMode: true, color: true, opacity: true, ...capabilities };
+  const path = (field) => `${pathPrefix}.${field}`;
+  const controls = (fields ?? [
+    { key: 'sizeScale', type: 'range', label: 'Particle size scale', min: 0.25, max: 3, step: 0.05, suffix: 'x' },
+    { key: 'shape', type: 'select', label: 'Particle shape', options: ['native', 'circle', 'square', 'sphere', 'vector'] },
+    { key: 'derivativeOrder', type: 'range', label: 'Particle derivative order', min: 0, max: 4, step: 1 },
+    { key: 'colorMode', type: 'select', label: 'Particle color mode', options: [{ value: 'native', label: 'Native / encoded' }, { value: 'custom', label: 'Custom color' }] },
+    { key: 'color', type: 'color', label: 'Particle color', disabled: appearance.colorMode !== 'custom' },
+    { key: 'opacity', type: 'range', label: 'Particle opacity', min: 0, max: 1, step: 0.01 }
+  ]).map((field) => {
+    const fieldPath = field.path ?? path(field.key);
+    const fieldValue = getAtPath(configuration, fieldPath) ?? field.defaultValue ?? DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION[field.key];
+    return { ...field, path: fieldPath, disabled: field.disabled || support[field.key] === false, value: field.value ?? fieldValue, checked: field.checked ?? fieldValue };
+  });
+  return <SimulatorParameterControls title="Particle appearance" className={className} configuration={configuration} fields={controls} onChange={onChange} />;
+}
+
+export function SimulatorViewParameters({ configuration, onChange, appearanceCapabilities, appearanceFields, cameraClassName, particleClassName }) {
+  return <>
+    <OrbitalTrackingParameters configuration={configuration} onChange={onChange} className={cameraClassName} />
+    <ParticleAppearanceSettings configuration={configuration} onChange={onChange} capabilities={appearanceCapabilities} fields={appearanceFields} className={particleClassName} />
+  </>;
 }
 
 export function useSimulatorJournal({ initialSnapshot, onApplySnapshot, playbackSpeed = 1 }) {
@@ -179,7 +256,7 @@ export function useSimulatorJournal({ initialSnapshot, onApplySnapshot, playback
   return { journal, recording, setRecording, playing, setPlaying, playbackTime, seek, stop, rewind, reset, record, replayJournal };
 }
 
-export function SimulatorBase({ children, className, headerClassName, title, subtitle, mark = 'PAS', meta, actions, homeUrl = '/', onHome, mode = '3d', brandClassName = '', markClassName = '', metaClassName = '', metaContentClassName = '', homeClassName = '' }) {
+export function SimulatorBase({ children, className, headerClassName, title, subtitle, mark = 'PAS', meta, actions, homeUrl = '/', onHome, mode = '3d', parameterValue, presetValue, onParameterChange, brandClassName = '', markClassName = '', metaClassName = '', metaContentClassName = '', homeClassName = '' }) {
   return (
     <main className={`simulator-base simulator-base-${mode} ${className || ''}`} data-simulator-mode={mode}>
       <header className={`simulator-base-topbar ${headerClassName || ''}`}>
@@ -189,6 +266,7 @@ export function SimulatorBase({ children, className, headerClassName, title, sub
         </div>
         <div className={`simulator-base-meta ${metaClassName}`}>
           {meta && <span className={metaContentClassName}>{meta}</span>}
+          {parameterValue && presetValue && onParameterChange && <PresetChangeSummary value={parameterValue} preset={presetValue} onChange={onParameterChange} />}
           {actions}
           <a className={`simulator-base-home ${homeClassName}`} href={homeUrl} onClick={(event) => {
             if (!onHome) return;
@@ -197,7 +275,9 @@ export function SimulatorBase({ children, className, headerClassName, title, sub
           }}>Lab menu</a>
         </div>
       </header>
-      {children}
+      {parameterValue && presetValue && onParameterChange
+        ? <PresetParametersProvider value={parameterValue} preset={presetValue} onChange={onParameterChange}>{children}</PresetParametersProvider>
+        : children}
     </main>
   );
 }
@@ -272,4 +352,28 @@ export function SimulatorIOJournal({
 
 export function SimulatorExportModal({ title, value, onClose }) {
   return <div className="attractor-modal-backdrop" onClick={onClose}><section className="attractor-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}><header><h3>{title}</h3><button type="button" onClick={onClose} aria-label="Close export">Close</button></header><textarea readOnly value={JSON.stringify(value, null, 2)} /></section></div>;
+}
+
+function displayParameterValue(value) {
+  if (value === undefined) return 'unset';
+  if (value === null || typeof value !== 'object') return String(value);
+  const text = JSON.stringify(value);
+  return text.length > 52 ? `${text.slice(0, 49)}...` : text;
+}
+
+export function PresetChangeSummary({ value, preset, onChange }) {
+  const changedPaths = changedParameterPaths(value, preset);
+  if (changedPaths.length === 0) return null;
+  const visiblePaths = changedPaths.slice(0, 24);
+  return <details className="simulator-preset-change-summary">
+    <summary aria-label={`${changedPaths.length} parameters changed from preset`}>{changedPaths.length} changed</summary>
+    <div className="simulator-preset-change-list">
+      {visiblePaths.map((path) => <div className="simulator-preset-change" key={path}>
+        <span><strong>{path || 'configuration'}</strong><small>{displayParameterValue(getAtPath(value, path))} / {displayParameterValue(getAtPath(preset, path))}</small></span>
+        <button type="button" aria-label={`Reset ${path || 'configuration'} to current preset`} onClick={() => onChange(resetStatePaths(value, preset, [path]))}>Reset</button>
+      </div>)}
+      {changedPaths.length > visiblePaths.length && <p>{changedPaths.length - visiblePaths.length} more changed fields</p>}
+      <button type="button" className="simulator-preset-reset-all" onClick={() => onChange(cloneState(preset))}>Reset all to preset</button>
+    </div>
+  </details>;
 }

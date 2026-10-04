@@ -98,6 +98,32 @@ test('Wave uses the shared simulator base for presets, JSON, and a valid edit jo
   assert.deepEqual(errors, []);
 });
 
+test('shared particle appearance controls reset to the current preset and clear changed paths', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
+  const url = new URL(baseUrl);
+  url.searchParams.set('e2e', '1');
+  await page.goto(url.toString(), { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /01 \/ LOAD FIELD/ }).click();
+  await page.locator('.wave-panel').waitFor({ state: 'visible' });
+
+  const appearanceGroup = page.locator('.wave-control-section').filter({ has: page.locator('summary', { hasText: 'Particle appearance' }) });
+  await appearanceGroup.locator('summary').click();
+  const particleSize = appearanceGroup.getByRole('slider', { name: 'Particle size' });
+  const particleOpacity = appearanceGroup.getByRole('slider', { name: 'Particle opacity' });
+  await particleSize.fill('0.1');
+  await particleOpacity.fill('0.5');
+  const changedSummary = page.locator('.simulator-preset-change-summary > summary');
+  await changedSummary.waitFor({ state: 'visible' });
+  assert.match(await changedSummary.textContent(), /2 changed/);
+
+  await appearanceGroup.getByRole('button', { name: 'Reset Particle appearance to current preset' }).click();
+  assert.equal(await particleSize.inputValue(), '0.075');
+  assert.equal(await particleOpacity.inputValue(), '0.9');
+  await changedSummary.waitFor({ state: 'detached' });
+});
+
 test('Attractor parameter logs include config values, offsets, and replay them', async (t) => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
