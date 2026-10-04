@@ -3,6 +3,7 @@ export const SOLITON_GATE_END_X = 0.48;
 export const SOLITON_OUTPUT_END_X = 4.6;
 export const SOLITON_PULSE_SPEED = 0.82;
 export const SOLITON_PULSE_MARGIN = 0.72;
+export const SOLITON_REPEAT_COUNT = 4;
 
 export function getSolitonTravelLength(startX, endX) {
   const span = Math.max(0, endX - startX);
@@ -16,6 +17,21 @@ export function getSolitonPulseCenter(startX, endX, elapsed, pulseOffset = 0) {
   const distance = elapsed * SOLITON_PULSE_SPEED + pulseOffset;
   const phase = ((distance % travelLength) + travelLength) % travelLength;
   return startX + margin + phase;
+}
+
+export function getSolitonPulseCenters(startX, endX, elapsed, pulseOffset = 0, repeat = false) {
+  const repeatCount = repeat ? SOLITON_REPEAT_COUNT : 1;
+  const travelLength = getSolitonTravelLength(startX, endX);
+  return Array.from({ length: repeatCount }, (_, index) => getSolitonPulseCenter(
+    startX,
+    endX,
+    elapsed,
+    pulseOffset + travelLength * index / repeatCount
+  ));
+}
+
+export function getSolitonPulseEnvelope(x, pulseCenters, width = 0.68) {
+  return pulseCenters.reduce((envelope, center) => Math.max(envelope, 1 / Math.cosh((x - center) / width)), 0);
 }
 
 export function getSolitonGateProgress(x) {

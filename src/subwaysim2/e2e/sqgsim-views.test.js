@@ -237,4 +237,10 @@ test('OAM output representation switches between separate and combined circuit b
 
   await selectParam(page, 'Circuit output representation', 'separate');
   assert.equal(await scene.getAttribute('data-oam-branch-count'), '4');
+
+  const repeatSplatters = page.getByRole('checkbox', { name: 'Repeat splatters continuously' });
+  assert.equal(await repeatSplatters.isChecked(), false);
+  await repeatSplatters.evaluate((checkbox) => checkbox.click());
+  assert.equal(await repeatSplatters.isChecked(), true);
+  assert.equal(await scene.getAttribute('data-continuous-splatters'), 'true');
 });

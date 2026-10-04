@@ -37,6 +37,7 @@ const DEFAULT_OAM_VIEW_SETTINGS = {
   showWaveRepresentation: true,
   waveOpacity: 0.3,
   outputRepresentationMode: 'separate',
+  continuousSplatters: false,
   wavePalette: 'native',
   splatterPalette: 'native',
   modePalette: 'native',
@@ -445,8 +446,8 @@ export default function OamSolitonSim({ onBack }) {
     <button type="button" onClick={() => setRunning((value) => !value)} aria-pressed={running}>{running ? 'Pause propagation' : 'Resume propagation'}</button>
     <button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button>
   </div>} onHome={onBack} parameterValue={viewSettings} presetValue={currentViewPreset} onParameterChange={setViewSettings}>
-    {settings.viewMode === '3d' && <div className="oam-3d-field" role="img" aria-label="3D OAM soliton interference field" data-oam-simulation="3d" data-output-representation={viewSettings.outputRepresentationMode} data-oam-branch-count={branches.length}>
-      <OamSolitonScene branches={branches} operator={settings.operator} running={running} simulationSpeed={settings.simulationSpeed} waveOpacity={viewSettings.waveOpacity} amplitudeSizeVariation={settings.amplitudeSizeVariation} particleAppearance={viewSettings.particleAppearance} waveRepresentationVisible={viewSettings.showWaveRepresentation} wavePalette={viewSettings.wavePalette} splatterPalette={viewSettings.splatterPalette} modeA={settings.modeA} modeB={settings.modeB} angleRadians={angleRadians} quditDimension={settings.quditDimension} viewMode={cameraViewMode} orbitPlaying={orbitPlaying} orbitSettings={viewSettings} cameraViews={cameraViews} onCameraInteraction={() => setCameraViewMode(null)} railProbabilities={measurement.railProbabilities} />
+    {settings.viewMode === '3d' && <div className="oam-3d-field" role="img" aria-label="3D OAM soliton interference field" data-oam-simulation="3d" data-output-representation={viewSettings.outputRepresentationMode} data-oam-branch-count={branches.length} data-continuous-splatters={viewSettings.continuousSplatters}>
+      <OamSolitonScene branches={branches} operator={settings.operator} running={running} simulationSpeed={settings.simulationSpeed} waveOpacity={viewSettings.waveOpacity} amplitudeSizeVariation={settings.amplitudeSizeVariation} particleAppearance={viewSettings.particleAppearance} waveRepresentationVisible={viewSettings.showWaveRepresentation} continuousSplatters={viewSettings.continuousSplatters} wavePalette={viewSettings.wavePalette} splatterPalette={viewSettings.splatterPalette} modeA={settings.modeA} modeB={settings.modeB} angleRadians={angleRadians} quditDimension={settings.quditDimension} viewMode={cameraViewMode} orbitPlaying={orbitPlaying} orbitSettings={viewSettings} cameraViews={cameraViews} onCameraInteraction={() => setCameraViewMode(null)} railProbabilities={measurement.railProbabilities} />
     </div>}
     {settings.viewMode === '3d' && <CameraPerspectiveToolbar views={cameraViews} viewMode={cameraViewMode} orbitPlaying={orbitPlaying} onViewChange={setCameraViewMode} onToggleOrbit={() => setOrbitPlaying((playing) => !playing)} />}
     <section className={`signal-workbench oam-workbench${settings.viewMode === '3d' ? ' is-3d' : ''}`}>
@@ -503,6 +504,7 @@ export default function OamSolitonSim({ onBack }) {
               { value: 'both', label: 'Both' }
             ] },
             { type: 'toggle', label: 'Show wave representation', path: 'showWaveRepresentation', checked: viewSettings.showWaveRepresentation },
+            { type: 'toggle', label: 'Repeat splatters continuously', path: 'continuousSplatters', checked: viewSettings.continuousSplatters },
             { type: 'toggle', label: 'Show EM tensor-Gaussian splatters', path: 'particleAppearance.splatterEnabled', checked: viewSettings.particleAppearance.splatterEnabled },
             { type: 'range', label: 'Wave representation opacity', path: 'waveOpacity', value: viewSettings.waveOpacity, min: 0, max: 1, step: 0.01 },
             { type: 'range', label: 'Soliton splatter opacity', path: 'particleAppearance.opacity', value: viewSettings.particleAppearance.opacity, min: 0, max: 1, step: 0.01 }

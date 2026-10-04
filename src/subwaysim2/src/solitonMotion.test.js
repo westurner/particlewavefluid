@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getSolitonGateProgress, getSolitonPulseCenter, getSolitonSurfaceRadius, getSolitonTravelLength, SOLITON_PULSE_SPEED } from './solitonMotion.js';
+import { getSolitonGateProgress, getSolitonPulseCenter, getSolitonPulseCenters, getSolitonPulseEnvelope, getSolitonSurfaceRadius, getSolitonTravelLength, SOLITON_PULSE_SPEED, SOLITON_REPEAT_COUNT } from './solitonMotion.js';
 
 test('3D pulse motion traverses the whole field before its boundary wrap', () => {
   const startX = -4.6;
@@ -33,4 +33,17 @@ test('beam and splatter samples share one amplitude-scaled surface displacement'
   const splatterRadius = getSolitonSurfaceRadius(intensity, phase, amplitudeScale);
   assert.equal(beamRadius, splatterRadius);
   assert.ok(beamRadius > getSolitonSurfaceRadius(intensity, phase, 0.4));
+});
+
+test('continuous splatter mode spreads four synchronized pulses across the field', () => {
+  const startX = -4.6;
+  const endX = 4.6;
+  const single = getSolitonPulseCenters(startX, endX, 0, 0, false);
+  const repeated = getSolitonPulseCenters(startX, endX, 0, 0, true);
+
+  assert.equal(single.length, 1);
+  assert.equal(repeated.length, SOLITON_REPEAT_COUNT);
+  assert.ok(repeated.every((center) => center > startX && center < endX));
+  assert.ok(repeated[0] < repeated[1] && repeated[1] < repeated[2] && repeated[2] < repeated[3]);
+  assert.equal(getSolitonPulseEnvelope(repeated[1], repeated), 1);
 });

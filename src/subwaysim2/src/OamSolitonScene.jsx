@@ -5,7 +5,7 @@ import { AdditiveBlending, BufferGeometry, Color, DoubleSide, DynamicDrawUsage, 
 import { PerspectiveOrbitControls } from './lib/SimulatorBase.jsx';
 import { getOamOperatorMatrix, OAM_MODES, OAM_OPERATOR_OPTIONS } from './oamSolitonModel.js';
 import { sampleColorPalette } from './lib/color-palettes.js';
-import { getSolitonGateProgress, getSolitonPulseCenter, getSolitonSurfaceRadius } from './solitonMotion.js';
+import { getSolitonGateProgress, getSolitonPulseCenters, getSolitonPulseEnvelope, getSolitonSurfaceRadius, SOLITON_REPEAT_COUNT } from './solitonMotion.js';
 
 const LONGITUDINAL_SEGMENTS = 112;
 const ANGULAR_SEGMENTS = 40;
@@ -100,7 +100,7 @@ function coefficientAmplitude(coefficients) {
   return coefficients.reduce((sum, value) => sum + Math.hypot(value.re, value.im), 0);
 }
 
-function SolitonBeam({ inputCoefficients, outputCoefficients, inputRail, outputRail, branchOpacity, splatterOpacityScale, startX, endX, running, timeRef, waveOpacity, amplitudeSizeVariation, particleAppearance, waveRepresentationVisible, wavePalette, splatterPalette, pulseOffset = 0 }) {
+function SolitonBeam({ inputCoefficients, outputCoefficients, inputRail, outputRail, branchOpacity, splatterOpacityScale, startX, endX, running, timeRef, waveOpacity, amplitudeSizeVariation, particleAppearance, waveRepresentationVisible, continuousSplatters, wavePalette, splatterPalette, pulseOffset = 0 }) {
   const geometry = useMemo(createSolitonGeometry, []);
   const phaseColor = useMemo(() => new Color(), []);
   const coefficientScratch = useMemo(() => OAM_MODES.map(() => ({ re: 0, im: 0 })), []);
@@ -116,12 +116,12 @@ function SolitonBeam({ inputCoefficients, outputCoefficients, inputRail, outputR
     const positions = positionAttribute.array;
     const colors = colorAttribute.array;
     const span = endX - startX;
-    const pulseCenter = getSolitonPulseCenter(startX, endX, timeRef.current, pulseOffset);
+    const pulseCenters = getSolitonPulseCenters(startX, endX, timeRef.current, pulseOffset, continuousSplatters);
 
     for (let longitudinal = 0; longitudinal <= LONGITUDINAL_SEGMENTS; longitudinal += 1) {
       const progress = longitudinal / LONGITUDINAL_SEGMENTS;
       const x = startX + span * progress;
-      const envelope = 1 / Math.cosh((x - pulseCenter) / 0.68);
+      const envelope = getSolitonPulseEnvelope(x, pulseCenters);
       const carrierPhase = (x - startX) * 5.4 - timeRef.current * 7.2;
       const gateProgress = getSolitonGateProgress(x);
       const laneY = RAIL_HEIGHTS[inputRail] + (RAIL_HEIGHTS[outputRail] - RAIL_HEIGHTS[inputRail]) * gateProgress;
@@ -172,21 +172,22 @@ function SolitonBeam({ inputCoefficients, outputCoefficients, inputRail, outputR
     {waveRepresentationVisible && <mesh geometry={geometry} frustumCulled={false}>
       <meshBasicMaterial vertexColors side={DoubleSide} transparent opacity={waveOpacity * branchOpacity} blending={AdditiveBlending} depthWrite={false} />
     </mesh>}
-    {particleAppearance.splatterEnabled && <SolitonSplatter inputCoefficients={inputCoefficients} outputCoefficients={outputCoefficients} inputRail={inputRail} outputRail={outputRail} startX={startX} endX={endX} running={running} timeRef={timeRef} appearance={particleAppearance} amplitudeSizeVariation={amplitudeSizeVariation} opacityScale={splatterOpacityScale} palette={splatterPalette} pulseOffset={pulseOffset} />}
+    {particleAppearance.splatterEnabled && <SolitonSplatter inputCoefficients={inputCoefficients} outputCoefficients={outputCoefficients} inputRail={inputRail} outputRail={outputRail} startX={startX} endX={endX} running={running} timeRef={timeRef} appearance={particleAppearance} amplitudeSizeVariation={amplitudeSizeVariation} opacityScale={splatterOpacityScale} continuousSplatters={continuousSplatters} palette={splatterPalette} pulseOffset={pulseOffset} />}
   </>;
 }
 
-function SolitonSplatter({ inputCoefficients, outputCoefficients, inputRail, outputRail, startX, endX, running, timeRef, appearance, amplitudeSizeVariation, opacityScale, palette, pulseOffset }) {
+function SolitonSplatter({ inputCoefficients, outputCoefficients, inputRail, outputRail, startX, endX, running, timeRef, appearance, amplitudeSizeVariation, opacityScale, continuousSplatters, palette, pulseOffset }) {
+  const particleCount = SPLATTER_PARTICLE_COUNT * (continuousSplatters ? SOLITON_REPEAT_COUNT : 1);
   const geometry = useMemo(() => {
     const result = new BufferGeometry();
-    const positions = new Float32Array(SPLATTER_PARTICLE_COUNT * 3);
-    const colors = new Float32Array(SPLATTER_PARTICLE_COUNT * 3);
+    const positions = new Float32Array(particleCount * 3);
+    const colors = new Float32Array(particleCount * 3);
     result.setAttribute('position', new Float32BufferAttribute(positions, 3).setUsage(DynamicDrawUsage));
     result.setAttribute('color', new Float32BufferAttribute(colors, 3).setUsage(DynamicDrawUsage));
-    result.setAttribute('aTensorGaussian', new Float32BufferAttribute(new Float32Array(SPLATTER_PARTICLE_COUNT), 1).setUsage(DynamicDrawUsage));
-    result.setAttribute('aVectorAngle', new Float32BufferAttribute(new Float32Array(SPLATTER_PARTICLE_COUNT), 1).setUsage(DynamicDrawUsage));
+    result.setAttribute('aTensorGaussian', new Float32BufferAttribute(new Float32Array(particleCount), 1).setUsage(DynamicDrawUsage));
+    result.setAttribute('aVectorAngle', new Float32BufferAttribute(new Float32Array(particleCount), 1).setUsage(DynamicDrawUsage));
     return result;
-  }, []);
+  }, [particleCount]);
   const material = useMemo(() => new ShaderMaterial({
     uniforms: {
       uPointSize: { value: 0.075 },
@@ -226,12 +227,15 @@ function SolitonSplatter({ inputCoefficients, outputCoefficients, inputRail, out
     const colors = geometry.getAttribute('color').array;
     const tensorGaussians = geometry.getAttribute('aTensorGaussian').array;
     const vectorAngles = geometry.getAttribute('aVectorAngle').array;
-    const pulseCenter = getSolitonPulseCenter(startX, endX, timeRef.current, pulseOffset);
-    for (let index = 0; index < SPLATTER_PARTICLE_COUNT; index += 1) {
-      const spread = ((index * 0.61803398875) % 1 - 0.5) * 1.2;
+    const pulseCenters = getSolitonPulseCenters(startX, endX, timeRef.current, pulseOffset, continuousSplatters);
+    for (let index = 0; index < particleCount; index += 1) {
+      const localIndex = index % SPLATTER_PARTICLE_COUNT;
+      const repeatIndex = Math.floor(index / SPLATTER_PARTICLE_COUNT);
+      const pulseCenter = pulseCenters[repeatIndex];
+      const spread = ((localIndex * 0.61803398875) % 1 - 0.5) * 1.2;
       const x = Math.max(startX + 0.02, Math.min(endX - 0.02, pulseCenter + spread));
-      const theta = (index * 2.39996322973) % TAU;
-      const envelope = 1 / Math.cosh((x - pulseCenter) / 0.68);
+      const theta = (localIndex * 2.39996322973) % TAU;
+      const envelope = getSolitonPulseEnvelope(x, pulseCenters);
       const carrierPhase = (x - startX) * 5.4 - timeRef.current * 7.2;
       const gateProgress = getSolitonGateProgress(x);
       const laneY = RAIL_HEIGHTS[inputRail] + (RAIL_HEIGHTS[outputRail] - RAIL_HEIGHTS[inputRail]) * gateProgress;
@@ -282,7 +286,7 @@ function SignalRails() {
   </mesh>);
 }
 
-function SolitonField({ branches, operator, running, simulationSpeed, waveOpacity, amplitudeSizeVariation, particleAppearance, waveRepresentationVisible, wavePalette, splatterPalette, modeA, modeB, angleRadians, quditDimension, viewMode, orbitPlaying, orbitSettings, cameraViews, onCameraInteraction, railProbabilities }) {
+function SolitonField({ branches, operator, running, simulationSpeed, waveOpacity, amplitudeSizeVariation, particleAppearance, waveRepresentationVisible, continuousSplatters, wavePalette, splatterPalette, modeA, modeB, angleRadians, quditDimension, viewMode, orbitPlaying, orbitSettings, cameraViews, onCameraInteraction, railProbabilities }) {
   const timeRef = useRef(0);
   const matrix = useMemo(() => getOamOperatorMatrix(operator, angleRadians), [angleRadians, operator]);
   const operatorMetadata = OAM_OPERATOR_OPTIONS.find(({ value }) => value === operator);
@@ -312,6 +316,7 @@ function SolitonField({ branches, operator, running, simulationSpeed, waveOpacit
       amplitudeSizeVariation={amplitudeSizeVariation}
       particleAppearance={particleAppearance}
       waveRepresentationVisible={waveRepresentationVisible}
+      continuousSplatters={continuousSplatters}
       wavePalette={wavePalette}
       splatterPalette={splatterPalette}
       pulseOffset={branch.inputRail * 0.24}
