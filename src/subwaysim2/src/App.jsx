@@ -10,6 +10,7 @@ const FtleLabSim = lazy(() => import('./FtleLabSim.jsx'));
 const QuantumFluidSim = lazy(() => import('./QuantumFluidSim.jsx'));
 const ThermalLoopSim = lazy(() => import('./ThermalLoopSim.jsx'));
 const PhaseSignalSim = lazy(() => import('./PhaseSignalSim.jsx'));
+const OamSolitonSim = lazy(() => import('./OamSolitonSim.jsx'));
 const FrcFusionSim = lazy(() => import('./FrcFusionSim.jsx'));
 const SubwaySim = lazy(() => import('./SubwaySim.jsx').then(({ SubwaySim: component }) => ({ default: component })));
 
@@ -121,6 +122,15 @@ const SIMULATION_MODES = [
     description: 'Phase 4–8 continuous-wave laser modules to converge a vectorial exposure field and write circuits on a block, wafer, or reel-to-reel web.',
     detail: 'CW ARRAY / HOLOGRAPHY / NANOWRITE',
     accent: 'orange'
+  },
+  {
+    id: 'oamsolitonsim',
+    index: '13',
+    name: 'oamsolitonsim',
+    label: 'OAM soliton operator lab',
+    description: 'Combine coherent orbital-angular-momentum solitons with dual-rail quantum operators and inspect mode-resolved output.',
+    detail: 'OAM / UNITARIES / PHOTONIC BUS',
+    accent: 'teal'
   }
 ];
 
@@ -144,6 +154,7 @@ function SimulationLoader() {
   if (selectedSimulation === 'quantumfluidsim') simulation = <QuantumFluidSim onBack={onBack} />;
   if (selectedSimulation === 'thermalloopsim') simulation = <ThermalLoopSim onBack={onBack} />;
   if (selectedSimulation === 'phasesignalsim') simulation = <PhaseSignalSim onBack={onBack} />;
+  if (selectedSimulation === 'oamsolitonsim') simulation = <OamSolitonSim onBack={onBack} />;
   if (simulation) return <Suspense fallback={<LoadingScreen />}>{simulation}</Suspense>;
 
   return (

@@ -852,6 +852,71 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
 .signal-event.fracture { stroke: rgb(var(--color-rgb-e99a4b)); }
 .signal-trace text { fill: rgb(var(--color-rgb-dcebe4)); font: 9px 'DM Mono', monospace; }
 .signal-event-list { margin-top: 6px; }
+.oam-app { background: radial-gradient(ellipse at 34% 55%, rgba(var(--color-rgb-0e232f), 0.55), var(--color-transparent) 55%), linear-gradient(120deg, rgb(var(--color-rgb-071316)), rgb(var(--color-rgb-0a1e26)) 55%, rgb(var(--color-rgb-17191b))); }
+.oam-3d-field { position: absolute; inset: 0; z-index: 0; }
+.oam-3d-field canvas { display: block; width: 100%; height: 100%; }
+.oam-canvas-fallback { display: grid; width: 100%; height: 100%; place-items: center; color: rgb(var(--color-rgb-a6bdb6)); font: 12px 'DM Mono', monospace; }
+.oam-three-gate-label, .oam-three-rail-label { color: rgb(var(--color-rgb-e8f1ed)); font: 9px 'DM Mono', monospace; letter-spacing: 0.08em; white-space: nowrap; text-shadow: 0 1px 8px rgba(var(--color-rgb-000000), 0.9); }
+.oam-three-gate-label { padding: 5px 8px; border: 1px solid rgba(var(--color-rgb-72c7c0), 0.45); background: rgba(var(--color-rgb-071316), 0.78); color: rgb(var(--color-rgb-f0c584)); }
+.oam-three-rail-label { color: rgb(var(--color-rgb-8da9a0)); }
+.oam-three-rail-label.output { color: rgb(var(--color-rgb-f0c584)); }
+.oam-top-actions { display: flex; gap: 8px; }
+.oam-mark { width: 48px; flex-basis: 48px; font-size: 8px; }
+.oam-workbench { inset: 72px 410px 18px 28px; display: flex; flex-direction: column; gap: 12px; scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track); scrollbar-width: thin; }
+.oam-workbench.is-3d { inset: 72px 0 0; display: block; overflow: hidden; padding: 28px; pointer-events: none; }
+.oam-workbench::-webkit-scrollbar { width: 8px; }
+.oam-workbench::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+.oam-workbench::-webkit-scrollbar-thumb { border: 2px solid var(--scrollbar-track); background: var(--scrollbar-thumb); }
+.oam-workbench::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+.oam-heading { flex: 0 0 auto; margin: 8px 0 0; }
+.oam-workbench.is-3d .oam-heading { position: absolute; top: 24px; left: 28px; max-width: min(420px, calc(100vw - 56px)); margin: 0; }
+.oam-heading h1 { font-family: 'DM Sans', sans-serif; font-size: 34px; font-weight: 500; line-height: 1.08; }
+.oam-heading p { max-width: 640px; }
+.oam-stage { min-height: 0; flex: 0 0 auto; display: flex; flex-direction: column; overflow: hidden; border: 1px solid rgba(var(--color-rgb-92d4cc), 0.2); background: rgba(var(--color-rgb-071316), 0.75); }
+.oam-stage-heading, .oam-stage-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; color: rgb(var(--color-rgb-8da9a0)); font: 9px 'DM Mono', monospace; letter-spacing: 0.08em; }
+.oam-stage-heading { border-bottom: 1px solid rgba(var(--color-rgb-92d4cc), 0.12); }
+.oam-stage-heading > span:last-child { display: inline-flex; align-items: center; gap: 7px; }
+.oam-stage-heading i { width: 6px; height: 6px; border-radius: 50%; background: rgb(var(--color-rgb-71817e)); }
+.oam-stage-heading .oam-live { color: rgb(var(--color-rgb-8bd59d)); }
+.oam-stage-heading .oam-live i { background: rgb(var(--color-rgb-8bd59d)); box-shadow: 0 0 10px rgba(var(--color-rgb-8bd59d), 0.75); }
+.oam-diagram { display: block; width: 100%; height: auto; aspect-ratio: 1000 / 490; min-height: 0; flex: 0 0 auto; }
+.oam-bus-rail { stroke: rgba(var(--color-rgb-138e89), 0.3); stroke-width: 1; stroke-dasharray: 3 6; }
+.oam-lane-label, .oam-lane-output, .oam-diagram-kicker, .oam-axis-label { fill: rgb(var(--color-rgb-8da9a0)); font: 10px 'DM Mono', monospace; letter-spacing: 0.08em; }
+.oam-lane-output { fill: rgb(var(--color-rgb-e7bc7d)); }
+.oam-coupling { fill: none; }
+.oam-gate { fill: rgba(var(--color-rgb-0e232f), 0.92); stroke: rgba(var(--color-rgb-72c7c0), 0.65); }
+.oam-gate-ring { fill: rgba(var(--color-rgb-72c7c0), 0.16); stroke: rgb(var(--color-rgb-72c7c0)); }
+.oam-gate-mark { fill: rgb(var(--color-rgb-f1f5ec)); font: 500 16px 'DM Mono', monospace; }
+.oam-gate-name { fill: rgb(var(--color-rgb-8da9a0)); font: 8px 'DM Mono', monospace; letter-spacing: 0.07em; }
+.oam-travel-dot { fill: rgb(var(--color-rgb-f1f5ec)); filter: url(#oam-glow); }
+.oam-travel-dot.secondary { fill: rgb(var(--color-rgb-f0a23a)); }
+.oam-stage-footer { min-height: 38px; border-top: 1px solid rgba(var(--color-rgb-92d4cc), 0.12); font-size: 8px; letter-spacing: 0.02em; }
+.oam-stage-footer > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oam-mode-legend { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 8px 14px; color: rgb(var(--color-rgb-8da9a0)); font: 9px 'DM Mono', monospace; }
+.oam-scene-readout { position: absolute; right: 430px; bottom: 18px; left: 28px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 0; color: rgb(var(--color-rgb-8da9a0)); font: 9px 'DM Mono', monospace; text-shadow: 0 1px 8px rgba(var(--color-rgb-000000), 0.9); }
+.oam-scene-readout > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oam-scene-readout strong { flex: 0 0 auto; color: rgb(var(--color-rgb-f0c584)); font-weight: 400; }
+.oam-workbench.is-3d .oam-mode-legend { position: absolute; bottom: 62px; left: 28px; max-width: min(520px, calc(100vw - 56px)); }
+.oam-mode-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.oam-mode-legend i { width: 7px; height: 7px; border-radius: 50%; }
+.oam-spectrum-mode, .oam-spectrum-value { fill: rgb(var(--color-rgb-d5e3dd)); font: 12px 'DM Mono', monospace; }
+.oam-spectrum-value { fill: rgb(var(--color-rgb-e7bc7d)); }
+.oam-spectrum-track { stroke: rgba(var(--color-rgb-138e89), 0.22); stroke-width: 2; }
+.oam-spectrum-bar { filter: drop-shadow(0 0 5px currentColor); }
+.oam-panel { width: 374px; }
+.oam-control-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.oam-control-pair .signal-range, .oam-control-pair .signal-select { min-width: 0; grid-template-columns: 1fr; gap: 5px; }
+.oam-operator-controls, .oam-output-details { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(var(--color-rgb-92d4cc), 0.16); }
+.oam-operator-controls > summary, .oam-output-details > summary { color: rgb(var(--color-rgb-71d3c5)); cursor: pointer; font: 9px 'DM Mono', monospace; letter-spacing: 0.08em; list-style-position: inside; text-transform: uppercase; }
+.oam-operator-controls[open] > summary, .oam-output-details[open] > summary { margin-bottom: 8px; }
+.oam-operator-equation { margin-top: 10px; padding: 8px; overflow-wrap: anywhere; border-left: 2px solid rgb(var(--color-rgb-f0a23a)); color: rgb(var(--color-rgb-f0c584)); background: rgba(var(--color-rgb-0e232f), 0.42); font: 9px 'DM Mono', monospace; line-height: 1.5; }
+.oam-bus-toggle { margin-top: 14px; }
+.oam-mode-readout { margin-top: 9px; }
+.oam-mode-readout > div { display: grid; grid-template-columns: 36px minmax(0, 1fr) 42px; align-items: center; gap: 8px; margin-top: 7px; color: rgb(var(--color-rgb-8da9a0)); font: 9px 'DM Mono', monospace; }
+.oam-mode-readout > div > div { height: 4px; overflow: hidden; background: rgba(var(--color-rgb-138e89), 0.18); }
+.oam-mode-readout i { display: block; height: 100%; min-width: 0; }
+.oam-mode-readout strong { color: rgb(var(--color-rgb-d5e3dd)); font-weight: 400; text-align: right; }
+.oam-model-note { margin: 13px 0 2px; padding-left: 10px; border-left: 2px solid rgba(var(--color-rgb-f0a23a), 0.68); color: rgb(var(--color-rgb-a6bdb6)); font-size: 10px; line-height: 1.45; }
 .frc-app { position: relative; width: 100%; height: 100%; overflow: hidden; color: rgb(var(--color-rgb-e8f2ed)); background: rgb(var(--color-rgb-08171b)); }
 .frc-scene { position: absolute; inset: 0; z-index: 0; }
 .frc-scene canvas { display: block; width: 100%; height: 100%; }
@@ -964,6 +1029,13 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
   .amplitude-panel, .ftle-panel, .quantum-panel, .thermal-panel, .signal-panel { top: 72px; right: 12px; bottom: 12px; left: 12px; width: auto; padding: 14px; }
   .amplitude-title, .ftle-title, .quantum-title, .thermal-title { display: none; }
   .signal-workbench { inset: 72px 12px 12px; padding-right: 0; }
+  .oam-workbench.is-3d { inset: 72px 0 0; padding: 16px; }
+  .oam-workbench.is-3d .oam-heading { top: 14px; left: 16px; max-width: calc(100vw - 32px); }
+  .oam-workbench.is-3d .oam-heading h1 { max-width: 340px; font-size: 26px; }
+  .oam-workbench.is-3d .oam-heading p { max-width: 330px; }
+  .oam-workbench.is-3d .oam-heading p { display: none; }
+  .oam-scene-readout { right: 16px; bottom: 16px; left: 16px; padding: 7px 0; font-size: 8px; }
+  .oam-workbench.is-3d .oam-mode-legend { bottom: 55px; left: 16px; max-width: calc(100vw - 32px); gap: 7px 10px; }
   .signal-heading { margin: 10px 0 14px; }
   .signal-heading h1 { font-size: 27px; }
   .signal-trace svg { height: 100px; }
