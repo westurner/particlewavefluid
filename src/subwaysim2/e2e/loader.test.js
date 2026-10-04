@@ -30,6 +30,44 @@ test('SIM LOADER scrolls its content inside the viewport', async (t) => {
   assert.equal(metrics.footerVisible, true);
 });
 
+test('ParamSelect supports ArrowUp and ArrowDown option navigation and selection', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: 1 });
+
+  await page.goto(`${baseUrl}?e2e=1`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /11 \/ LOAD FIELD/ }).evaluate((button) => button.click());
+  await page.locator('.signal-panel').waitFor();
+
+  const select = page.getByRole('combobox', { name: 'Synthetic case' });
+  const initialValue = await select.textContent();
+  await select.focus();
+  await select.press('ArrowDown');
+  assert.equal(await select.getAttribute('aria-expanded'), 'true');
+  let activeOption = page.locator('.param-select-option[data-active="true"]');
+  assert.equal(await activeOption.count(), 1);
+  assert.equal(await select.getAttribute('aria-activedescendant'), await activeOption.getAttribute('id'));
+
+  await select.press('ArrowDown');
+  activeOption = page.locator('.param-select-option[data-active="true"]');
+  const downSelection = await activeOption.textContent();
+  assert.notEqual(downSelection, initialValue?.trim());
+  await select.press('Enter');
+  assert.match(await select.textContent(), new RegExp(downSelection.trim()));
+  assert.equal(await select.getAttribute('aria-expanded'), 'false');
+  assert.equal(await select.evaluate((element) => element === document.activeElement), true);
+
+  await select.press('ArrowUp');
+  assert.equal(await select.getAttribute('aria-expanded'), 'true');
+  activeOption = page.locator('.param-select-option[data-active="true"]');
+  const upSelection = await activeOption.textContent();
+  assert.notEqual(upSelection, downSelection);
+  await select.press('Enter');
+  assert.match(await select.textContent(), new RegExp(upSelection.trim()));
+  assert.equal(await select.getAttribute('aria-expanded'), 'false');
+  assert.deepEqual(await page.locator('.param-select-menu').count(), 0);
+});
+
 test('DDF loads as a distinct hypothesis model with comparison controls', async (t) => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());

@@ -88,8 +88,11 @@ export function ParamSelect({ label, value, options, onChange, className = "", a
   const rootRef = useRef(null);
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
+  const listboxId = useId();
   const normalizedOptions = options.map((option) => typeof option === "string" ? { value: option, label: option } : option);
   const selectedOption = normalizedOptions.find((option) => option.value === value) ?? normalizedOptions[0];
+  const selectedIndex = Math.max(0, normalizedOptions.findIndex((option) => option.value === value));
+  const [activeIndex, setActiveIndex] = useState(selectedIndex);
   const preset = useContext(PresetParametersContext);
   const { isDefault, reset: resetField } = usePresetParameter(path, suppliedIsDefault, onReset);
 
@@ -128,24 +131,52 @@ export function ParamSelect({ label, value, options, onChange, className = "", a
     };
   }, [normalizedOptions.length, open]);
 
+  const selectOption = (index) => {
+    const option = normalizedOptions[index];
+    if (!option) return;
+    if (path && preset?.setValue) preset.setValue(path, option.value);
+    else onChange(option.value);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+  const moveActiveOption = (direction) => {
+    if (normalizedOptions.length === 0) return;
+    const currentIndex = open ? Math.min(activeIndex, normalizedOptions.length - 1) : selectedIndex;
+    setActiveIndex((currentIndex + direction + normalizedOptions.length) % normalizedOptions.length);
+    setOpen(true);
+  };
   const handleKeyDown = (event) => {
     if (event.key === "Escape") {
+      event.preventDefault();
       setOpen(false);
       triggerRef.current?.focus();
     } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      setOpen(true);
+      moveActiveOption(event.key === "ArrowDown" ? 1 : -1);
+    } else if (event.key === "Home" || event.key === "End") {
+      if (!open) return;
+      event.preventDefault();
+      setActiveIndex(event.key === "Home" ? 0 : normalizedOptions.length - 1);
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      if (open) selectOption(activeIndex);
+      else {
+        setActiveIndex(selectedIndex);
+        setOpen(true);
+      }
+    } else if (event.key === "Tab" && open) {
+      setOpen(false);
     }
   };
 
   return <div ref={rootRef} className={`param-select${path && !isDefault ? ' has-preset-change' : ''} ${className}`} onPointerDown={(event) => event.stopPropagation()}>
     {label && <span className="param-select-label">{label}</span>}
-    <button ref={triggerRef} type="button" disabled={disabled} className="param-select-trigger" role="combobox" aria-label={ariaLabel} aria-expanded={open} aria-haspopup="listbox" onClick={() => setOpen((current) => !current)} onKeyDown={handleKeyDown}>
+    <button ref={triggerRef} type="button" disabled={disabled} className="param-select-trigger" role="combobox" aria-label={ariaLabel} aria-expanded={open} aria-haspopup="listbox" aria-controls={open ? listboxId : undefined} aria-activedescendant={open ? `${listboxId}-option-${Math.min(activeIndex, normalizedOptions.length - 1)}` : undefined} onClick={() => { if (open) setOpen(false); else { setActiveIndex(selectedIndex); setOpen(true); } }} onKeyDown={handleKeyDown}>
       <span>{selectedOption?.label ?? value}</span><span className="param-select-chevron" aria-hidden="true">v</span>
     </button>
     {path && !isDefault && <PresetFieldStatus path={path} label={label ?? ariaLabel} isDefault={isDefault} onReset={resetField} />}
-    {open && createPortal(<div ref={menuRef} className="param-select-menu" role="listbox" style={menuStyle} aria-label={ariaLabel}>
-      {normalizedOptions.map((option) => <button key={option.value} type="button" role="option" aria-selected={option.value === value} data-value={option.value} className="param-select-option" onClick={() => { if (path && preset?.setValue) preset.setValue(path, option.value); else onChange(option.value); setOpen(false); triggerRef.current?.focus(); }}>{option.label}</button>)}
+    {open && createPortal(<div ref={menuRef} id={listboxId} className="param-select-menu" role="listbox" style={menuStyle} aria-label={ariaLabel}>
+      {normalizedOptions.map((option, index) => <button key={option.value} id={`${listboxId}-option-${index}`} type="button" role="option" aria-selected={index === selectedIndex} aria-posinset={index + 1} aria-setsize={normalizedOptions.length} data-active={index === activeIndex} data-value={option.value} className="param-select-option" onPointerMove={() => setActiveIndex(index)} onClick={() => selectOption(index)}>{option.label}</button>)}
     </div>, document.body)}
   </div>;
 }
