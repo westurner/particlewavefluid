@@ -9,6 +9,7 @@ import {
   calculateBatteryOperatingPoint,
   calculateCoilgunStage,
   calculateEdtTug,
+  calculateElectromagneticMassDriver,
   calculateHalbachAlignment,
   calculateHalbachQED,
   calculatePayloadEnergy,
@@ -282,7 +283,7 @@ function VacuumChannelVisual({ settings }) {
   </group>;
 }
 
-function SpaceTieScene({ settings, cameraViews, viewMode, orbitPlaying, launchToken, sequenceRunning, flightTelemetry, onTelemetry, onSequenceComplete, onUserInteraction }) {
+function SpaceTieScene({ settings, massDriver, cameraViews, viewMode, orbitPlaying, launchToken, sequenceRunning, flightTelemetry, onTelemetry, onSequenceComplete, onUserInteraction }) {
   const layout = useMemo(() => createHelixNodes({ destination: settings.destination, spacingKm: settings.tieSpacingKm, strands: settings.strandCount, radius: settings.helixRadiusM / 8, motion: settings.nodeMotion, swirlRate: settings.swirlRate }), [settings.destination, settings.helixRadiusM, settings.nodeMotion, settings.strandCount, settings.swirlRate, settings.tieSpacingKm]);
   const payloadRef = useRef(null);
   const flightRef = useRef(null);
@@ -303,17 +304,28 @@ function SpaceTieScene({ settings, cameraViews, viewMode, orbitPlaying, launchTo
     if (sequenceRunning && launchToken > 0 && !flight.done) {
       flight.elapsed += delta;
       flight.progress = Math.min(1, flight.elapsed / Math.max(0.5, settings.pulseSequenceSeconds));
-      while (flight.nextStage < layout.renderCountPerStrand && flight.progress >= (flight.nextStage + 1) / layout.renderCountPerStrand) {
-        const response = evaluateSpaceTieOperator({ operator: settings.operator, radiusM: 0, speedMS: flight.velocityMS, axialPosition: flight.progress, time: flight.elapsed, settings });
-        const pulse = calculateCoilgunStage({ payloadMassKg: settings.payloadMassKg, currentVelocityMS: flight.velocityMS, batteryEnergyJ: flight.batteryEnergyJ, pulseEnergyMJ: settings.coilPulseEnergyMJ, pulseEfficiency: settings.pulseEfficiency, payloadCoupling: settings.payloadCoupling, operator: settings.operator, accelerationScale: response.accelerationScale });
-        flight.velocityMS = pulse.nextVelocityMS;
-        flight.kineticEnergyJ += pulse.payloadEnergyJ;
-        flight.energyUsedJ += pulse.availablePulseJ;
-        flight.energyDeliveredJ += pulse.payloadEnergyJ;
-        flight.energyLossJ += pulse.lossEnergyJ;
-        flight.batteryEnergyJ = Math.max(0, flight.batteryEnergyJ - pulse.availablePulseJ);
-        flight.activeStage = flight.nextStage;
-        flight.nextStage += 1;
+      if (settings.widget === 'mass-driver') {
+        const targetKineticEnergyJ = massDriver.kineticEnergyJ * flight.progress;
+        flight.energyUsedJ = Math.min(massDriver.availableBatteryEnergyJ, targetKineticEnergyJ / massDriver.efficiency);
+        flight.energyDeliveredJ = Math.min(targetKineticEnergyJ, flight.energyUsedJ * massDriver.efficiency);
+        flight.kineticEnergyJ = flight.energyDeliveredJ;
+        flight.velocityMS = Math.sqrt(2 * flight.kineticEnergyJ / settings.payloadMassKg);
+        flight.energyLossJ = Math.max(0, flight.energyUsedJ - flight.energyDeliveredJ);
+        flight.batteryEnergyJ = Math.max(0, massDriver.availableBatteryEnergyJ - flight.energyUsedJ);
+        flight.activeStage = Math.min(layout.renderCountPerStrand - 1, Math.floor(flight.progress * layout.renderCountPerStrand));
+      } else {
+        while (flight.nextStage < layout.renderCountPerStrand && flight.progress >= (flight.nextStage + 1) / layout.renderCountPerStrand) {
+          const response = evaluateSpaceTieOperator({ operator: settings.operator, radiusM: 0, speedMS: flight.velocityMS, axialPosition: flight.progress, time: flight.elapsed, settings });
+          const pulse = calculateCoilgunStage({ payloadMassKg: settings.payloadMassKg, currentVelocityMS: flight.velocityMS, batteryEnergyJ: flight.batteryEnergyJ, pulseEnergyMJ: settings.coilPulseEnergyMJ, pulseEfficiency: settings.pulseEfficiency, payloadCoupling: settings.payloadCoupling, operator: settings.operator, accelerationScale: response.accelerationScale });
+          flight.velocityMS = pulse.nextVelocityMS;
+          flight.kineticEnergyJ += pulse.payloadEnergyJ;
+          flight.energyUsedJ += pulse.availablePulseJ;
+          flight.energyDeliveredJ += pulse.payloadEnergyJ;
+          flight.energyLossJ += pulse.lossEnergyJ;
+          flight.batteryEnergyJ = Math.max(0, flight.batteryEnergyJ - pulse.availablePulseJ);
+          flight.activeStage = flight.nextStage;
+          flight.nextStage += 1;
+        }
       }
       if (flight.progress >= 1) { flight.done = true; onSequenceComplete(); }
     }
@@ -396,6 +408,7 @@ function SpaceTieAcceleratorSim({ onBack }) {
   const cameraViews = useMemo(() => createCameraViews({ target: [0, 0, 0], distance: 22, frontDistance: 28, ortho1Offset: [18, 13, 24], ortho2Offset: [-18, 14, -22] }), []);
   const layout = useMemo(() => createHelixNodes({ destination: settings.destination, spacingKm: settings.tieSpacingKm, strands: settings.strandCount, radius: settings.helixRadiusM / 8, motion: settings.nodeMotion, swirlRate: settings.swirlRate }), [settings.destination, settings.helixRadiusM, settings.nodeMotion, settings.strandCount, settings.swirlRate, settings.tieSpacingKm]);
   const budget = calculateSpaceEnergyBudget(settings);
+  const massDriver = calculateElectromagneticMassDriver(settings);
   const field = evaluateSpaceTieOperator({ operator: settings.operator, radiusM: 0, speedMS: flightTelemetry.velocityMS, settings });
   const pulse = calculateCoilgunStage({ payloadMassKg: settings.payloadMassKg, currentVelocityMS: flightTelemetry.velocityMS, batteryEnergyJ: calculateBatteryOperatingPoint({ settings }).availableJ, pulseEnergyMJ: settings.coilPulseEnergyMJ, pulseEfficiency: settings.pulseEfficiency, payloadCoupling: settings.payloadCoupling, operator: settings.operator, accelerationScale: field.accelerationScale });
   const payload = calculatePayloadEnergy({ massKg: settings.payloadMassKg, velocityKmS: settings.launchVelocityKmS, couplingEfficiency: settings.payloadCoupling });
@@ -405,6 +418,7 @@ function SpaceTieAcceleratorSim({ onBack }) {
   const widget = SPACE_TIE_WIDGETS.find((entry) => entry.value === settings.widget) ?? SPACE_TIE_WIDGETS[0];
   const isSceneView = SCENE_WIDGETS.has(settings.widget);
   const update = (patch) => setSettings((current) => sanitizeSpaceTieSettings({ ...current, ...patch, particleAppearance: { ...current.particleAppearance, ...(patch.particleAppearance ?? {}) } }));
+  const updateWorkspace = (patch) => update(patch.massDriverLocation ? { ...patch, massDriverTrackLengthKm: patch.massDriverLocation === 'moon' ? 4 : 130 } : patch);
   const applyPreset = (name) => {
     const next = sanitizeSpaceTieSettings(presetLibrary[name] ?? INITIAL_CONFIGURATION);
     setSettings(next);
@@ -443,7 +457,7 @@ function SpaceTieAcceleratorSim({ onBack }) {
       <ParamSelect className="space-tie-select" label="Experiment mode" value={settings.widget} options={workspaceOptions} onChange={(selectedWidget) => update({ widget: selectedWidget })} />
       <ParamSelect className="space-tie-select" label="Destination" value={settings.destination} options={SPACE_TIE_DESTINATIONS.map(({ value, label }) => ({ value, label }))} onChange={handleDestination} />
     </details>
-    <WorkspaceParameterControls widget={widget} settings={settings} onChange={update} />
+    <WorkspaceParameterControls widget={widget} settings={settings} onChange={updateWorkspace} />
     <details><summary>Shared formation geometry</summary>
       <ParamSelect className="space-tie-select" label="Helix strands" value={settings.strandCount} options={STRAND_OPTIONS} onChange={(strandCount) => update({ strandCount })} />
       <NumericParamControl className="space-tie-range" label="Tie spacing" value={settings.tieSpacingKm} min={500} max={50000} step={500} suffix="km" onChange={(tieSpacingKm) => update({ tieSpacingKm })} />
@@ -500,11 +514,11 @@ function SpaceTieAcceleratorSim({ onBack }) {
   </aside>;
 
   return <SimulatorBase className="space-tie-app" headerClassName="space-tie-topbar" mark="ST / ORBIT" title="SPACE TIE ACCELERATOR" subtitle="Discrete helical formation / coilgun energy studies" parameterValue={settings} presetValue={currentPresetValue} onParameterChange={updateAll} actions={<div className="space-tie-top-actions"><button type="button" disabled={!isSceneView} onClick={startOrPause}>{sequenceRunning ? 'Pause sequence' : flightTelemetry.done ? 'Run again' : 'Fire sequence'}</button><button type="button" disabled={!isSceneView} onClick={resetSequence}>Reset</button><button type="button" onClick={() => setPanelVisible((visible) => !visible)}>{panelVisible ? 'Hide params' : 'Show params'}</button></div>} onHome={onBack}>
-    {isSceneView ? <div className="space-tie-scene"><Canvas camera={{ position: [13, 10, 24], fov: 42, near: 0.1, far: 120 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><SpaceTieScene settings={settings} cameraViews={cameraViews} viewMode={cameraView} orbitPlaying={orbitPlaying} launchToken={launchToken} sequenceRunning={sequenceRunning} flightTelemetry={flightTelemetry} onTelemetry={setFlightTelemetry} onSequenceComplete={() => setSequenceRunning(false)} onUserInteraction={() => { setCameraView(null); update({ cameraViewMode: null }); }} /></Canvas></div> : <div className="space-tie-workspace"><header className="space-tie-workspace-heading"><span>{widget.presentation.toUpperCase()} / {widget.type.toUpperCase()}</span><h2>{widget.label}</h2><p>{widget.description}</p></header><SpaceTieAnalysis settings={settings} budget={budget} pulse={pulse} payload={payload} recoil={recoil} edt={edt} alignment={alignment} layout={layout} /></div>}
+    {isSceneView ? <div className="space-tie-scene"><Canvas camera={{ position: [13, 10, 24], fov: 42, near: 0.1, far: 120 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><SpaceTieScene settings={settings} massDriver={massDriver} cameraViews={cameraViews} viewMode={cameraView} orbitPlaying={orbitPlaying} launchToken={launchToken} sequenceRunning={sequenceRunning} flightTelemetry={flightTelemetry} onTelemetry={setFlightTelemetry} onSequenceComplete={() => setSequenceRunning(false)} onUserInteraction={() => { setCameraView(null); update({ cameraViewMode: null }); }} /></Canvas></div> : <div className="space-tie-workspace"><header className="space-tie-workspace-heading"><span>{widget.presentation.toUpperCase()} / {widget.type.toUpperCase()}</span><h2>{widget.label}</h2><p>{widget.description}</p></header><SpaceTieAnalysis settings={settings} budget={budget} pulse={pulse} payload={payload} recoil={recoil} edt={edt} alignment={alignment} layout={layout} /></div>}
     {isSceneView && <CameraPerspectiveToolbar className="simulator-perspective-toolbar space-tie-perspectives" modesClassName="simulator-perspective-modes" views={cameraViews} viewMode={cameraView} orbitPlaying={orbitPlaying} onViewChange={(cameraViewMode) => { setCameraView(cameraViewMode); update({ cameraViewMode }); }} onToggleOrbit={() => setOrbitPlaying((playing) => !playing)} />}
     {isSceneView && <div className="space-tie-view-heading"><span>{widget.label.toUpperCase()}</span><strong>{SPACE_TIE_DESTINATIONS.find((entry) => entry.value === settings.destination)?.label}</strong></div>}
-    {isSceneView && <div className="space-tie-scene-readout"><Metric label="Payload speed" value={`${(flightTelemetry.velocityMS / 1000).toFixed(3)} km/s`} /><Metric label="Kinetic energy" value={formatEnergy(flightTelemetry.kineticEnergyJ)} /><Metric label="Sequence" value={flightTelemetry.done ? 'Complete' : sequenceRunning ? `${(flightTelemetry.progress * 100).toFixed(0)}%` : flightTelemetry.progress > 0 ? `Paused ${(flightTelemetry.progress * 100).toFixed(0)}%` : 'Ready'} /><Metric label="Rendered ties" value={`${layout.nodes.length} / ${settings.strandCount} strands`} />{settings.widget === 'edt-tug' && <><Metric label="Tether thrust estimate" value={`${edt.thrustN.toExponential(2)} N`} /><Metric label="Tether electrical input" value={formatPower(edt.electricalInputW)} /></>}</div>}
-    {isSceneView && <div className="space-tie-view-caveat"><span>{widget.label}</span><p>{settings.widget === 'vacuum-channel' ? 'The “superfluid fracture” is unvalidated. This view changes only the visual field envelope; its gain is excluded from solar power and coilgun calculations.' : settings.widget === 'qed-profile' ? 'Weak-field QED birefringence is not a vacuum-viscosity force law.' : 'Discrete nodes are a visualization subset. Route lengths and efficiencies are scenario inputs, not mission design values.'}</p></div>}
+    {isSceneView && <div className="space-tie-scene-readout"><Metric label="Payload speed" value={`${(flightTelemetry.velocityMS / 1000).toFixed(3)} km/s`} /><Metric label="Kinetic energy" value={formatEnergy(flightTelemetry.kineticEnergyJ)} /><Metric label="Sequence" value={flightTelemetry.done ? 'Complete' : sequenceRunning ? `${(flightTelemetry.progress * 100).toFixed(0)}%` : flightTelemetry.progress > 0 ? `Paused ${(flightTelemetry.progress * 100).toFixed(0)}%` : 'Ready'} /><Metric label="Rendered ties" value={`${layout.nodes.length} / ${settings.strandCount} strands`} />{settings.widget === 'mass-driver' && <><Metric label="Predicted exit" value={`${(massDriver.exitVelocityMS / 1000).toFixed(2)} km/s`} /><Metric label="Peak acceleration" value={`${massDriver.peakG.toFixed(1)} g`} /><Metric label="Escape velocity" value={massDriver.reachesEscapeVelocity ? 'Met' : 'Shortfall'} /><Metric label="Payload g-limit" value={massDriver.withinPayloadTolerance ? 'Met' : 'Exceeded'} /><Metric label="Electrical energy" value={formatEnergy(massDriver.electricalEnergyRequiredJ)} /></>}{settings.widget === 'edt-tug' && <><Metric label="Tether thrust estimate" value={`${edt.thrustN.toExponential(2)} N`} /><Metric label="Tether electrical input" value={formatPower(edt.electricalInputW)} /></>}</div>}
+    {isSceneView && <div className="space-tie-view-caveat"><span>{widget.label}</span><p>{settings.widget === 'mass-driver' ? massDriver.status : settings.widget === 'vacuum-channel' ? 'The “superfluid fracture” is unvalidated. This view changes only the visual field envelope; its gain is excluded from solar power and coilgun calculations.' : settings.widget === 'qed-profile' ? 'Weak-field QED birefringence is not a vacuum-viscosity force law.' : 'Discrete nodes are a visualization subset. Route lengths and efficiencies are scenario inputs, not mission design values.'}</p></div>}
     {panel}
   </SimulatorBase>;
 }

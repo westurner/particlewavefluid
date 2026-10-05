@@ -7,6 +7,7 @@ import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-stat
 import { CameraPerspectiveToolbar, OrbitalTrackingParameters, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase, SimulatorExportModal, SimulatorIOJournal, SimulatorPresetControls, useSimulatorJournal } from './lib/SimulatorBase.jsx';
 import { buildParameterReplayJournal, DEFAULT_CAMERA_VIEWS, DEFAULT_SIMULATOR_3D_PARAMETERS, deletePresetLibrary, parseParameterEditLogYaml, parseSimulatorJson, readPresetLibrary, serializeParameterEditLog, writePresetLibrary } from './lib/simulator-base.js';
 import { evaluateGpeResponse, WAVE_EVOLUTION_OPTIONS } from './mechanicsModels.js';
+import { calculateDdfMobility, evaluateMechanicsResponse, SIMULATION_MECHANICS_REGIMES } from './lib/simulationMechanics.js';
 import { COLOR_PALETTES, sampleColorPalette } from './lib/color-palettes.js';
 import PaletteParamControl from './lib/PaletteParamControl.jsx';
 
@@ -19,7 +20,7 @@ const MIN_PARTICLE_COUNT = 1024;
 //const MAX_PARTICLE_COUNT = 9216;
 const MAX_PARTICLE_COUNT = 2 ** 14;
 const WAVE_PRESET_STORAGE_KEY = 'sqgsim-wave-snapshots';
-const DEFAULT_WAVE_MECHANICS = { model: 'linear', nonlinearCoupling: 0.08, dispersion: 0.05, showDifference: false };
+const DEFAULT_WAVE_MECHANICS = { model: 'linear', nonlinearCoupling: 0.08, dispersion: 0.05, showDifference: false, mechanicsRegime: 'classical', tensorGaussianWaistM: 6, ddfStrength: 0.5, ddfSpeedLimitMS: 15000, ddfBaseViscosity: 0.02, grassmannianPoleWeight: 0.72, geometryCoupling: 0.1 };
 const DETECTOR_UPDATE_INTERVAL = 1 / 12;
 const CLASSIC_DETECTOR_BINS_PER_AXIS = 48;
 const DETECTOR_MAX_EMITTERS = 1400;
@@ -693,6 +694,7 @@ function WaveField({ waves, waveCount, interferenceModes, running, timeRef, expe
     const tensorWaves = usesApertureExperiment
       ? activeWaves.filter((wave) => wave.enabled !== false && wave.polarization === 'EM-Tensor-Gaussian')
       : null;
+    const tensorGaussianWave = activeWaves.find((wave) => wave.enabled !== false && wave.polarization === 'EM-Tensor-Gaussian');
     for (let index = 0; index < particleCount; index += 1) {
       const x = basePositions[index * 3];
       const z = basePositions[index * 3 + 2];
@@ -721,17 +723,26 @@ function WaveField({ waves, waveCount, interferenceModes, running, timeRef, expe
         ? null
         : calculateWaveDisplacementAndTensorGaussian(activeWaves, x, z, timeRef.current, interferenceModes);
       const displacement = apertureDisplacement ?? waveResponse.displacement;
-      const tensorGaussian = apertureDisplacement
+      const rawTensorGaussian = apertureDisplacement
         ? tensorWaves.length > 0 ? calculateWaveTensorGaussian(tensorWaves, x, z, timeRef.current, interferenceModes) * transmission : 0
         : waveResponse.tensorGaussian * transmission;
+      const beamWaist = Math.max(0.1, Number(tensorGaussianWave?.beamWaist) || DEFAULT_BEAM_WAIST);
+      const transverseRadius = rawTensorGaussian > 0
+        ? beamWaist * Math.sqrt(-2 * Math.log(Math.min(1, rawTensorGaussian)))
+        : beamWaist * 8;
+      const ddfMobility = waveMechanics.mechanicsRegime === 'ddf-tensor-gaussian'
+        ? calculateDdfMobility({ radiusM: Math.max(0.05, transverseRadius), speedMS: Math.abs(linearHeight) * 100, coreRadiusM: waveMechanics.tensorGaussianWaistM, speedLimitMS: waveMechanics.ddfSpeedLimitMS, dilatancy: waveMechanics.ddfStrength, baseViscosity: waveMechanics.ddfBaseViscosity })
+        : 1;
+      const mechanicsResponse = evaluateMechanicsResponse({ regime: waveMechanics.mechanicsRegime, gaussianWeight: rawTensorGaussian, ddfMobility, grassmannianWeight: waveMechanics.grassmannianPoleWeight, geometryCoupling: waveMechanics.geometryCoupling });
+      const tensorGaussian = mechanicsResponse.splatWeight;
       const derivative = particleShape === 'vector'
         ? calculateWaveDerivative(activeWaves, x, z, timeRef.current, particleDerivativeOrder, interferenceModes)
         : 0;
       const normalized = Math.min(1, Math.abs(height) / Math.max(1, activeWaves.reduce((sum, wave) => sum + Math.abs(wave.amplitude), 0)));
       const orbitalPhase = hasOrbitalWaves ? calculateWaveOrbitalPhase(activeWaves, x, z, timeRef.current) : null;
-      positions[index * 3] = x + displacement.x * transmission * 0.9;
-      positions[index * 3 + 1] = basePositions[index * 3 + 1] + displacement.y * transmission * 0.9;
-      positions[index * 3 + 2] = z + displacement.z * transmission * 0.9;
+      positions[index * 3] = x + displacement.x * transmission * 0.9 * mechanicsResponse.accelerationScale;
+      positions[index * 3 + 1] = basePositions[index * 3 + 1] + displacement.y * transmission * 0.9 * mechanicsResponse.accelerationScale;
+      positions[index * 3 + 2] = z + displacement.z * transmission * 0.9 * mechanicsResponse.accelerationScale;
       occlusions[index] = transmission;
       vectorAngles[index] = Math.atan(derivative * 0.35);
       tensorGaussians[index] = tensorGaussian;
@@ -814,6 +825,17 @@ function WaveMechanicsOverlay({ value, onChange }) {
     <section className="wave-mechanics-overlay" aria-label="Optional wave mechanics">
       <span className="wave-section-label">OPTIONAL MECHANICS</span>
       <ParamSelect className="wave-select" label="Evolution" value={value.model} options={WAVE_EVOLUTION_OPTIONS} onChange={(model) => onChange({ ...value, model })} />
+      <ParamSelect className="wave-select" label="EM splat mechanics" value={value.mechanicsRegime ?? 'classical'} options={SIMULATION_MECHANICS_REGIMES} onChange={(mechanicsRegime) => onChange({ ...value, mechanicsRegime })} />
+      {value.mechanicsRegime === 'ddf-tensor-gaussian' && <>
+        <RangeControl label="Tensor-Gaussian waist" value={value.tensorGaussianWaistM} min={0.1} max={100} step={0.1} onChange={(tensorGaussianWaistM) => onChange({ ...value, tensorGaussianWaistM })} />
+        <RangeControl label="DDF dilatancy" value={value.ddfStrength} min={0} max={20} step={0.1} onChange={(ddfStrength) => onChange({ ...value, ddfStrength })} />
+        <RangeControl label="DDF speed limit" value={value.ddfSpeedLimitMS} min={100} max={100000} step={100} suffix="m/s" onChange={(ddfSpeedLimitMS) => onChange({ ...value, ddfSpeedLimitMS })} />
+        <RangeControl label="DDF base viscosity" value={value.ddfBaseViscosity} min={0} max={1} step={0.01} onChange={(ddfBaseViscosity) => onChange({ ...value, ddfBaseViscosity })} />
+      </>}
+      {value.mechanicsRegime === 'grassmannian-amplituhedron' && <>
+        <RangeControl label="Positive-cell pole weight" value={value.grassmannianPoleWeight} min={0} max={1} step={0.01} onChange={(grassmannianPoleWeight) => onChange({ ...value, grassmannianPoleWeight })} />
+        <RangeControl label="Amplituhedron acceleration coupling" value={value.geometryCoupling} min={0} max={0.25} step={0.005} onChange={(geometryCoupling) => onChange({ ...value, geometryCoupling })} />
+      </>}
       {value.model === 'gpe' && <>
         <RangeControl label="Nonlinear coupling" value={value.nonlinearCoupling} min={0} max={1} step={0.01} onChange={(nonlinearCoupling) => onChange({ ...value, nonlinearCoupling })} />
         <RangeControl label="Directional dispersion" value={value.dispersion} min={0} max={1} step={0.01} onChange={(dispersion) => onChange({ ...value, dispersion })} />

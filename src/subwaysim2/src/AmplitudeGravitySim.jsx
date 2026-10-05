@@ -296,6 +296,12 @@ export default function AmplitudeGravitySim({ onBack }) {
         <Slider label="Field and path opacity" value={settings.streamlineOpacity} min={0} max={1} step={0.01} onChange={(streamlineOpacity) => update({ streamlineOpacity })} />
         <Slider label="Geometric coupling" value={settings.coupling} min={0} max={4} step={0.01} onChange={(coupling) => update({ coupling })} />
         <Slider label="Correction range" value={settings.correctionRange} min={0.2} max={12} step={0.1} onChange={(correctionRange) => update({ correctionRange })} />
+        {settings.mode === 'ddf-tensor-gaussian' && <>
+          <Slider label="Tensor-Gaussian waist" value={settings.tensorGaussianWaist} min={0.1} max={20} step={0.1} onChange={(tensorGaussianWaist) => update({ tensorGaussianWaist })} />
+          <Slider label="DDF dilatancy" value={settings.ddfStrength} min={0} max={20} step={0.1} onChange={(ddfStrength) => update({ ddfStrength })} />
+          <Slider label="DDF speed limit" value={settings.ddfSpeedLimitMS} min={0.1} max={1000} step={0.1} onChange={(ddfSpeedLimitMS) => update({ ddfSpeedLimitMS })} suffix="m/s" />
+          <Slider label="DDF base viscosity" value={settings.ddfBaseViscosity} min={0} max={1} step={0.01} onChange={(ddfBaseViscosity) => update({ ddfBaseViscosity })} />
+        </>}
         <Slider label="Softening" value={settings.softening} min={0.01} max={1} step={0.01} onChange={(softening) => update({ softening })} />
         <Slider label="Relativistic scale c" value={settings.speedOfLight} min={5} max={100} step={1} onChange={(speedOfLight) => update({ speedOfLight })} />
         <Slider label="Time scale" value={configuration.timeScale} min={0} max={1.5} step={0.01} onChange={(timeScale) => update({ timeScale })} />

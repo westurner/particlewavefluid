@@ -1,9 +1,12 @@
+import { calculateDdfMobility, evaluateMechanicsResponse } from './lib/simulationMechanics.js';
+
 export const FIELD_MODEL_OPTIONS = [
   { value: 'newtonian', label: 'Newtonian' },
   { value: 'ns-compressible', label: 'NS compressible fluid' },
   { value: 'ns-incompressible', label: 'NS incompressible fluid' },
   { value: 'sqg', label: 'SQG hypothesis' },
-  { value: 'ddf', label: 'DDF hypothesis' }
+  { value: 'ddf', label: 'DDF hypothesis' },
+  { value: 'grassmannian-amplituhedron', label: 'Gr(2,4) / amplituhedron splat' }
 ];
 
 export const FIELD_MODEL_DETAILS = Object.freeze({
@@ -11,7 +14,8 @@ export const FIELD_MODEL_DETAILS = Object.freeze({
   'ns-compressible': { status: 'Reduced NS experiment', equation: 'd rho/dt + div(rho u) = 0' },
   'ns-incompressible': { status: 'Reduced NS experiment', equation: 'div(u) = 0' },
   sqg: { status: 'Speculative SQG hypothesis', equation: 'compressible sink + bounded quantum pressure' },
-  ddf: { status: 'Speculative DDF hypothesis', equation: 'SQG response / (1 + strain-dependent viscosity)' }
+  ddf: { status: 'Speculative DDF hypothesis', equation: 'SQG response / (1 + strain-dependent viscosity)' },
+  'grassmannian-amplituhedron': { status: 'Exploratory geometric hypothesis', equation: 'Newtonian baseline × [1 + bounded Gr(2,4) tensor-Gaussian splat]' }
 });
 
 export const FLUID_MODEL_OPTIONS = [
@@ -42,7 +46,10 @@ export const DEFAULT_FIELD_MECHANICS = Object.freeze({
   compressibility: 0.45,
   dilatancy: 1,
   speedLimit: 8,
-  baseViscosity: 0.02
+  baseViscosity: 0.02,
+  tensorGaussianWaist: 2.5,
+  grassmannianPoleWeight: 0.72,
+  geometryCoupling: 0.15
 });
 
 const MODEL_IDS = new Set(FIELD_MODEL_OPTIONS.map(({ value }) => value));
@@ -67,7 +74,10 @@ export function sanitizeFieldMechanics(value = {}, defaults = DEFAULT_FIELD_MECH
     compressibility: clamp(finiteOr(value.compressibility, defaults.compressibility), 0, 4),
     dilatancy: clamp(finiteOr(value.dilatancy, defaults.dilatancy), 0, 20),
     speedLimit: clamp(finiteOr(value.speedLimit, defaults.speedLimit), 0.1, 1e6),
-    baseViscosity: clamp(finiteOr(value.baseViscosity, defaults.baseViscosity), 0, 1)
+    baseViscosity: clamp(finiteOr(value.baseViscosity, defaults.baseViscosity), 0, 1),
+    tensorGaussianWaist: clamp(finiteOr(value.tensorGaussianWaist, defaults.tensorGaussianWaist), 0.1, 100),
+    grassmannianPoleWeight: clamp(finiteOr(value.grassmannianPoleWeight, defaults.grassmannianPoleWeight), 0, 1),
+    geometryCoupling: clamp(finiteOr(value.geometryCoupling, defaults.geometryCoupling), 0, 0.25)
   };
 }
 
@@ -114,6 +124,7 @@ export function evaluateFieldModel(model, state = {}, mechanics = DEFAULT_FIELD_
   const quantumPressure = settings.quantumPressure
     * Math.exp(-(coreRatio * coreRatio)) / settings.coreRadius;
   const compressibleSink = inverseSquare * (1 + settings.compressibility / (1 + coreRatio));
+  const gaussianWeight = Math.exp(-(radius * radius) / (2 * settings.tensorGaussianWaist ** 2));
 
   if (model === 'ns-compressible') {
     return {
@@ -139,20 +150,39 @@ export function evaluateFieldModel(model, state = {}, mechanics = DEFAULT_FIELD_
     };
   }
 
-  const beta = clamp(speed / settings.speedLimit, 0, 0.9999);
-  const lorentzFactor = 1 / Math.sqrt(1 - beta * beta);
-  const strainRate = speed / radius;
-  const effectiveViscosity = settings.baseViscosity
-    * (1 + settings.dilatancy * ((lorentzFactor - 1) + strainRate));
-  const mobility = 1 / (1 + effectiveViscosity);
+  if (model === 'ddf') {
+    const mobility = calculateDdfMobility({ radiusM: radius, speedMS: speed, coreRadiusM: settings.coreRadius, speedLimitMS: settings.speedLimit, dilatancy: settings.dilatancy, baseViscosity: settings.baseViscosity });
+    const effectiveViscosity = 1 / mobility - 1;
+    const response = evaluateMechanicsResponse({ regime: 'ddf-tensor-gaussian', gaussianWeight, ddfMobility: mobility });
+    return {
+      radialAcceleration: (-compressibleSink + quantumPressure) * response.accelerationScale,
+      tangentialAcceleration: tangentialAcceleration * response.accelerationScale,
+      quantumPressure,
+      effectiveViscosity,
+      mobility: response.accelerationScale,
+      ddfMobility: mobility,
+      divergence: divergence * response.accelerationScale,
+      volumeChangeRate: divergence * response.accelerationScale,
+      tensorGaussian: response.splatWeight
+    };
+  }
+
+  const geometry = evaluateMechanicsResponse({
+    regime: 'grassmannian-amplituhedron',
+    gaussianWeight,
+    grassmannianWeight: settings.grassmannianPoleWeight,
+    geometryCoupling: settings.geometryCoupling
+  });
   return {
-    radialAcceleration: (-compressibleSink + quantumPressure) * mobility,
-    tangentialAcceleration: tangentialAcceleration * mobility,
-    quantumPressure,
-    effectiveViscosity,
-    mobility,
-    divergence: divergence * mobility,
-    volumeChangeRate: divergence * mobility
+    radialAcceleration: -inverseSquare * geometry.accelerationScale,
+    tangentialAcceleration: tangentialAcceleration * geometry.accelerationScale,
+    quantumPressure: 0,
+    effectiveViscosity: 0,
+    mobility: geometry.accelerationScale,
+    divergence: null,
+    volumeChangeRate: null,
+    tensorGaussian: geometry.splatWeight,
+    geometricCorrection: geometry.geometricCorrection
   };
 }
 

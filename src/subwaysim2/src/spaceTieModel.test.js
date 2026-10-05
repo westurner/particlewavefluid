@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   calculateBatteryOperatingPoint,
   calculateCoilgunStage,
+  calculateElectromagneticMassDriver,
   calculateEdtTug,
   calculateHalbachAlignment,
   calculateHalbachQED,
@@ -36,6 +37,19 @@ test('every workspace has a unique presentation and valid mode-specific paramete
       else assert.ok(parameter.min <= parameter.max && parameter.step > 0, `${workspace.value}.${parameter.key} needs a valid range`);
     }
   }
+});
+
+test('electromagnetic mass driver predicts bounded Earth and lunar launch envelopes', () => {
+  const earth = calculateElectromagneticMassDriver({ ...SPACE_TIE_DEFAULTS, massDriverLocation: 'earth' });
+  const lunar = calculateElectromagneticMassDriver({ ...SPACE_TIE_DEFAULTS, massDriverLocation: 'moon', massDriverTrackLengthKm: 6 });
+  const passenger = calculateElectromagneticMassDriver({ ...SPACE_TIE_DEFAULTS, massDriverPayloadType: 'passenger' });
+  const weakField = calculateElectromagneticMassDriver({ ...SPACE_TIE_DEFAULTS, massDriverFluxT: 1 });
+  assert.ok(earth.exitVelocityMS >= earth.requiredEscapeVelocityMS);
+  assert.equal(earth.withinPayloadTolerance, true);
+  assert.ok(lunar.exitVelocityMS >= lunar.requiredEscapeVelocityMS);
+  assert.equal(passenger.withinPayloadTolerance, false);
+  assert.ok(weakField.exitVelocityMS < earth.exitVelocityMS);
+  assert.ok(earth.electricalEnergyRequiredJ <= earth.availableBatteryEnergyJ);
 });
 
 test('workspace parameter sanitization bounds logistics and enum inputs', () => {

@@ -97,6 +97,24 @@ test('gravituhedron hypothesis approaches the reference at long range', () => {
   assert.ok(near.relativeDifference > far.relativeDifference);
 });
 
+test('DDF tensor-Gaussian amplitude mode is normalized and reverts to the reference outside its waist', () => {
+  const configuration = { mode: 'ddf-tensor-gaussian', tensorGaussianWaist: 2, ddfStrength: 1, ddfSpeedLimitMS: 8, ddfBaseViscosity: 0.02 };
+  const near = evaluateAmplitudeChannels({ distance: 0.5, speedMS: 7 }, configuration);
+  const far = evaluateAmplitudeChannels({ distance: 20, speedMS: 7 }, configuration);
+  assert.ok(near.tensorGaussian > far.tensorGaussian);
+  assert.ok(near.ddfMobility < 1);
+  assert.equal(far.selectedKernel, far.spin2Tree);
+  assert.ok(near.tensorGaussian <= 1);
+});
+
+test('DDF amplitude settings sanitize hypothesis inputs', () => {
+  const settings = sanitizeAmplitudeGravity({ mode: 'ddf-tensor-gaussian', tensorGaussianWaist: 0, ddfStrength: 100, ddfSpeedLimitMS: 0, ddfBaseViscosity: -2 });
+  assert.equal(settings.tensorGaussianWaist, 1e-6);
+  assert.equal(settings.ddfStrength, 20);
+  assert.equal(settings.ddfSpeedLimitMS, 0.1);
+  assert.equal(settings.ddfBaseViscosity, 0);
+});
+
 test('N-body pair forces conserve total momentum', () => {
   const result = evaluateNBodyAmplitudeGravity([
     { position: [-2, 0, 0], mass: 2, charge: 1 },

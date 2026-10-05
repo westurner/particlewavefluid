@@ -1,7 +1,10 @@
+import { calculateDdfMobility, evaluateMechanicsResponse } from './lib/simulationMechanics.js';
+
 export const AMPLITUDE_GRAVITY_MODES = [
   { value: 'newtonian', label: 'Newtonian reference' },
   { value: 'spin2-tree', label: 'Spin-2 EFT tree proxy' },
-  { value: 'gravituhedron', label: 'Gravituhedron hypothesis' }
+  { value: 'gravituhedron', label: 'Gravituhedron hypothesis' },
+  { value: 'ddf-tensor-gaussian', label: 'DDF / normed tensor-Gaussian' }
 ];
 
 export const DEFAULT_AMPLITUDE_GRAVITY = Object.freeze({
@@ -10,6 +13,10 @@ export const DEFAULT_AMPLITUDE_GRAVITY = Object.freeze({
   fourthColumnWeight: 1,
   coupling: 0.35,
   correctionRange: 4,
+  tensorGaussianWaist: 3,
+  ddfStrength: 0.5,
+  ddfSpeedLimitMS: 8,
+  ddfBaseViscosity: 0.02,
   softening: 0.18,
   gravitationalConstant: 1,
   speedOfLight: 20,
@@ -49,6 +56,10 @@ export function sanitizeAmplitudeGravity(value = {}) {
     fourthColumnWeight: positive(value.fourthColumnWeight, DEFAULT_AMPLITUDE_GRAVITY.fourthColumnWeight),
     coupling: clamp(finiteOr(value.coupling, DEFAULT_AMPLITUDE_GRAVITY.coupling), 0, 4),
     correctionRange: positive(value.correctionRange, DEFAULT_AMPLITUDE_GRAVITY.correctionRange),
+    tensorGaussianWaist: positive(value.tensorGaussianWaist, DEFAULT_AMPLITUDE_GRAVITY.tensorGaussianWaist),
+    ddfStrength: clamp(finiteOr(value.ddfStrength, DEFAULT_AMPLITUDE_GRAVITY.ddfStrength), 0, 20),
+    ddfSpeedLimitMS: clamp(finiteOr(value.ddfSpeedLimitMS, DEFAULT_AMPLITUDE_GRAVITY.ddfSpeedLimitMS), 0.1, 1e6),
+    ddfBaseViscosity: clamp(finiteOr(value.ddfBaseViscosity, DEFAULT_AMPLITUDE_GRAVITY.ddfBaseViscosity), 0, 1),
     softening: clamp(finiteOr(value.softening, DEFAULT_AMPLITUDE_GRAVITY.softening), 0.001, 10),
     gravitationalConstant: clamp(finiteOr(value.gravitationalConstant, DEFAULT_AMPLITUDE_GRAVITY.gravitationalConstant), 0, 100),
     speedOfLight: clamp(finiteOr(value.speedOfLight, DEFAULT_AMPLITUDE_GRAVITY.speedOfLight), 1, 1e6),
@@ -66,9 +77,6 @@ export function sanitizeAmplitudeGravity(value = {}) {
 
 export function updateAmplitudeGravityStreamlines(target, bodies, configuration = DEFAULT_AMPLITUDE_GRAVITY) {
   const settings = sanitizeAmplitudeGravity(configuration);
-  const poleWeight = settings.mode === 'gravituhedron'
-    ? createPositiveGrassmannianCell(settings).canonicalPoleWeight
-    : 0;
   const sourceMasses = bodies.map((body) => positive(body.mass, 1));
   const field = new Float64Array(3);
   const segmentLength = settings.streamlineLength / AMPLITUDE_GRAVITY_STREAMLINE_SEGMENTS;
@@ -104,12 +112,7 @@ export function updateAmplitudeGravityStreamlines(target, bodies, configuration 
           const distanceSquared = dx * dx + dy * dy + dz * dz;
           if (distanceSquared < 1e-12) continue;
           const distance = Math.sqrt(distanceSquared);
-          const radius = Math.sqrt(distanceSquared + softeningSquared);
-          let kernel = settings.gravitationalConstant * sourceMasses[sourceIndex] / (radius * radius);
-          if (settings.mode === 'spin2-tree') kernel *= 1 + settings.coupling / radius;
-          if (settings.mode === 'gravituhedron') {
-            kernel *= 1 + settings.coupling * poleWeight * Math.exp(-radius / settings.correctionRange);
-          }
+          const kernel = evaluateAmplitudeChannels({ distance, massProduct: sourceMasses[sourceIndex] }, settings).selectedKernel;
           const fieldScale = kernel / distance;
           field[0] += dx * fieldScale;
           field[1] += dy * fieldScale;
@@ -201,20 +204,33 @@ export function createPositiveGrassmannianCell(configuration = DEFAULT_AMPLITUDE
   };
 }
 
-export function evaluateAmplitudeChannels({ distance, massProduct = 1, chargeProduct = 0 }, configuration = DEFAULT_AMPLITUDE_GRAVITY) {
+export function evaluateAmplitudeChannels({ distance, massProduct = 1, chargeProduct = 0, speedMS = 0 }, configuration = DEFAULT_AMPLITUDE_GRAVITY) {
   const settings = sanitizeAmplitudeGravity(configuration);
   const cell = createPositiveGrassmannianCell(settings);
   const radius = Math.sqrt(distance * distance + settings.softening * settings.softening);
   const momentumTransferSquared = 1 / (radius * radius);
   const photonExchange = chargeProduct * momentumTransferSquared;
   const spin2Tree = settings.gravitationalConstant * massProduct * momentumTransferSquared;
-  const geometricCorrection = settings.coupling * cell.canonicalPoleWeight
-    * Math.exp(-radius / settings.correctionRange);
+  const gaussianWeight = settings.mode === 'ddf-tensor-gaussian'
+    ? Math.exp(-(radius * radius) / (2 * settings.tensorGaussianWaist ** 2))
+    : Math.exp(-radius / settings.correctionRange);
+  const ddfMobility = settings.mode === 'ddf-tensor-gaussian'
+    ? calculateDdfMobility({ radiusM: radius, speedMS, coreRadiusM: settings.softening, speedLimitMS: settings.ddfSpeedLimitMS, dilatancy: settings.ddfStrength, baseViscosity: settings.ddfBaseViscosity })
+    : 1;
+  const ddfResponse = settings.mode === 'ddf-tensor-gaussian'
+    ? evaluateMechanicsResponse({ regime: 'ddf-tensor-gaussian', gaussianWeight, ddfMobility })
+    : null;
+  const geometricResponse = settings.mode === 'gravituhedron'
+    ? evaluateMechanicsResponse({ regime: 'grassmannian-amplituhedron', gaussianWeight, grassmannianWeight: cell.canonicalPoleWeight, geometryCoupling: settings.coupling, geometryCouplingMax: 4 })
+    : null;
+  const geometricCorrection = geometricResponse ? geometricResponse.accelerationScale - 1 : 0;
   const selectedKernel = settings.mode === 'newtonian'
     ? spin2Tree
     : settings.mode === 'spin2-tree'
       ? spin2Tree * (1 + settings.coupling / radius)
-      : spin2Tree * (1 + geometricCorrection);
+      : settings.mode === 'ddf-tensor-gaussian'
+        ? spin2Tree * ddfResponse.accelerationScale
+        : spin2Tree * (1 + geometricCorrection);
   return {
     cell,
     radius,
@@ -223,6 +239,8 @@ export function evaluateAmplitudeChannels({ distance, massProduct = 1, chargePro
     spin2Tree,
     selectedKernel,
     geometricCorrection,
+    ddfMobility,
+    tensorGaussian: ddfResponse?.splatWeight ?? geometricResponse?.splatWeight ?? 0,
     relativeDifference: spin2Tree === 0 ? 0 : Math.abs(selectedKernel - spin2Tree) / Math.abs(spin2Tree)
   };
 }
@@ -241,10 +259,13 @@ export function evaluateNBodyAmplitudeGravity(bodies, configuration = DEFAULT_AM
       if (distance === 0) continue;
       const firstMass = positive(bodies[first].mass, 1);
       const secondMass = positive(bodies[second].mass, 1);
+      const firstVelocity = bodies[first].velocity ?? [0, 0, 0];
+      const secondVelocity = bodies[second].velocity ?? [0, 0, 0];
       const channels = evaluateAmplitudeChannels({
         distance,
         massProduct: firstMass * secondMass,
-        chargeProduct: finiteOr(bodies[first].charge, 0) * finiteOr(bodies[second].charge, 0)
+        chargeProduct: finiteOr(bodies[first].charge, 0) * finiteOr(bodies[second].charge, 0),
+        speedMS: Math.hypot(...secondVelocity.map((value, axis) => value - (firstVelocity[axis] ?? 0)))
       }, settings);
       const direction = offset.map((component) => component / distance);
       const forceMagnitude = channels.selectedKernel;

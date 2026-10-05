@@ -1,3 +1,5 @@
+import { calculateMaxwellStressTensor, normalizeTensorGaussian } from './lib/simulationMechanics.js';
+
 export const MAX_WAVES = 8;
 export const DEFAULT_WAVE_COUNT = 6;
 export const DEFAULT_SIGNAL_ORIGIN = { x: 0, y: 0, z: 0 };
@@ -566,23 +568,12 @@ export function calculateElectromagneticField(wave, x, z, time, y = 0, includeTe
     ? scaleVector(addVectors(scaleVector(frame.transverse, Math.cos(vortexPhase)), scaleVector(frame.side, handedness * Math.sin(vortexPhase))), magnitude)
     : scaleVector(frame.transverse, magnitude * carrier);
   const magnetic = includeMagnetic ? cross(frame.direction, electric) : { x: 0, y: 0, z: 0 };
-  const electricEnergy = dot(electric, electric);
-  const magneticEnergy = includeMagnetic ? dot(magnetic, magnetic) : 0;
-  const energy = includeTensor ? 0.5 * (electricEnergy + magneticEnergy) : 0;
+  const maxwell = calculateMaxwellStressTensor(electric, magnetic);
+  const { electricEnergy, magneticEnergy } = maxwell;
+  const energy = includeTensor ? maxwell.energyDensity : 0;
   let normalizedTensor;
   if (includeTensor) {
-    const stressTensor = [
-      electric.x * electric.x + magnetic.x * magnetic.x - energy,
-      electric.x * electric.y + magnetic.x * magnetic.y,
-      electric.x * electric.z + magnetic.x * magnetic.z,
-      electric.y * electric.x + magnetic.y * magnetic.x,
-      electric.y * electric.y + magnetic.y * magnetic.y - energy,
-      electric.y * electric.z + magnetic.y * magnetic.z,
-      electric.z * electric.x + magnetic.z * magnetic.x,
-      electric.z * electric.y + magnetic.z * magnetic.y,
-      electric.z * electric.z + magnetic.z * magnetic.z - energy
-    ];
-    normalizedTensor = electricEnergy > 0 ? stressTensor.map((value) => value / electricEnergy) : stressTensor;
+    normalizedTensor = electricEnergy > 0 ? maxwell.tensor.map((value) => value / electricEnergy) : maxwell.tensor;
   }
   return {
     electric,
@@ -590,7 +581,7 @@ export function calculateElectromagneticField(wave, x, z, time, y = 0, includeTe
     gaussian,
     intensity: electricEnergy + magneticEnergy,
     ...(includeTensor ? { tensor: normalizedTensor } : {}),
-    tensorGaussian: Math.min(1, electricEnergy) * gaussian
+    tensorGaussian: normalizeTensorGaussian(electricEnergy, gaussian)
   };
 }
 

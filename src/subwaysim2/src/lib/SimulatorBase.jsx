@@ -258,12 +258,37 @@ export function useSimulatorJournal({ initialSnapshot, onApplySnapshot, playback
 }
 
 export function SimulatorBase({ children, className, headerClassName, title, subtitle, mark = 'PAS', meta, actions, homeUrl = '/', onHome, mode = '3d', parameterValue, presetValue, onParameterChange, brandClassName = '', markClassName = '', metaClassName = '', metaContentClassName = '', homeClassName = '' }) {
+  const [subtitleDimmed, setSubtitleDimmed] = useState(false);
+  const subtitleAutoHiddenRef = useRef(false);
+  const subtitleActiveRef = useRef(false);
+
+  useEffect(() => {
+    subtitleAutoHiddenRef.current = false;
+    subtitleActiveRef.current = false;
+    setSubtitleDimmed(false);
+    if (!subtitle) return undefined;
+    const timeoutId = setTimeout(() => {
+      subtitleAutoHiddenRef.current = true;
+      if (!subtitleActiveRef.current) setSubtitleDimmed(true);
+    }, 5200);
+    return () => clearTimeout(timeoutId);
+  }, [subtitle]);
+
+  const revealSubtitle = () => {
+    subtitleActiveRef.current = true;
+    setSubtitleDimmed(false);
+  };
+  const concealSubtitle = () => {
+    subtitleActiveRef.current = false;
+    if (subtitleAutoHiddenRef.current) setSubtitleDimmed(true);
+  };
+
   return (
     <main className={`simulator-base simulator-base-${mode} ${className || ''}`} data-simulator-mode={mode}>
       <header className={`simulator-base-topbar ${headerClassName || ''}`}>
         <div className={`simulator-base-brand ${brandClassName}`}>
           <span className={`simulator-base-mark ${markClassName}`}>{mark}</span>
-          <span><b>{title}</b><em>{subtitle}</em></span>
+          <span><b>{title}</b>{subtitle && <em className={`simulator-base-description${subtitleDimmed ? ' is-dimmed' : ''}`} tabIndex={0} onPointerEnter={revealSubtitle} onPointerLeave={concealSubtitle} onFocus={revealSubtitle} onBlur={concealSubtitle}>{subtitle}</em>}</span>
         </div>
         <div className={`simulator-base-meta ${metaClassName}`}>
           {meta && <span className={metaContentClassName}>{meta}</span>}

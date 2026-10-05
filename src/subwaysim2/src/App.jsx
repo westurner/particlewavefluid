@@ -16,6 +16,7 @@ const SubwaySim = lazy(() => import('./SubwaySim.jsx').then(({ SubwaySim: compon
 const RailTieMaterialSim = lazy(() => import('./RailTieMaterialSim.jsx'));
 const RailHeatSim = lazy(() => import('./RailHeatSim.jsx'));
 const SpaceTieAcceleratorSim = lazy(() => import('./SpaceTieAcceleratorSim.jsx'));
+const HalbachLinearMotorSim = lazy(() => import('./HalbachLinearMotorSim.jsx'));
 
 const SIMULATION_MODES = [
   {
@@ -161,6 +162,15 @@ const SIMULATION_MODES = [
     description: 'Explore a moving double/triple-helical tie formation, energy-bounded coilgun pulses, solar input, and bounded field hypotheses.',
     detail: 'ORBITAL / COILGUN / ENERGY',
     accent: 'blue'
+  },
+  {
+    id: 'halbachlinearmotor',
+    index: '17',
+    name: 'halbachlinearmotor',
+    label: 'Halbach array + linear motor',
+    description: 'Compare alternating and Halbach magnet rows against a phase-driven linear synchronous motor coil array.',
+    detail: 'FLUX / COIL PHASE / LSM',
+    accent: 'orange'
   }
 ];
 
@@ -188,6 +198,7 @@ function SimulationLoader() {
   if (selectedSimulation === 'railtiesim') simulation = <RailTieMaterialSim onBack={onBack} />;
   if (selectedSimulation === 'railheatsim') simulation = <RailHeatSim onBack={onBack} />;
   if (selectedSimulation === 'spacetieaccelerator') simulation = <SpaceTieAcceleratorSim onBack={onBack} />;
+  if (selectedSimulation === 'halbachlinearmotor') simulation = <HalbachLinearMotorSim onBack={onBack} />;
   if (simulation) return <Suspense fallback={<LoadingScreen />}>{simulation}</Suspense>;
 
   return (

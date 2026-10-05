@@ -190,6 +190,9 @@ const MIXED_VELOCITY_SHADER = `
   uniform float uDilatancy;
   uniform float uSpeedLimit;
   uniform float uBaseViscosity;
+  uniform float uTensorGaussianWaist;
+  uniform float uGrassmannianPoleWeight;
+  uniform float uGeometryCoupling;
 
   const float GRAVITY_CONSTANT = 6.67e-11;
 
@@ -207,12 +210,19 @@ const MIXED_VELOCITY_SHADER = `
     if (model < 2.5) return vec4(-inverseSquare, tangent, uBaseViscosity, 0.0);
     float pressure = uQuantumPressure * exp(-(coreRatio * coreRatio)) / max(uCoreRadius, 0.05);
     if (model < 3.5) return vec4(-sink + pressure, tangent, uBaseViscosity, pressure);
-    float beta = clamp(speed / max(uSpeedLimit, 0.1), 0.0, 0.9999);
-    float lorentzFactor = inversesqrt(1.0 - beta * beta);
-    float strainRate = speed / radius;
-    float viscosity = uBaseViscosity * (1.0 + uDilatancy * ((lorentzFactor - 1.0) + strainRate));
-    float mobility = 1.0 / (1.0 + viscosity);
-    return vec4((-sink + pressure) * mobility, tangent * mobility, viscosity, pressure);
+    if (model < 4.5) {
+      float beta = clamp(speed / max(uSpeedLimit, 0.1), 0.0, 0.9999);
+      float lorentzFactor = inversesqrt(1.0 - beta * beta);
+      float strainRate = speed / radius;
+      float viscosity = uBaseViscosity * (1.0 + uDilatancy * ((lorentzFactor - 1.0) + strainRate));
+      float mobility = 1.0 / (1.0 + viscosity);
+      float gaussianWeight = exp(-(radius * radius) / (2.0 * max(uTensorGaussianWaist, 0.1) * max(uTensorGaussianWaist, 0.1)));
+      float splatMobility = 1.0 - (1.0 - mobility) * gaussianWeight;
+      return vec4((-sink + pressure) * splatMobility, tangent * splatMobility, viscosity, gaussianWeight);
+    }
+    float gaussianWeight = exp(-(radius * radius) / (2.0 * max(uTensorGaussianWaist, 0.1) * max(uTensorGaussianWaist, 0.1)));
+    float geometryCorrection = clamp(uGeometryCoupling, 0.0, 0.25) * clamp(uGrassmannianPoleWeight, 0.0, 1.0) * gaussianWeight;
+    return vec4(-inverseSquare * (1.0 + geometryCorrection), tangent * (1.0 + geometryCorrection), 0.0, gaussianWeight);
   }
 
   void main() {
@@ -233,13 +243,28 @@ const MIXED_VELOCITY_SHADER = `
       float distanceToAttractor = max(length(toAttractor), 0.08);
       vec3 direction = toAttractor / distanceToAttractor;
       if (uAttractorTypes[index] < 0.5) {
-        float gravityStrength = uAttractorMass * particleMass * GRAVITY_CONSTANT
-          * uAttractorMagnitudes[index] * uSimpleMassMultipliers[index]
-          / (distanceToAttractor * distanceToAttractor);
-        force += direction * gravityStrength;
-        vec3 spinningForce = uAttractorRotationAxes[index] * gravityStrength
-          * uSpinningStrength * uSimpleSpinMultipliers[index];
-        force += cross(spinningForce, toAttractor);
+        float attractorMagnitude = uAttractorMass * uAttractorMagnitudes[index] * uSimpleMassMultipliers[index];
+        float rotation = uSpinningStrength * uSimpleSpinMultipliers[index];
+        if (uMechanicsEnabled && uFieldModel > 0.5) {
+          vec4 response = fieldResponse(uFieldModel, distanceToAttractor, length(particleVelocity), attractorMagnitude, rotation);
+          float gravityScale = particleMass * GRAVITY_CONSTANT;
+          force += direction * (-response.x * gravityScale);
+          vec3 tangentDirection = normalize(cross(uAttractorRotationAxes[index], direction) + vec3(0.0001, 0.0, 0.0));
+          force += tangentDirection * response.y * gravityScale * 0.12;
+          ddfViscosity = max(ddfViscosity, response.z);
+          if (uComparisonEnabled) {
+            vec4 comparison = fieldResponse(uComparisonModel, distanceToAttractor, length(particleVelocity), attractorMagnitude, rotation);
+            float absoluteDifference = length(response.xy - comparison.xy);
+            float referenceAcceleration = max(length(comparison.xy), 0.000001);
+            modelDifference = max(modelDifference, clamp(absoluteDifference / referenceAcceleration * uDifferenceScale, 0.0, 1.0));
+          }
+        } else {
+          float gravityStrength = particleMass * GRAVITY_CONSTANT * attractorMagnitude
+            / (distanceToAttractor * distanceToAttractor);
+          force += direction * gravityStrength;
+          vec3 spinningForce = uAttractorRotationAxes[index] * gravityStrength * rotation;
+          force += cross(spinningForce, toAttractor);
+        }
       } else {
         vec3 fromCenter = particlePosition - uAttractorPositions[index];
         float radius = max(length(fromCenter), 0.12);
@@ -829,7 +854,7 @@ function sanitizeConfiguration(data, variant) {
   return next;
 }
 
-function AttractorParticles({ configuration, onGpuError, variant, particleCount, blackHoleStarStateRef }) {
+function AttractorParticles({ configuration, onGpuError, variant, particleCount, blackHoleStarStateRef, simulationPlaying }) {
   const { gl } = useThree();
   const useBlackHoleSeed = variant === 'blackhole' || variant === 'ddf';
   const hasBlackHoles = configuration.attractors.some((attractor) => attractor.type === 'blackhole');
@@ -976,6 +1001,9 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount,
       velocityUniforms.uDilatancy = { value: configurationRef.current.fieldMechanics.dilatancy };
       velocityUniforms.uSpeedLimit = { value: configurationRef.current.fieldMechanics.speedLimit };
       velocityUniforms.uBaseViscosity = { value: configurationRef.current.fieldMechanics.baseViscosity };
+      velocityUniforms.uTensorGaussianWaist = { value: configurationRef.current.fieldMechanics.tensorGaussianWaist };
+      velocityUniforms.uGrassmannianPoleWeight = { value: configurationRef.current.fieldMechanics.grassmannianPoleWeight };
+      velocityUniforms.uGeometryCoupling = { value: configurationRef.current.fieldMechanics.geometryCoupling };
       velocityUniforms.uTime = { value: 0 };
       const initializationError = gpuCompute.init();
       if (initializationError) throw new Error(initializationError);
@@ -991,6 +1019,7 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount,
   }, [geometry, gl, onGpuError, material, resolution, useBlackHoleSeed, useMixedShader, blackHoleStarStateRef]);
 
   useFrame((state, delta) => {
+    if (!simulationPlaying) return;
     const compute = computeRef.current;
     const positionVariable = positionVariableRef.current;
     const velocityVariable = velocityVariableRef.current;
@@ -1019,6 +1048,9 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount,
     velocityUniforms.uDilatancy.value = current.fieldMechanics.dilatancy;
     velocityUniforms.uSpeedLimit.value = current.fieldMechanics.speedLimit;
     velocityUniforms.uBaseViscosity.value = current.fieldMechanics.baseViscosity;
+    velocityUniforms.uTensorGaussianWaist.value = current.fieldMechanics.tensorGaussianWaist;
+    velocityUniforms.uGrassmannianPoleWeight.value = current.fieldMechanics.grassmannianPoleWeight;
+    velocityUniforms.uGeometryCoupling.value = current.fieldMechanics.geometryCoupling;
     velocityUniforms.uAttractorCount.value = current.attractors.length;
     velocityUniforms.uBlackHoleStarMassFractions.value.fill(0);
     current.attractors.forEach((attractor, index) => {
@@ -1193,6 +1225,8 @@ function AttractorCamera({ configuration, onCameraChange, playing, paramsVisible
   const frameOffsetRef = useRef(new Vector3());
   const manualInteractionRef = useRef(false);
   const zoomWheelActiveRef = useRef(false);
+  const zoomTargetRef = useRef(configuration.cameraZoomEnabled ? configuration.cameraZoom : 1);
+  const zoomCommitTimeoutRef = useRef(null);
   const onManualChangeRef = useRef(onManualChange);
   const onCameraChangeRef = useRef(onCameraChange);
   configurationRef.current = configuration;
@@ -1213,7 +1247,7 @@ function AttractorCamera({ configuration, onCameraChange, playing, paramsVisible
     targetRef.current.copy(target);
   }, [cameraPoseKey, configuration.cameraPosX, configuration.cameraPosY, configuration.cameraPosZ, configuration.cameraTargetX, configuration.cameraTargetY, configuration.cameraTargetZ, size, viewMode]);
   useEffect(() => {
-    camera.zoom = configuration.cameraZoomEnabled ? configuration.cameraZoom : 1;
+    zoomTargetRef.current = configuration.cameraZoomEnabled ? configuration.cameraZoom : 1;
     camera.fov = configuration.cameraFov;
     camera.near = configuration.cameraNear;
     camera.far = configuration.cameraFar;
@@ -1242,6 +1276,11 @@ function AttractorCamera({ configuration, onCameraChange, playing, paramsVisible
     const nextFrameOffset = cameraFrameOffset(camera, frameReference, targetRef.current, size, paramsVisible);
     frameOffsetRef.current.lerp(nextFrameOffset, blend);
     camera.position.copy(basePosition).add(frameOffsetRef.current);
+    const zoomDelta = zoomTargetRef.current - camera.zoom;
+    if (Math.abs(zoomDelta) > 0.0001) {
+      camera.zoom += zoomDelta * (1 - Math.exp(-delta * 18));
+      camera.updateProjectionMatrix();
+    }
     controls.update();
   });
   const handleManualChange = () => {
@@ -1264,7 +1303,7 @@ function AttractorCamera({ configuration, onCameraChange, playing, paramsVisible
       cameraFar: camera.far
     });
   };
-  const recordCameraZoom = () => onCameraChangeRef.current({ cameraZoom: camera.zoom });
+  const recordCameraZoom = () => onCameraChangeRef.current({ cameraZoom: zoomTargetRef.current });
   const handleControlEnd = () => {
     if (zoomWheelActiveRef.current) {
       zoomWheelActiveRef.current = false;
@@ -1292,12 +1331,17 @@ function AttractorCamera({ configuration, onCameraChange, playing, paramsVisible
         if (isPlainWheel && currentConfiguration.cameraWheelMode === 'zoom') {
           if (!currentConfiguration.cameraZoomEnabled) return;
           zoomWheelActiveRef.current = true;
+          manualInteractionRef.current = true;
+          onManualChangeRef.current();
           event.preventDefault();
           event.stopImmediatePropagation();
-          camera.zoom = Math.min(10, Math.max(0.1, camera.zoom * Math.pow(0.95, event.deltaY / 100)));
-          camera.updateProjectionMatrix();
-          controlsRef.current?.update();
-          recordCameraZoom();
+          const deltaPixels = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaMode === 2 ? event.deltaY * gl.domElement.clientHeight : event.deltaY;
+          zoomTargetRef.current = Math.min(10, Math.max(0.1, zoomTargetRef.current * Math.exp(-deltaPixels * 0.0008)));
+          clearTimeout(zoomCommitTimeoutRef.current);
+          zoomCommitTimeoutRef.current = setTimeout(() => {
+            zoomWheelActiveRef.current = false;
+            recordCameraZoom();
+          }, 80);
           return;
         }
         zoomWheelActiveRef.current = false;
@@ -1319,6 +1363,7 @@ function AttractorCamera({ configuration, onCameraChange, playing, paramsVisible
     gl.domElement.addEventListener('pointerdown', handlePointerDown, { capture: true, passive: true });
     gl.domElement.addEventListener('wheel', handleWheel, { capture: true, passive: false });
     return () => {
+      clearTimeout(zoomCommitTimeoutRef.current);
       gl.domElement.removeEventListener('pointerdown', handlePointerDown, { capture: true });
       gl.domElement.removeEventListener('wheel', handleWheel, { capture: true });
     };
@@ -1326,7 +1371,7 @@ function AttractorCamera({ configuration, onCameraChange, playing, paramsVisible
   return <OrbitCameraControls ref={controlsRef} cameraParams={{ enabled: configuration.cameraControlsEnabled ?? true, enableZoom: configuration.cameraZoomEnabled && configuration.cameraWheelMode === 'dolly', minDistance: 0.25, maxDistance: 50 }} touches={{ ONE: TOUCH.ROTATE, TWO: TOUCH.DOLLY_PAN }} onStart={handleManualChange} onEnd={handleControlEnd} />;
 }
 
-function BlackHoleEffect({ attractor, configuration, showStreamlines, starStateRef, attractorIndex }) {
+function BlackHoleEffect({ attractor, configuration, showStreamlines, starStateRef, attractorIndex, simulationPlaying }) {
   const starLightRef = useRef();
   const starField = useMemo(() => createBlackHoleStarField(attractor, configuration), [
     attractor.blackHole.orbitRadius,
@@ -1388,6 +1433,7 @@ function BlackHoleEffect({ attractor, configuration, showStreamlines, starStateR
   }, [lineGeometry, starGeometry, starMaterial]);
 
   useFrame((_, delta) => {
+    if (!simulationPlaying) return;
     const parameters = attractor.blackHole;
     advanceBlackHoleStarField(starField, attractor, configuration, delta);
     starStateRef.current.positions[attractorIndex].fromArray(starField.center);
@@ -1438,11 +1484,11 @@ function BlackHoleEffect({ attractor, configuration, showStreamlines, starStateR
   );
 }
 
-function BlackHoleEffects({ configuration, starStateRef }) {
-  return <>{configuration.attractors.map((attractor, index) => attractor.type === 'blackhole' && <BlackHoleEffect key={`${index}:${attractor.name}`} attractor={attractor} configuration={configuration} showStreamlines={configuration.blackHoleStreamlines} starStateRef={starStateRef} attractorIndex={index} />)}</>;
+function BlackHoleEffects({ configuration, starStateRef, simulationPlaying }) {
+  return <>{configuration.attractors.map((attractor, index) => attractor.type === 'blackhole' && <BlackHoleEffect key={`${index}:${attractor.name}`} attractor={attractor} configuration={configuration} showStreamlines={configuration.blackHoleStreamlines} starStateRef={starStateRef} attractorIndex={index} simulationPlaying={simulationPlaying} />)}</>;
 }
 
-function AttractorPaths({ configuration }) {
+function AttractorPaths({ configuration, simulationPlaying }) {
   const geometry = useMemo(() => {
     const nextGeometry = new BufferGeometry();
     const maximumSegments = MAX_ATTRACTORS * (ATTRACTOR_PATH_HISTORY_CAPACITY - 1);
@@ -1479,7 +1525,7 @@ function AttractorPaths({ configuration }) {
   useEffect(() => () => geometry.dispose(), [geometry]);
 
   useFrame((_, delta) => {
-    if (!configuration.attractorPathsVisible) return;
+    if (!simulationPlaying || !configuration.attractorPathsVisible) return;
 
     sampleTimerRef.current += delta;
     let sampled = false;
@@ -1514,7 +1560,7 @@ function AttractorPaths({ configuration }) {
   );
 }
 
-function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing, onCameraChange, paramsVisible, viewMode, orbitalPlaying, onManualChange, variant }) {
+function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing, simulationPlaying, onCameraChange, paramsVisible, viewMode, orbitalPlaying, onManualChange, variant }) {
   const blackHoleStarStateRef = useRef(null);
   if (!blackHoleStarStateRef.current) blackHoleStarStateRef.current = createBlackHoleStarRuntimeState();
   const particleCount = E2E_PARTICLE_COUNT ?? configuration.particleCount;
@@ -1526,9 +1572,9 @@ function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing,
       <directionalLight color="#fff2d4" intensity={1.5} position={[4, 5, 2]} />
       <pointLight color="#ff885e" intensity={2.2} distance={18} position={[0, 0, 0]} />
       <gridHelper args={[16, 16, '#25304c', '#101827']} />
-      {!E2E_MODE && <AttractorParticles key={particleCount} configuration={configuration} onGpuError={onGpuError} variant={variant} particleCount={particleCount} blackHoleStarStateRef={blackHoleStarStateRef} />}
-      <BlackHoleEffects configuration={configuration} starStateRef={blackHoleStarStateRef} />
-      <AttractorPaths configuration={configuration} />
+      {!E2E_MODE && <AttractorParticles key={particleCount} configuration={configuration} onGpuError={onGpuError} variant={variant} particleCount={particleCount} blackHoleStarStateRef={blackHoleStarStateRef} simulationPlaying={simulationPlaying} />}
+      <BlackHoleEffects configuration={configuration} starStateRef={blackHoleStarStateRef} simulationPlaying={simulationPlaying} />
+      <AttractorPaths configuration={configuration} simulationPlaying={simulationPlaying} />
       {configuration.attractors.map((attractor, index) => (
         <AttractorHandle key={`${index}:${attractor.name}`} attractor={attractor} index={index} configuration={configuration} onChange={onAttractorChange} />
       ))}
@@ -1616,18 +1662,24 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
         <RangeControl label="Path opacity" value={configuration.attractorPathOpacity} min={0} max={1} step={0.01} onChange={(value) => onChange({ attractorPathOpacity: value }, 'attractorPathOpacity')} />
       </details>
 
-      {hasBlackHoles && <details className="attractor-details" open>
-        <summary>Fluid experiment</summary>
+      <details className="attractor-details" open>
+        <summary>Mechanics models</summary>
         <BooleanControl label="Enable model mechanics" value={mechanics.enabled} onChange={(value) => updateMechanics('enabled', value)} />
         <SelectControl label="Active model" value={mechanics.model} options={FIELD_MODEL_OPTIONS} onChange={(value) => updateMechanics('model', value)} />
         <p className="attractor-model-note"><strong>{modelDetails.status}</strong><br />{modelDetails.equation}</p>
         <RangeControl label="Core radius" value={mechanics.coreRadius} min={0.05} max={5} step={0.05} onChange={(value) => updateMechanics('coreRadius', value)} />
-        {(mechanics.model === 'sqg' || mechanics.model === 'ddf') && <RangeControl label="Quantum pressure" value={mechanics.quantumPressure} min={0} max={5} step={0.01} onChange={(value) => updateMechanics('quantumPressure', value)} />}
-        {mechanics.model !== 'newtonian' && mechanics.model !== 'ns-incompressible' && <RangeControl label="Compressibility" value={mechanics.compressibility} min={0} max={4} step={0.01} onChange={(value) => updateMechanics('compressibility', value)} />}
-        {mechanics.model !== 'newtonian' && <RangeControl label="Base viscosity" value={mechanics.baseViscosity} min={0} max={0.5} step={0.005} onChange={(value) => updateMechanics('baseViscosity', value)} />}
+        {['sqg', 'ddf'].includes(mechanics.model) && <RangeControl label="Quantum pressure" value={mechanics.quantumPressure} min={0} max={5} step={0.01} onChange={(value) => updateMechanics('quantumPressure', value)} />}
+        {['ns-compressible', 'sqg', 'ddf'].includes(mechanics.model) && <RangeControl label="Compressibility" value={mechanics.compressibility} min={0} max={4} step={0.01} onChange={(value) => updateMechanics('compressibility', value)} />}
+        {['ns-compressible', 'ns-incompressible', 'sqg', 'ddf'].includes(mechanics.model) && <RangeControl label="Base viscosity" value={mechanics.baseViscosity} min={0} max={0.5} step={0.005} onChange={(value) => updateMechanics('baseViscosity', value)} />}
         {mechanics.model === 'ddf' && <>
           <RangeControl label="Dilatancy" value={mechanics.dilatancy} min={0} max={10} step={0.05} onChange={(value) => updateMechanics('dilatancy', value)} />
           <RangeControl label="Speed limit" value={mechanics.speedLimit} min={0.1} max={10} step={0.1} onChange={(value) => updateMechanics('speedLimit', value)} />
+        </>}
+        {['ddf', 'grassmannian-amplituhedron'].includes(mechanics.model) && <RangeControl label="Tensor-Gaussian waist" value={mechanics.tensorGaussianWaist} min={0.1} max={20} step={0.1} onChange={(value) => updateMechanics('tensorGaussianWaist', value)} />}
+        {mechanics.model === 'grassmannian-amplituhedron' && <>
+          <RangeControl label="Positive-cell pole weight" value={mechanics.grassmannianPoleWeight} min={0} max={1} step={0.01} onChange={(value) => updateMechanics('grassmannianPoleWeight', value)} />
+          <RangeControl label="Amplituhedron acceleration coupling" value={mechanics.geometryCoupling} min={0} max={0.25} step={0.005} onChange={(value) => updateMechanics('geometryCoupling', value)} />
+          <p className="attractor-model-note">A normalized tensor-Gaussian window bounds the speculative positive-Grassmannian acceleration overlay.</p>
         </>}
         {comparison.primary.volumeChangeRate !== null && <p className="attractor-model-difference">Reference volume rate at 2 core radii: <strong>{comparison.primary.volumeChangeRate.toFixed(4)} / step</strong></p>}
         <BooleanControl label="Show model difference" value={mechanics.comparisonEnabled} onChange={(value) => updateMechanics('comparisonEnabled', value)} />
@@ -1636,12 +1688,14 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
           <RangeControl label="Difference gain" value={mechanics.differenceScale} min={0} max={10} step={0.1} onChange={(value) => updateMechanics('differenceScale', value)} />
           <p className="attractor-model-difference">Reference delta at 2 core radii: <strong>{(comparison.relativeDifference * 100).toFixed(1)}%</strong></p>
         </>}
-        <BooleanControl label="Show stress streamlines" value={configuration.blackHoleStreamlines} onChange={(value) => onChange({ blackHoleStreamlines: value }, 'blackHoleStreamlines')} />
-        <BooleanControl label="Show black-hole star splats" value={configuration.blackHoleStarsVisible} onChange={(value) => onChange({ blackHoleStarsVisible: value }, 'blackHoleStarsVisible')} />
-        <ColorControl label="Black-hole star color" value={configuration.blackHoleStarColor} onChange={(value) => onChange({ blackHoleStarColor: value }, 'blackHoleStarColor')} />
-        <RangeControl label="Black-hole star opacity" value={configuration.blackHoleStarOpacity} min={0} max={1} step={0.01} onChange={(value) => onChange({ blackHoleStarOpacity: value }, 'blackHoleStarOpacity')} />
-        <p className="attractor-model-note">GPU particles sample reduced response fields, not a full shock-capturing or pressure-Poisson NS solver. SQG and DDF remain phenomenological hypotheses with no claimed derivation from QED, amplituhedra, or general relativity.</p>
-      </details>}
+        {hasBlackHoles && <>
+          <BooleanControl label="Show stress streamlines" value={configuration.blackHoleStreamlines} onChange={(value) => onChange({ blackHoleStreamlines: value }, 'blackHoleStreamlines')} />
+          <BooleanControl label="Show black-hole star splats" value={configuration.blackHoleStarsVisible} onChange={(value) => onChange({ blackHoleStarsVisible: value }, 'blackHoleStarsVisible')} />
+          <ColorControl label="Black-hole star color" value={configuration.blackHoleStarColor} onChange={(value) => onChange({ blackHoleStarColor: value }, 'blackHoleStarColor')} />
+          <RangeControl label="Black-hole star opacity" value={configuration.blackHoleStarOpacity} min={0} max={1} step={0.01} onChange={(value) => onChange({ blackHoleStarOpacity: value }, 'blackHoleStarOpacity')} />
+          <p className="attractor-model-note">GPU particles sample reduced response fields, not a full shock-capturing or pressure-Poisson NS solver. SQG and DDF remain phenomenological hypotheses with no claimed derivation from QED, amplituhedra, or general relativity.</p>
+        </>}
+      </details>
 
       <details className="attractor-details" open>
         <summary>Attractor rig</summary>
@@ -1725,6 +1779,7 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
   const [gpuError, setGpuError] = useState('');
   const [modal, setModal] = useState(null);
   const [paramsVisible, setParamsVisible] = useState(true);
+  const [simulationPlaying, setSimulationPlaying] = useState(true);
   const [viewMode, setViewMode] = useState('ortho1');
   const [orbitalPlaying, setOrbitalPlaying] = useState(true);
   const initialSnapshot = useMemo(() => clone(configuration), []);
@@ -1899,8 +1954,8 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
   const isHypothesisVariant = variant === 'blackhole' || variant === 'ddf';
   const reportTitle = variant === 'ddf' ? 'DDF particles' : variant === 'blackhole' ? 'SQG particles' : 'Attractor particles';
   return (
-    <SimulatorBase className={`attractor-app ${isHypothesisVariant ? 'blackhole-app' : ''}`} headerClassName="attractor-topbar" brandClassName="attractor-base-brand" markClassName="sqg-mark" title={variant === 'ddf' ? 'DILATANT DARK FLUID SANDBOX' : variant === 'blackhole' ? 'SQG BLACK-HOLE SANDBOX' : 'PARTICLE DYNAMICS LAB'} subtitle="N-body / presets / journal" meta={reportTitle.toUpperCase()} metaClassName="attractor-top-actions" metaContentClassName="attractor-top-meta" homeUrl="/" onHome={onBack} homeClassName="attractor-back" parameterValue={configuration} presetValue={editor.baseline} onParameterChange={(next) => onChange(next, 'parameter-group-reset')} actions={<button type="button" className="attractor-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button>}>
-      <div className="attractor-scene"><Canvas frameloop={E2E_MODE ? 'demand' : 'always'} camera={{ position: [3, 5, 8], fov: 25, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AttractorWorld configuration={configuration} onAttractorChange={onAttractorChange} onGpuError={setGpuError} playing={journal.playing} onCameraChange={(change) => onChange(change, 'sys:camera')} paramsVisible={paramsVisible} viewMode={viewMode} orbitalPlaying={orbitalPlaying} onManualChange={() => setViewMode(null)} variant={variant} /></Canvas></div>
+    <SimulatorBase className={`attractor-app ${isHypothesisVariant ? 'blackhole-app' : ''}`} headerClassName="attractor-topbar" brandClassName="attractor-base-brand" markClassName="sqg-mark" title={variant === 'ddf' ? 'DILATANT DARK FLUID SANDBOX' : variant === 'blackhole' ? 'SQG BLACK-HOLE SANDBOX' : 'PARTICLE DYNAMICS LAB'} subtitle="N-body / presets / journal" meta={reportTitle.toUpperCase()} metaClassName="attractor-top-actions" metaContentClassName="attractor-top-meta" homeUrl="/" onHome={onBack} homeClassName="attractor-back" parameterValue={configuration} presetValue={editor.baseline} onParameterChange={(next) => onChange(next, 'parameter-group-reset')} actions={<><button type="button" className="attractor-sim-play-toggle" aria-label={simulationPlaying ? 'Pause simulation' : 'Play simulation'} aria-pressed={simulationPlaying} onClick={() => setSimulationPlaying((playing) => !playing)}>{simulationPlaying ? 'Pause' : 'Play'}</button><button type="button" className="attractor-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button></>}>
+      <div className="attractor-scene"><Canvas frameloop={E2E_MODE ? 'demand' : 'always'} camera={{ position: [3, 5, 8], fov: 25, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AttractorWorld configuration={configuration} onAttractorChange={onAttractorChange} onGpuError={setGpuError} playing={journal.playing} simulationPlaying={simulationPlaying} onCameraChange={(change) => onChange(change, 'sys:camera')} paramsVisible={paramsVisible} viewMode={viewMode} orbitalPlaying={orbitalPlaying} onManualChange={() => setViewMode(null)} variant={variant} /></Canvas></div>
       <CameraPerspectiveToolbar className="attractor-view-toolbar" modesClassName="attractor-view-modes" views={ATTRACTOR_CAMERA_VIEWS} viewMode={viewMode} onViewChange={setViewMode} orbitPlaying={orbitalPlaying} onToggleOrbit={() => setOrbitalPlaying((value) => !value)} />
       <AttractorPanel variant={variant} particleCount={particleCount} configuration={configuration} presets={presets} currentPreset={currentPreset} presetName={presetName} onPresetName={setPresetName} jsonText={jsonText} setJsonText={setJsonText} showParamEditLog={showParamEditLog} onShowParamEditLog={setShowParamEditLog} paramEditLogYaml={paramEditLogYaml} onChange={onChange} onApplyPreset={onApplyPreset} onSavePreset={onSavePreset} onReset={onReset} onExport={(type, value) => setModal({ title: type === 'all' ? 'All presets' : type === 'saved' ? 'Saved presets' : 'Current parameters', value: type === 'current' ? configuration : value })} onLoad={onLoad} onDeletePresets={onDeletePresets} onReplayLog={onReplayParameterLog} replayMessage={replayMessage} replaying={journal.playing} journal={journal.journal} playing={journal.playing} playbackTime={journal.playbackTime} onPlaybackTime={journal.seek} onTogglePlayback={() => journal.setPlaying((value) => !value)} onStop={journal.stop} recording={journal.recording} onRecording={journal.setRecording} onAddAttractor={onAddAttractor} onRemoveAttractor={onRemoveAttractor} onSetOrigin={onSetOrigin} onResetOrigin={onResetOrigin} paramsVisible={paramsVisible} editing={editing} onEditing={setEditing} canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} />
       <div className="attractor-title"><span>ACTIVE FIELD / {variant === 'ddf' ? 'DDFSIM' : variant === 'blackhole' ? 'SQGBLACKHOLESIM' : 'SIMPLEATTRACTORSIM'}</span><h1>{variant === 'ddf' ? 'Dilatant Dark Fluid System' : variant === 'blackhole' ? 'Superfluid Quantum Gravity System' : 'Simple Particle Attractor System'}</h1><p>{variant === 'ddf' ? 'Phenomenological compressible sink flow with speed-limited shear thickening.' : variant === 'blackhole' ? 'Phenomenological SQG sink flow with a finite quantum-pressure core.' : 'Tune attractor mass, spin, and geometry within a field of particles.'}</p>{gpuError && <strong className="attractor-error">GPU offline: {gpuError}</strong>}</div>

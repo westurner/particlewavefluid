@@ -7,6 +7,7 @@ import { createCameraViews, DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, DEFAULT_S
 import PaletteParamControl from './lib/PaletteParamControl.jsx';
 import { sampleColorPalette } from './lib/color-palettes.js';
 import { SOLITON_GATE_END_X, SOLITON_OUTPUT_END_X } from './solitonMotion.js';
+import { SIMULATION_MECHANICS_REGIMES } from './lib/simulationMechanics.js';
 
 const MODE_OPTIONS = OAM_MODES.map((mode) => ({ value: mode, label: `ℓ = ${mode}` }));
 const MODE_COLORS = ['#e69a5b', '#72b9e8', '#df789b', '#8dd59d', '#bd9be9', '#edca68', '#64d5ce'];
@@ -38,6 +39,13 @@ const DEFAULT_OAM_VIEW_SETTINGS = {
   waveOpacity: 0.3,
   outputRepresentationMode: 'separate',
   continuousSplatters: false,
+  mechanicsRegime: 'classical',
+  mechanicsTensorGaussianWaistM: 6,
+  mechanicsDdfStrength: 1,
+  mechanicsDdfSpeedLimitMS: 15000,
+  mechanicsDdfBaseViscosity: 0.02,
+  mechanicsGrassmannianWeight: 0.72,
+  mechanicsGeometryCoupling: 0.1,
   wavePalette: 'native',
   splatterPalette: 'native',
   modePalette: 'native',
@@ -447,7 +455,7 @@ export default function OamSolitonSim({ onBack }) {
     <button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button>
   </div>} onHome={onBack} parameterValue={viewSettings} presetValue={currentViewPreset} onParameterChange={setViewSettings}>
     {settings.viewMode === '3d' && <div className="oam-3d-field" role="img" aria-label="3D OAM soliton interference field" data-oam-simulation="3d" data-output-representation={viewSettings.outputRepresentationMode} data-oam-branch-count={branches.length} data-continuous-splatters={viewSettings.continuousSplatters}>
-      <OamSolitonScene branches={branches} operator={settings.operator} running={running} simulationSpeed={settings.simulationSpeed} waveOpacity={viewSettings.waveOpacity} amplitudeSizeVariation={settings.amplitudeSizeVariation} particleAppearance={viewSettings.particleAppearance} waveRepresentationVisible={viewSettings.showWaveRepresentation} continuousSplatters={viewSettings.continuousSplatters} wavePalette={viewSettings.wavePalette} splatterPalette={viewSettings.splatterPalette} modeA={settings.modeA} modeB={settings.modeB} angleRadians={angleRadians} quditDimension={settings.quditDimension} viewMode={cameraViewMode} orbitPlaying={orbitPlaying} orbitSettings={viewSettings} cameraViews={cameraViews} onCameraInteraction={() => setCameraViewMode(null)} railProbabilities={measurement.railProbabilities} />
+      <OamSolitonScene branches={branches} operator={settings.operator} running={running} simulationSpeed={settings.simulationSpeed} waveOpacity={viewSettings.waveOpacity} amplitudeSizeVariation={settings.amplitudeSizeVariation} particleAppearance={viewSettings.particleAppearance} waveRepresentationVisible={viewSettings.showWaveRepresentation} continuousSplatters={viewSettings.continuousSplatters} wavePalette={viewSettings.wavePalette} splatterPalette={viewSettings.splatterPalette} mechanicsSettings={viewSettings} modeA={settings.modeA} modeB={settings.modeB} angleRadians={angleRadians} quditDimension={settings.quditDimension} viewMode={cameraViewMode} orbitPlaying={orbitPlaying} orbitSettings={viewSettings} cameraViews={cameraViews} onCameraInteraction={() => setCameraViewMode(null)} railProbabilities={measurement.railProbabilities} />
     </div>}
     {settings.viewMode === '3d' && <CameraPerspectiveToolbar views={cameraViews} viewMode={cameraViewMode} orbitPlaying={orbitPlaying} onViewChange={setCameraViewMode} onToggleOrbit={() => setOrbitPlaying((playing) => !playing)} />}
     <section className={`signal-workbench oam-workbench${settings.viewMode === '3d' ? ' is-3d' : ''}`}>
@@ -506,6 +514,17 @@ export default function OamSolitonSim({ onBack }) {
             { type: 'toggle', label: 'Show wave representation', path: 'showWaveRepresentation', checked: viewSettings.showWaveRepresentation },
             { type: 'toggle', label: 'Repeat splatters continuously', path: 'continuousSplatters', checked: viewSettings.continuousSplatters },
             { type: 'toggle', label: 'Show EM tensor-Gaussian splatters', path: 'particleAppearance.splatterEnabled', checked: viewSettings.particleAppearance.splatterEnabled },
+            { type: 'select', label: 'Splat mechanics regime', path: 'mechanicsRegime', value: viewSettings.mechanicsRegime, options: SIMULATION_MECHANICS_REGIMES },
+            ...(viewSettings.mechanicsRegime === 'ddf-tensor-gaussian' ? [
+              { type: 'range', label: 'DDF dilatancy', path: 'mechanicsDdfStrength', value: viewSettings.mechanicsDdfStrength, min: 0, max: 20, step: 0.1 },
+              { type: 'range', label: 'DDF speed limit', path: 'mechanicsDdfSpeedLimitMS', value: viewSettings.mechanicsDdfSpeedLimitMS, min: 100, max: 100000, step: 100, suffix: 'm/s' },
+              { type: 'range', label: 'DDF base viscosity', path: 'mechanicsDdfBaseViscosity', value: viewSettings.mechanicsDdfBaseViscosity, min: 0, max: 1, step: 0.01 }
+            ] : []),
+            ...(viewSettings.mechanicsRegime === 'grassmannian-amplituhedron' ? [
+              { type: 'range', label: 'Tensor-Gaussian waist', path: 'mechanicsTensorGaussianWaistM', value: viewSettings.mechanicsTensorGaussianWaistM, min: 0.1, max: 100, step: 0.1, suffix: 'm' },
+              { type: 'range', label: 'Positive-cell pole weight', path: 'mechanicsGrassmannianWeight', value: viewSettings.mechanicsGrassmannianWeight, min: 0, max: 1, step: 0.01 },
+              { type: 'range', label: 'Amplituhedron coupling', path: 'mechanicsGeometryCoupling', value: viewSettings.mechanicsGeometryCoupling, min: 0, max: 0.25, step: 0.005 }
+            ] : []),
             { type: 'range', label: 'Wave representation opacity', path: 'waveOpacity', value: viewSettings.waveOpacity, min: 0, max: 1, step: 0.01 },
             { type: 'range', label: 'Soliton splatter opacity', path: 'particleAppearance.opacity', value: viewSettings.particleAppearance.opacity, min: 0, max: 1, step: 0.01 }
           ]} />

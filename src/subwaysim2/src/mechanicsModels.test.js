@@ -18,6 +18,7 @@ test('field model indices stay synchronized with shader selectors', () => {
   assert.equal(fieldModelIndex('ns-incompressible'), 2);
   assert.equal(fieldModelIndex('sqg'), 3);
   assert.equal(fieldModelIndex('ddf'), 4);
+  assert.equal(fieldModelIndex('grassmannian-amplituhedron'), 5);
   assert.equal(fluidModelIndex('hbn-farnesane'), 1);
   assert.equal(quantumTransportIndex('gpe'), 1);
 });
@@ -59,6 +60,16 @@ test('DDF dilatancy increases viscosity and lowers mobility near the speed limit
   const fast = evaluateFieldModel('ddf', { radius: 1, speed: 7.9, magnitude: 1 });
   assert.ok(fast.effectiveViscosity > slow.effectiveViscosity);
   assert.ok(fast.mobility < slow.mobility);
+});
+
+test('Grassmannian mechanics adds a bounded on-axis tensor-Gaussian acceleration splat', () => {
+  const state = { radius: 1, speed: 2, magnitude: 1, rotation: 0.5 };
+  const classical = evaluateFieldModel('newtonian', state);
+  const geometry = evaluateFieldModel('grassmannian-amplituhedron', state, { ...DEFAULT_FIELD_MECHANICS, geometryCoupling: 0.2 });
+  const farField = evaluateFieldModel('grassmannian-amplituhedron', { ...state, radius: 10 }, { ...DEFAULT_FIELD_MECHANICS, geometryCoupling: 0.2 });
+  assert.ok(geometry.radialAcceleration < classical.radialAcceleration);
+  assert.ok(geometry.tensorGaussian > farField.tensorGaussian);
+  assert.ok(geometry.mobility <= 1.25);
 });
 
 test('model comparison is zero for the same model and nonzero across hypotheses', () => {

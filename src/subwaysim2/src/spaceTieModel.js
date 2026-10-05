@@ -1,15 +1,18 @@
 import { createPositiveGrassmannianCell, DEFAULT_AMPLITUDE_GRAVITY } from './amplitudeGravityModel.js';
 import { DEFAULT_FIELD_MECHANICS, evaluateFieldModel } from './mechanicsModels.js';
+import { evaluateMechanicsResponse } from './lib/simulationMechanics.js';
 import { calculateWaveTensorGaussian } from './waveModel.js';
 
 const rangeParameter = (key, label, min, max, step, suffix) => ({ key, label, min, max, step, suffix });
 const selectParameter = (key, label, options) => ({ key, label, type: 'select', options });
+export const MASS_DRIVER_LOCATION_OPTIONS = [{ value: 'earth', label: 'Earth / vacuum tube' }, { value: 'moon', label: 'Lunar / open track' }];
+export const MASS_DRIVER_PAYLOAD_OPTIONS = [{ value: 'cargo', label: 'Hardened cargo' }, { value: 'passenger', label: 'Passenger' }];
 
 export const SPACE_TIE_WIDGETS = [
   {
     value: 'mass-driver', label: 'Orbital helix mass driver', type: 'scene', presentation: 'coilgun',
-    description: 'Sequence discrete coil pulses and track payload energy against the charged BAT reserve.',
-    parameters: [rangeParameter('tieSpacingKm', 'Tie spacing', 500, 50000, 500, 'km'), rangeParameter('helixRadiusM', 'Formation radius', 5, 250, 1, 'm'), rangeParameter('payloadMassKg', 'Payload mass', 1, 20000, 1, 'kg'), rangeParameter('coilPulseEnergyMJ', 'Pulse energy', 0, 50000, 10, 'MJ'), rangeParameter('coilFluxT', 'Coil flux density', 0, 30, 0.1, 'T'), rangeParameter('pulseEfficiency', 'Pulse efficiency', 0, 1, 0.01), rangeParameter('payloadCoupling', 'Payload coupling', 0, 1, 0.01)]
+    description: 'Compare Earth-vacuum and lunar-open electromagnetic tracks against escape-speed and payload-g limits.',
+    parameters: [selectParameter('massDriverLocation', 'Launch location', MASS_DRIVER_LOCATION_OPTIONS), selectParameter('massDriverPayloadType', 'Payload type', MASS_DRIVER_PAYLOAD_OPTIONS), rangeParameter('massDriverTrackLengthKm', 'Acceleration track length', 0.1, 1000, 0.1, 'km'), rangeParameter('payloadMassKg', 'Payload mass', 1, 20000, 1, 'kg'), rangeParameter('massDriverFluxT', 'Array flux density', 0, 10, 0.1, 'T'), rangeParameter('massDriverPoleAreaM2', 'Effective pole area', 0.001, 1, 0.001, 'm²'), rangeParameter('massDriverEfficiency', 'Electrical-to-kinetic efficiency', 0.1, 1, 0.01)]
   },
   {
     value: 'tunnel-envelope', label: 'Space-tie tunnel envelope', type: 'scene', presentation: 'envelope',
@@ -106,6 +109,12 @@ export const SPACE_TIE_DEFAULTS = Object.freeze({
   batteryChargePercent: 72,
   coilPulseEnergyMJ: 350,
   coilFluxT: 2,
+  massDriverLocation: 'earth',
+  massDriverPayloadType: 'cargo',
+  massDriverTrackLengthKm: 130,
+  massDriverFluxT: 2,
+  massDriverPoleAreaM2: 0.032,
+  massDriverEfficiency: 0.85,
   pulseEfficiency: 0.72,
   payloadCoupling: 0.85,
   magneticWaveSpeedKmS: 12,
@@ -276,6 +285,50 @@ export function calculatePayloadEnergy({ massKg = 1, velocityKmS = 0, couplingEf
   return { velocityMS, kineticEnergyJ, inputEnergyJ, thermalLossJ: Math.max(0, inputEnergyJ - kineticEnergyJ), efficiency };
 }
 
+export function calculateElectromagneticMassDriver(settings = SPACE_TIE_DEFAULTS) {
+  const location = settings.massDriverLocation === 'moon' ? 'moon' : 'earth';
+  const payloadType = settings.massDriverPayloadType === 'passenger' ? 'passenger' : 'cargo';
+  const payloadMassKg = Math.max(1, finite(settings.payloadMassKg, 1));
+  const trackLengthM = Math.max(0.1, finite(settings.massDriverTrackLengthKm, 0.1)) * 1000;
+  const fluxT = Math.max(0, finite(settings.massDriverFluxT, 0));
+  const poleAreaM2 = Math.max(0, finite(settings.massDriverPoleAreaM2, 0));
+  const efficiency = clamp(finite(settings.massDriverEfficiency, 0.85), 0.01, 1);
+  const magneticPressurePa = fluxT * fluxT / (2 * 1.25663706212e-6);
+  const magneticForceN = magneticPressurePa * poleAreaM2;
+  const accelerationMS2 = magneticForceN / payloadMassKg;
+  const magneticExitVelocityMS = Math.sqrt(2 * accelerationMS2 * trackLengthM);
+  const battery = calculateBatteryOperatingPoint({ settings });
+  const energyLimitedVelocityMS = Math.sqrt(2 * battery.availableJ * efficiency / payloadMassKg);
+  const exitVelocityMS = Math.min(magneticExitVelocityMS, energyLimitedVelocityMS);
+  const kineticEnergyJ = 0.5 * payloadMassKg * exitVelocityMS ** 2;
+  const electricalEnergyRequiredJ = kineticEnergyJ / efficiency;
+  const requiredEscapeVelocityMS = location === 'earth' ? 11200 : 2400;
+  const payloadToleranceG = payloadType === 'passenger' ? 3 : 1000;
+  const peakG = accelerationMS2 / 9.80665;
+  return {
+    location,
+    payloadType,
+    payloadMassKg,
+    trackLengthM,
+    magneticPressurePa,
+    magneticForceN,
+    accelerationMS2,
+    peakG,
+    payloadToleranceG,
+    magneticExitVelocityMS,
+    energyLimitedVelocityMS,
+    exitVelocityMS,
+    requiredEscapeVelocityMS,
+    reachesEscapeVelocity: exitVelocityMS >= requiredEscapeVelocityMS,
+    withinPayloadTolerance: peakG <= payloadToleranceG,
+    kineticEnergyJ,
+    electricalEnergyRequiredJ,
+    availableBatteryEnergyJ: battery.availableJ,
+    efficiency,
+    status: 'Idealized magnetic-pressure drive envelope; coil coupling, field gradients, and thermal limits require hardware validation.'
+  };
+}
+
 export function calculateRecoilHarvest({ internalMassKg = 600, hullMassKg = 400, recoilVelocityMS = 5, piezoSplit = 0.7, piezoCoupling = 0.65, tengEfficiency = 0.15 } = {}) {
   const internalMass = Math.max(0, internalMassKg);
   const hullMass = Math.max(0, hullMassKg);
@@ -351,14 +404,16 @@ export function evaluateSpaceTieOperator({ operator = 'classical', radiusM = 0, 
       dilatancy: settings.ddfStrength,
       baseViscosity: settings.ddfBaseViscosity
     });
-    return { splatWeight: clamp(gaussian * (0.25 + 0.75 * ddf.mobility), 0, 1), accelerationScale: clamp(ddf.mobility, 0, 1), gaussian, status: 'DDF is a bounded constitutive hypothesis' };
+    const response = evaluateMechanicsResponse({ regime: 'ddf-tensor-gaussian', gaussianWeight: gaussian, ddfMobility: ddf.mobility });
+    return { ...response, gaussian, ddf, status: 'DDF is a bounded constitutive hypothesis' };
   }
   if (operator === 'grassmannian') {
     const cell = createPositiveGrassmannianCell({ cellGaps: settings.grassmannianCellGaps, fourthColumnWeight: settings.grassmannianFourthWeight });
-    const geometryCoupling = clamp(settings.geometryAccelerationCoupling, 0, 0.25) * cell.canonicalPoleWeight;
-    return { splatWeight: clamp(gaussian * cell.canonicalPoleWeight * (1 - normalizedRadius * 0.25), 0, 1), accelerationScale: 1 + geometryCoupling, gaussian, cell, status: 'Gr(2,4) / twistor overlay is exploratory; coupling defaults to zero' };
+    const geometryWeight = cell.canonicalPoleWeight * (1 - normalizedRadius * 0.25);
+    const response = evaluateMechanicsResponse({ regime: 'grassmannian-amplituhedron', gaussianWeight: gaussian, grassmannianWeight: geometryWeight, geometryCoupling: settings.geometryAccelerationCoupling });
+    return { ...response, gaussian, cell, status: 'Gr(2,4) / twistor overlay is exploratory; coupling defaults to zero' };
   }
-  return { splatWeight: gaussian, accelerationScale: 1, gaussian, status: 'classical energy-transfer baseline' };
+  return { ...evaluateMechanicsResponse({ regime: 'classical', gaussianWeight: gaussian }), gaussian, status: 'classical energy-transfer baseline' };
 }
 
 export function calculateCoilgunStage({ payloadMassKg = 1, currentVelocityMS = 0, batteryEnergyJ = 0, pulseEnergyMJ = 0, pulseEfficiency = 0.7, payloadCoupling = 0.8, operator = 'classical', accelerationScale = 1 } = {}) {
