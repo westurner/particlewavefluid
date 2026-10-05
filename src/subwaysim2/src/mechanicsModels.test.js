@@ -3,6 +3,8 @@ import test from 'node:test';
 import {
   compareFieldModels,
   DEFAULT_FIELD_MECHANICS,
+  FIELD_MECHANICS_PARAMETER_FIELDS,
+  FIELD_MODEL_PARAMETER_DEPENDENCIES,
   evaluateEffectiveViscosity,
   evaluateFieldModel,
   evaluateGpeResponse,
@@ -21,6 +23,17 @@ test('field model indices stay synchronized with shader selectors', () => {
   assert.equal(fieldModelIndex('grassmannian-amplituhedron'), 5);
   assert.equal(fluidModelIndex('hbn-farnesane'), 1);
   assert.equal(quantumTransportIndex('gpe'), 1);
+});
+
+test('mechanics parameter dependencies expose only inputs consumed by each active model', () => {
+  assert.deepEqual(FIELD_MODEL_PARAMETER_DEPENDENCIES.newtonian, []);
+  assert.deepEqual(FIELD_MODEL_PARAMETER_DEPENDENCIES['ns-incompressible'], []);
+  assert.deepEqual(FIELD_MODEL_PARAMETER_DEPENDENCIES['ns-compressible'], ['coreRadius', 'compressibility']);
+  assert.ok(FIELD_MODEL_PARAMETER_DEPENDENCIES.ddf.includes('tensorGaussianWaist'));
+  assert.ok(FIELD_MODEL_PARAMETER_DEPENDENCIES['grassmannian-amplituhedron'].includes('geometryCoupling'));
+  for (const fields of Object.values(FIELD_MODEL_PARAMETER_DEPENDENCIES)) {
+    assert.ok(fields.every((field) => field in FIELD_MECHANICS_PARAMETER_FIELDS));
+  }
 });
 
 test('Navier-Stokes experiments distinguish compressible volume change from incompressible projection', () => {
@@ -70,6 +83,32 @@ test('Grassmannian mechanics adds a bounded on-axis tensor-Gaussian acceleration
   assert.ok(geometry.radialAcceleration < classical.radialAcceleration);
   assert.ok(geometry.tensorGaussian > farField.tensorGaussian);
   assert.ok(geometry.mobility <= 1.25);
+});
+
+test('Gr(2,4) amplituhedron field mechanics changes the Newtonian acceleration response', () => {
+  const state = { radius: 0.8, speed: 1.5, magnitude: 1, rotation: 0.6 };
+  const classical = evaluateFieldModel('newtonian', state);
+  const geometry = evaluateFieldModel('grassmannian-amplituhedron', state, {
+    ...DEFAULT_FIELD_MECHANICS,
+    tensorGaussianWaist: 2,
+    grassmannianPoleWeight: 0.9,
+    geometryCoupling: 0.25
+  });
+  assert.notEqual(geometry.radialAcceleration, classical.radialAcceleration);
+  assert.ok(geometry.tensorGaussian > 0);
+  assert.ok(geometry.mobility > 1 && geometry.mobility <= 1.25);
+});
+
+test('DDF mechanics return toward the SQG baseline outside the tensor-Gaussian waist', () => {
+  const settings = { ...DEFAULT_FIELD_MECHANICS, coreRadius: 1, tensorGaussianWaist: 1, speedLimit: 8, dilatancy: 12, baseViscosity: 0.1 };
+  const nearDdf = evaluateFieldModel('ddf', { radius: 0.2, speed: 7, magnitude: 1 }, settings);
+  const nearSqg = evaluateFieldModel('sqg', { radius: 0.2, speed: 7, magnitude: 1 }, settings);
+  const farDdf = evaluateFieldModel('ddf', { radius: 20, speed: 7, magnitude: 1 }, settings);
+  const farSqg = evaluateFieldModel('sqg', { radius: 20, speed: 7, magnitude: 1 }, settings);
+  const nearDifference = Math.abs(nearDdf.radialAcceleration - nearSqg.radialAcceleration);
+  const farDifference = Math.abs(farDdf.radialAcceleration - farSqg.radialAcceleration);
+  assert.ok(nearDifference > farDifference);
+  assert.ok(nearDdf.tensorGaussian > farDdf.tensorGaussian);
 });
 
 test('model comparison is zero for the same model and nonzero across hypotheses', () => {

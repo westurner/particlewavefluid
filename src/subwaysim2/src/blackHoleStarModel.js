@@ -12,6 +12,19 @@ function seededUnit(index, salt) {
   return value - Math.floor(value);
 }
 
+export function createBlackHoleParticleSeed(index, particleCount) {
+  const radiusSeed = Math.abs(Math.sin(index * 12.9898) * 43758.5453 % 1);
+  const verticalSeed = seededUnit(index, 7);
+  const angle = index / Math.max(1, particleCount) * Math.PI * 2 * 50;
+  const radius = 1.5 + radiusSeed * radiusSeed * 15;
+  const verticalOffset = (verticalSeed - 0.5) * radius * 0.36;
+  return {
+    position: [Math.cos(angle) * radius, verticalOffset, Math.sin(angle) * radius],
+    velocity: [-Math.sin(angle) * 0.08, (verticalSeed - 0.5) * 0.03, Math.cos(angle) * 0.08],
+    massFraction: 0.25 + radiusSeed * 0.75
+  };
+}
+
 function simulationMass(configuration, attractor) {
   return (10 ** configuration.attractorMassExponent)
     * (10 ** configuration.particleGlobalMassExponent)

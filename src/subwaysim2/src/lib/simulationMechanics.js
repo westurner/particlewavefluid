@@ -8,6 +8,12 @@ const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, N
 const vectorEnergy = (vector = {}) => (Number(vector.x) || 0) ** 2 + (Number(vector.y) || 0) ** 2 + (Number(vector.z) || 0) ** 2;
 const dot = (left = {}, right = {}) => (Number(left.x) || 0) * (Number(right.x) || 0) + (Number(left.y) || 0) * (Number(right.y) || 0) + (Number(left.z) || 0) * (Number(right.z) || 0);
 
+export function calculateZoomCoupledFieldExtent(boundHalfExtent, cameraZoom, enabled = false) {
+  const extent = Math.max(0, Number.isFinite(Number(boundHalfExtent)) ? Number(boundHalfExtent) : 0);
+  const zoom = clamp(Number(cameraZoom), 0.1, 10);
+  return extent * (enabled ? zoom : 1);
+}
+
 export function calculateDdfMobility({ radiusM = 1, speedMS = 0, coreRadiusM = 0.8, speedLimitMS = 8, dilatancy = 1, baseViscosity = 0.02 } = {}) {
   const radius = Math.max(0.05, Number.isFinite(Number(radiusM)) ? Number(radiusM) : 1);
   const speed = Math.max(0, Number.isFinite(Number(speedMS)) ? Number(speedMS) : 0);

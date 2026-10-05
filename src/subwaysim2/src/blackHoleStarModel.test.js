@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { advanceBlackHoleStarField, createBlackHoleStarField } from './blackHoleStarModel.js';
+import { advanceBlackHoleStarField, createBlackHoleParticleSeed, createBlackHoleStarField } from './blackHoleStarModel.js';
 
 const configuration = {
   attractorMassExponent: 7,
@@ -29,6 +29,18 @@ function createAttractor(overrides = {}) {
     }
   };
 }
+
+test('black-hole particle seed has finite 3D thickness and tangential orbital motion', () => {
+  const seeds = Array.from({ length: 256 }, (_, index) => createBlackHoleParticleSeed(index, 256));
+  const verticalPositions = seeds.map(({ position }) => position[1]);
+  const verticalVelocities = seeds.map(({ velocity }) => velocity[1]);
+  assert.ok(seeds.every(({ position, velocity, massFraction }) => [...position, ...velocity, massFraction].every(Number.isFinite)));
+  assert.ok(Math.max(...verticalPositions) - Math.min(...verticalPositions) > 2);
+  assert.ok(Math.max(...verticalVelocities) - Math.min(...verticalVelocities) > 0.02);
+  seeds.forEach(({ position, velocity }) => {
+    assert.ok(Math.abs(position[0] * velocity[0] + position[2] * velocity[2]) < 1e-9);
+  });
+});
 
 test('black-hole star splats begin on the configured orbit with finite velocities', () => {
   const field = createBlackHoleStarField(createAttractor(), configuration, 24);

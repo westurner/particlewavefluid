@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateDdfMobility, calculateMaxwellStressTensor, calculateMaxwellTensorGaussian, evaluateMechanicsResponse } from './simulationMechanics.js';
+import { calculateDdfMobility, calculateMaxwellStressTensor, calculateMaxwellTensorGaussian, calculateZoomCoupledFieldExtent, evaluateMechanicsResponse } from './simulationMechanics.js';
 
 test('Maxwell tensor uses electric and magnetic energy and produces a normalized Gaussian weight', () => {
   const stress = calculateMaxwellStressTensor({ x: 1, y: 0, z: 0 }, { x: 0, y: 1, z: 0 });
@@ -31,4 +31,11 @@ test('shared DDF mobility increases with speed and agrees with the reduced field
   const fast = calculateDdfMobility({ radiusM: 1, speedMS: 7.9, coreRadiusM: 0.8, speedLimitMS: 8, dilatancy: 1, baseViscosity: 0.02 });
   assert.ok(fast < slow);
   assert.equal(slow, evaluateFieldModel('ddf', { radius: 1, speed: 0.5, magnitude: 1 }).ddfMobility);
+});
+
+test('camera zoom leaves field bounds fixed by default and scales them only when enabled', () => {
+  assert.equal(calculateZoomCoupledFieldExtent(8, 2.5), 8);
+  assert.equal(calculateZoomCoupledFieldExtent(8, 2.5, false), 8);
+  assert.equal(calculateZoomCoupledFieldExtent(8, 2.5, true), 20);
+  assert.equal(calculateZoomCoupledFieldExtent(8, 99, true), 80);
 });

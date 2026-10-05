@@ -18,6 +18,27 @@ export const FIELD_MODEL_DETAILS = Object.freeze({
   'grassmannian-amplituhedron': { status: 'Exploratory geometric hypothesis', equation: 'Newtonian baseline × [1 + bounded Gr(2,4) tensor-Gaussian splat]' }
 });
 
+export const FIELD_MECHANICS_PARAMETER_FIELDS = Object.freeze({
+  coreRadius: { label: 'Core radius', min: 0.05, max: 5, step: 0.05 },
+  quantumPressure: { label: 'Quantum pressure', min: 0, max: 5, step: 0.01 },
+  compressibility: { label: 'Compressibility', min: 0, max: 4, step: 0.01 },
+  baseViscosity: { label: 'Base viscosity', min: 0, max: 0.5, step: 0.005 },
+  dilatancy: { label: 'Dilatancy', min: 0, max: 10, step: 0.05 },
+  speedLimit: { label: 'Speed limit', min: 0.1, max: 10, step: 0.1 },
+  tensorGaussianWaist: { label: 'Tensor-Gaussian waist', min: 0.1, max: 20, step: 0.1 },
+  grassmannianPoleWeight: { label: 'Positive-cell pole weight', min: 0, max: 1, step: 0.01 },
+  geometryCoupling: { label: 'Amplituhedron acceleration coupling', min: 0, max: 0.25, step: 0.005 }
+});
+
+export const FIELD_MODEL_PARAMETER_DEPENDENCIES = Object.freeze({
+  newtonian: [],
+  'ns-compressible': ['coreRadius', 'compressibility'],
+  'ns-incompressible': [],
+  sqg: ['coreRadius', 'compressibility', 'quantumPressure'],
+  ddf: ['coreRadius', 'compressibility', 'quantumPressure', 'baseViscosity', 'dilatancy', 'speedLimit', 'tensorGaussianWaist'],
+  'grassmannian-amplituhedron': ['tensorGaussianWaist', 'grassmannianPoleWeight', 'geometryCoupling']
+});
+
 export const FLUID_MODEL_OPTIONS = [
   { value: 'baseline', label: 'Baseline Newtonian' },
   { value: 'hbn-farnesane', label: 'h-BN farnesane hypothesis' },
