@@ -24,6 +24,32 @@ test('space-tie workspace catalog covers every GenerateWidget workspace', () => 
   assert.equal(new Set(SPACE_TIE_WIDGETS.map(({ value }) => value)).size, 14);
 });
 
+test('every workspace has a unique presentation and valid mode-specific parameters', () => {
+  assert.equal(new Set(SPACE_TIE_WIDGETS.map(({ presentation }) => presentation)).size, 14);
+  for (const workspace of SPACE_TIE_WIDGETS) {
+    assert.ok(workspace.description.length > 0, `${workspace.value} needs a description`);
+    assert.ok(workspace.parameters.length > 0, `${workspace.value} needs parameters`);
+    assert.equal(new Set(workspace.parameters.map(({ key }) => key)).size, workspace.parameters.length);
+    for (const parameter of workspace.parameters) {
+      assert.ok(parameter.key in SPACE_TIE_DEFAULTS, `${workspace.value}.${parameter.key} needs a default`);
+      if (parameter.type === 'select') assert.ok(parameter.options.length > 0, `${workspace.value}.${parameter.key} needs options`);
+      else assert.ok(parameter.min <= parameter.max && parameter.step > 0, `${workspace.value}.${parameter.key} needs a valid range`);
+    }
+  }
+});
+
+test('workspace parameter sanitization bounds logistics and enum inputs', () => {
+  const settings = sanitizeSpaceTieSettings({ logisticsCartridgeMassKg: 0, logisticsTugFleetCount: 1000, logisticsTransferDays: 0, multipoleOrder: 99 });
+  assert.equal(settings.logisticsCartridgeMassKg, 10);
+  assert.equal(settings.logisticsTugFleetCount, 100);
+  assert.equal(settings.logisticsTransferDays, 1);
+  assert.equal(settings.multipoleOrder, 2);
+  const defaults = sanitizeSpaceTieSettings();
+  assert.equal(defaults.logisticsCartridgeMassKg, 500);
+  assert.equal(defaults.batteryCapacityMWh, 16.25);
+  assert.equal(defaults.halbachActiveAreaM2, 0.25);
+});
+
 test('helix geometry preserves strand count and spacing controls rendered node population', () => {
   const sparse = createHelixNodes({ destination: 'moon', spacingKm: 50000, strands: 3 });
   const dense = createHelixNodes({ destination: 'moon', spacingKm: 5000, strands: 3 });

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { ContactShadows } from '@react-three/drei';
-import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DynamicDrawUsage, DoubleSide, Object3D } from 'three';
+import { AdditiveBlending, BufferAttribute, BufferGeometry, CatmullRomCurve3, Color, DynamicDrawUsage, DoubleSide, Object3D, TubeGeometry, Vector3 } from 'three';
 import { NumericParamControl, ParamSelect, SimulatorParameterControls } from './lib/ParamControls.jsx';
 import { CameraPerspectiveToolbar, PerspectiveOrbitControls, SimulatorBase, SimulatorPresetControls, SimulatorViewParameters } from './lib/SimulatorBase.jsx';
 import { createCameraViews, DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, DEFAULT_SIMULATOR_3D_PARAMETERS, readPresetLibrary, writePresetLibrary } from './lib/simulator-base.js';
@@ -26,7 +26,7 @@ import {
 } from './spaceTieModel.js';
 
 const PRESET_KEY = 'sqgsim-space-tie-accelerator-presets';
-const SCENE_WIDGETS = new Set(['mass-driver', 'tunnel-envelope', 'helical-formation', 'tie-spacing', 'dynamic-mesh', 'edt-tug', 'vacuum-channel', 'vortex-sail']);
+const SCENE_WIDGETS = new Set(SPACE_TIE_WIDGETS.filter((entry) => entry.type === 'scene').map((entry) => entry.value));
 const STRAND_OPTIONS = [{ value: 2, label: 'Double helix' }, { value: 3, label: 'Triple helix' }];
 const HALBACH_OPTIONS = [{ value: 2, label: 'Quadrupole' }, { value: 3, label: 'Sextupole' }, { value: 4, label: 'Octupole' }];
 const STRAND_COLORS = ['#e5a653', '#70e6c3', '#72b9e8'];
@@ -62,6 +62,15 @@ function formatPower(watts) {
 
 function Metric({ label, value }) {
   return <div className="space-tie-metric"><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function WorkspaceParameterControls({ widget, settings, onChange }) {
+  return <details className="space-tie-mode-parameters" open>
+    <summary>Mode parameters</summary>
+    {widget.parameters.map((parameter) => parameter.type === 'select'
+      ? <ParamSelect key={parameter.key} className="space-tie-select" label={parameter.label} value={settings[parameter.key]} options={parameter.options} onChange={(value) => onChange({ [parameter.key]: value })} />
+      : <NumericParamControl key={parameter.key} className="space-tie-range" label={parameter.label} value={settings[parameter.key]} min={parameter.min} max={parameter.max} step={parameter.step} suffix={parameter.suffix} onChange={(value) => onChange({ [parameter.key]: value })} />)}
+  </details>;
 }
 
 function ProfileChart({ title, values, color, labels = ['0', '25', '50', '75', '100'] }) {
@@ -169,6 +178,110 @@ function FieldSplats({ settings, telemetry }) {
   return <points geometry={geometry} visible={settings.showFieldSplats}><pointsMaterial size={0.045 * settings.particleAppearance.sizeScale} sizeAttenuation transparent opacity={settings.particleAppearance.opacity} vertexColors blending={AdditiveBlending} depthWrite={false} /></points>;
 }
 
+function SpaceTieSail({ settings, progress }) {
+  const charge = Math.max(-3, Math.min(3, Math.round(Number(settings.vortexCharge) || 0)));
+  const lineCount = Math.max(1, Math.abs(charge));
+  const beamRadius = Math.max(0.2, Math.min(7, settings.tensorGaussianWaistM / 8 * Math.sqrt(lineCount / 2)));
+  const outerRadius = Math.max(0.2, Math.min(7, settings.sailOuterRadiusM / 8));
+  const innerRadius = Math.min(Math.max(0, settings.sailInnerRadiusM / 8), outerRadius * 0.9);
+  const sailZ = -12 + Math.max(0, Math.min(1, progress)) * 24;
+  const filaments = useMemo(() => Array.from({ length: lineCount }, (_, filament) => {
+    const points = Array.from({ length: 97 }, (_, index) => {
+      const axialProgress = index / 96;
+      const angle = axialProgress * Math.PI * 2 * charge + filament * Math.PI * 2 / lineCount;
+      const radius = charge === 0 ? 0.08 : beamRadius;
+      return new Vector3(Math.cos(angle) * radius, Math.sin(angle) * radius, -12 + axialProgress * 24);
+    });
+    return new TubeGeometry(new CatmullRomCurve3(points), 96, 0.025, 5, false);
+  }), [beamRadius, charge, lineCount]);
+
+  useEffect(() => () => filaments.forEach((geometry) => geometry.dispose()), [filaments]);
+
+  return <>
+    {filaments.map((geometry, index) => <mesh key={`${charge}-${index}`} geometry={geometry}><meshBasicMaterial color={index % 2 === 0 ? '#70e6c3' : '#72b9e8'} transparent opacity={0.58} blending={AdditiveBlending} depthWrite={false} /></mesh>)}
+    <group position={[0, 0, sailZ]}>
+      <mesh><ringGeometry args={[innerRadius, outerRadius, 72]} /><meshBasicMaterial color="#e5a653" side={DoubleSide} transparent opacity={0.32} /></mesh>
+      <mesh><torusGeometry args={[outerRadius, 0.05, 8, 72]} /><meshStandardMaterial color="#f0c875" metalness={0.55} roughness={0.3} emissive="#e5a653" emissiveIntensity={0.6} /></mesh>
+      <mesh><torusGeometry args={[Math.max(0.03, innerRadius), 0.028, 6, 48]} /><meshBasicMaterial color="#70e6c3" transparent opacity={0.72} /></mesh>
+    </group>
+  </>;
+}
+
+function CoilStageVisual({ settings, activeStage, stageCount }) {
+  const visibleStages = 12;
+  const activeVisibleStage = activeStage < 0 ? -1 : Math.floor(activeStage / Math.max(1, stageCount) * visibleStages);
+  const radius = Math.max(1.5, settings.helixRadiusM / 8 + 0.8);
+  return <group>{Array.from({ length: visibleStages }, (_, index) => <mesh key={index} position={[0, 0, -10.5 + index * 21 / (visibleStages - 1)]}>
+    <torusGeometry args={[radius, 0.065, 8, 48]} />
+    <meshStandardMaterial color={index === activeVisibleStage ? '#fff0a6' : '#e5a653'} emissive={index === activeVisibleStage ? '#fff0a6' : '#8c5127'} emissiveIntensity={index === activeVisibleStage ? 1.4 : 0.35} metalness={0.55} roughness={0.32} />
+  </mesh>)}</group>;
+}
+
+function HelixRailVisual({ layout }) {
+  const tracks = useMemo(() => Array.from({ length: layout.nodes.length / layout.renderCountPerStrand }, (_, strand) => {
+    const start = strand * layout.renderCountPerStrand;
+    const nodes = layout.nodes.slice(start, start + layout.renderCountPerStrand);
+    const curve = new CatmullRomCurve3(nodes.map((node) => new Vector3(node.x, node.y, node.z)));
+    return new TubeGeometry(curve, Math.max(48, nodes.length * 2), 0.035, 6, false);
+  }), [layout]);
+  useEffect(() => () => tracks.forEach((geometry) => geometry.dispose()), [tracks]);
+  return <group>{tracks.map((geometry, index) => <mesh key={index} geometry={geometry}><meshBasicMaterial color={STRAND_COLORS[index % STRAND_COLORS.length]} transparent opacity={0.82} /></mesh>)}</group>;
+}
+
+function TieSpacingVisual({ settings, layout }) {
+  const halfGap = 12 / Math.max(1, layout.renderCountPerStrand - 1);
+  const radius = Math.max(1.5, settings.helixRadiusM / 8 + 1.1);
+  return <group position={[0, -radius, 0]}>
+    <mesh><boxGeometry args={[0.035, 0.035, halfGap * 2]} /><meshBasicMaterial color="#f0c875" transparent opacity={0.72} /></mesh>
+    {[-1, 1].map((side) => <mesh key={side} position={[0, 0, side * halfGap]}><boxGeometry args={[0.34, 0.08, 0.08]} /><meshStandardMaterial color="#f0c875" emissive="#8c5127" emissiveIntensity={0.55} /></mesh>)}
+  </group>;
+}
+
+function DynamicMeshVisual({ settings, layout }) {
+  const groupRef = useRef(null);
+  const geometry = useMemo(() => {
+    const positions = new Float32Array(layout.renderCountPerStrand * settings.strandCount * 6);
+    let offset = 0;
+    for (let strand = 0; strand < settings.strandCount; strand += 1) {
+      const nextStrand = (strand + 1) % settings.strandCount;
+      for (let index = 0; index < layout.renderCountPerStrand; index += 1) {
+        const first = layout.nodes[strand * layout.renderCountPerStrand + index];
+        const second = layout.nodes[nextStrand * layout.renderCountPerStrand + index];
+        positions.set([first.x, first.y, first.z, second.x, second.y, second.z], offset);
+        offset += 6;
+      }
+    }
+    const result = new BufferGeometry();
+    result.setAttribute('position', new BufferAttribute(positions, 3));
+    return result;
+  }, [layout, settings.strandCount]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  useFrame(({ clock }) => {
+    if (!groupRef.current) return;
+    groupRef.current.rotation.z = Math.sin(clock.elapsedTime * 0.35) * settings.swirlRate * 0.12;
+    const pulse = 1 + Math.sin(clock.elapsedTime * 1.7) * settings.nodeMotion * 0.035;
+    groupRef.current.scale.set(pulse, pulse, 1);
+  });
+  return <group ref={groupRef}><lineSegments geometry={geometry}><lineBasicMaterial color="#72b9e8" transparent opacity={0.72} /></lineSegments></group>;
+}
+
+function TunnelEnvelopeVisual({ settings }) {
+  const radius = Math.max(0.2, settings.tunnelRadiusM / 8);
+  return <group>
+    <mesh rotation={[Math.PI / 2, 0, 0]}><cylinderGeometry args={[radius, radius, 24, 48, 1, true]} /><meshBasicMaterial color="#5bb7c4" wireframe transparent opacity={0.12} side={DoubleSide} /></mesh>
+    {[-1, 1].map((end) => <mesh key={end} position={[0, 0, end * 12]}><torusGeometry args={[radius, 0.055, 8, 48]} /><meshBasicMaterial color="#70e6c3" transparent opacity={0.82} /></mesh>)}
+  </group>;
+}
+
+function VacuumChannelVisual({ settings }) {
+  const radius = Math.max(0.2, settings.tunnelRadiusM / 8);
+  const opacity = 0.1 + settings.vacuumChannelContrast * 0.5;
+  return <group>
+    <mesh rotation={[Math.PI / 2, 0, 0]}><cylinderGeometry args={[radius, radius, 24, 40, 1, true]} /><meshBasicMaterial color="#9e8aff" wireframe transparent opacity={opacity} side={DoubleSide} /></mesh>
+    {Array.from({ length: 9 }, (_, index) => <mesh key={index} position={[0, 0, -10 + index * 2.5]}><torusGeometry args={[radius * (0.72 + 0.08 * Math.sin(index)), 0.025, 6, 40]} /><meshBasicMaterial color={index % 2 === 0 ? '#b7a9ff' : '#72b9e8'} transparent opacity={opacity} blending={AdditiveBlending} /></mesh>)}
+  </group>;
+}
+
 function SpaceTieScene({ settings, cameraViews, viewMode, orbitPlaying, launchToken, sequenceRunning, flightTelemetry, onTelemetry, onSequenceComplete, onUserInteraction }) {
   const layout = useMemo(() => createHelixNodes({ destination: settings.destination, spacingKm: settings.tieSpacingKm, strands: settings.strandCount, radius: settings.helixRadiusM / 8, motion: settings.nodeMotion, swirlRate: settings.swirlRate }), [settings.destination, settings.helixRadiusM, settings.nodeMotion, settings.strandCount, settings.swirlRate, settings.tieSpacingKm]);
   const payloadRef = useRef(null);
@@ -176,7 +289,6 @@ function SpaceTieScene({ settings, cameraViews, viewMode, orbitPlaying, launchTo
   const tokenRef = useRef(-1);
   const reportTimeRef = useRef(0);
   const isTug = settings.widget === 'edt-tug';
-  const hasEnvelope = ['tunnel-envelope', 'dynamic-mesh', 'vacuum-channel'].includes(settings.widget);
   const energyBudget = calculateSpaceEnergyBudget(settings);
 
   if (tokenRef.current !== launchToken) {
@@ -222,7 +334,12 @@ function SpaceTieScene({ settings, cameraViews, viewMode, orbitPlaying, launchTo
     <mesh position={[0, 0, -14]}><sphereGeometry args={[1.45, 24, 20]} /><meshStandardMaterial color="#28658a" emissive="#123d58" emissiveIntensity={0.22} roughness={0.92} /></mesh>
     <mesh position={[0, 0, 14]}><sphereGeometry args={[settings.destination === 'mars' ? 0.9 : 0.62, 20, 16]} /><meshStandardMaterial color={settings.destination === 'mars' ? '#a65841' : '#a8bdc4'} roughness={0.9} /></mesh>
     {!isTug && <>
-      {hasEnvelope && <mesh rotation={[Math.PI / 2, 0, 0]}><cylinderGeometry args={[Math.max(1.1, settings.helixRadiusM / 8), Math.max(1.1, settings.helixRadiusM / 8), 24, 28, 1, true]} /><meshBasicMaterial color={settings.widget === 'vacuum-channel' ? '#8f7eea' : '#5bb7c4'} wireframe transparent opacity={settings.widget === 'vacuum-channel' ? 0.16 + settings.vacuumChannelContrast * 0.3 : 0.09} side={DoubleSide} /></mesh>}
+      {settings.widget === 'mass-driver' && <CoilStageVisual settings={settings} activeStage={flightTelemetry.activeStage} stageCount={layout.renderCountPerStrand} />}
+      {settings.widget === 'tunnel-envelope' && <TunnelEnvelopeVisual settings={settings} />}
+      {settings.widget === 'helical-formation' && <HelixRailVisual layout={layout} />}
+      {settings.widget === 'tie-spacing' && <TieSpacingVisual settings={settings} layout={layout} />}
+      {settings.widget === 'dynamic-mesh' && <DynamicMeshVisual settings={settings} layout={layout} />}
+      {settings.widget === 'vacuum-channel' && <VacuumChannelVisual settings={settings} />}
       <TieLattice settings={settings} layout={layout} activeStage={flightTelemetry.activeStage} />
       <FieldSplats settings={settings} telemetry={flightTelemetry} />
       {settings.widget === 'vortex-sail' && <SpaceTieSail settings={settings} progress={flightTelemetry.progress} />}
@@ -241,8 +358,11 @@ function EnergyBudgetView({ budget, pulse }) {
 }
 
 function PropellantLogisticsView({ settings }) {
-  const phases = [['01', 'Terrestrial processing', 'Cartridges / water-brine'], ['02', 'Bulk launch', `${settings.destination.toUpperCase()} manifest`], ['03', 'Orbital depot', 'Inventory / staging'], ['04', 'Reusable tug', 'Rendezvous / delivery'], ['05', 'Space tie', 'Dock / refill / inspect']];
-  return <div className="space-tie-logistics">{phases.map(([index, title, text], phase) => <div className="space-tie-logistics-step" key={index}><span>{index}</span><strong>{title}</strong><small>{text}</small>{phase < phases.length - 1 && <i aria-hidden="true">→</i>}</div>)}</div>;
+  const cartridgeMassKg = Math.max(1, settings.logisticsCartridgeMassKg);
+  const depotLoads = Math.floor(settings.logisticsDepotCapacityKg / cartridgeMassKg);
+  const annualThroughputKg = cartridgeMassKg * settings.logisticsTugFleetCount * 365 / Math.max(1, settings.logisticsTransferDays);
+  const phases = [['01', 'Terrestrial processing', `${cartridgeMassKg.toLocaleString()} kg / cartridge`], ['02', 'Bulk launch', `${settings.destination.toUpperCase()} manifest`], ['03', 'Orbital depot', `${settings.logisticsDepotCapacityKg.toLocaleString()} kg capacity`], ['04', 'Reusable tug', `${settings.logisticsTugFleetCount} tugs / ${settings.logisticsTransferDays} days`], ['05', 'Space tie', 'Dock / refill / inspect']];
+  return <div className="space-tie-analysis"><div className="space-tie-logistics">{phases.map(([index, title, text], phase) => <div className="space-tie-logistics-step" key={index}><span>{index}</span><strong>{title}</strong><small>{text}</small>{phase < phases.length - 1 && <i aria-hidden="true">→</i>}</div>)}</div><div className="space-tie-metrics-grid"><Metric label="Cartridges staged" value={depotLoads.toLocaleString()} /><Metric label="Annual transfer capacity" value={`${Math.round(annualThroughputKg).toLocaleString()} kg / yr`} /><Metric label="Tug fleet" value={`${settings.logisticsTugFleetCount}`} /><Metric label="Turnaround" value={`${settings.logisticsTransferDays} days`} /></div><p className="space-tie-caveat">Throughput is a scheduling scenario from entered cartridge mass, tug count, and turnaround; launch windows, propellant consumption, and transfer losses are not modeled.</p></div>;
 }
 
 function SpaceTieAnalysis({ settings, budget, pulse, payload, recoil, edt, alignment, layout }) {
@@ -283,7 +403,7 @@ function SpaceTieAcceleratorSim({ onBack }) {
   const edt = calculateEdtTug({ currentA: settings.edtCurrentA, tetherLengthM: settings.edtTetherLengthM, magneticFieldT: settings.edtFieldTesla, angleDeg: settings.edtAngleDeg, solarPowerKW: settings.edtSolarPowerKW });
   const alignment = calculateHalbachAlignment({ fieldT: settings.halbachArrayFluxT, activeAreaM2: settings.halbachActiveAreaM2, gapM: settings.halbachGapM, characteristicLengthM: settings.halbachCharacteristicLengthM, polePairs: settings.halbachPolePairs });
   const widget = SPACE_TIE_WIDGETS.find((entry) => entry.value === settings.widget) ?? SPACE_TIE_WIDGETS[0];
-  const isSceneView = widget.type === 'scene';
+  const isSceneView = SCENE_WIDGETS.has(settings.widget);
   const update = (patch) => setSettings((current) => sanitizeSpaceTieSettings({ ...current, ...patch, particleAppearance: { ...current.particleAppearance, ...(patch.particleAppearance ?? {}) } }));
   const applyPreset = (name) => {
     const next = sanitizeSpaceTieSettings(presetLibrary[name] ?? INITIAL_CONFIGURATION);
@@ -317,14 +437,15 @@ function SpaceTieAcceleratorSim({ onBack }) {
   const workspaceOptions = SPACE_TIE_WIDGETS.map(({ value, label }) => ({ value, label }));
   const handleDestination = (destination) => update({ destination, solarDistanceAU: SPACE_TIE_DESTINATIONS.find((entry) => entry.value === destination)?.distanceAU ?? 1 });
   const panel = <aside className={`space-tie-panel${panelVisible ? '' : ' is-hidden'}`}>
-    <div className="space-tie-panel-heading"><div><span>SPACE TIE / 14 EXPERIMENTS</span><h2>{widget.label}</h2></div></div>
+    <div className="space-tie-panel-heading"><div><span>SPACE TIE / 14 EXPERIMENTS</span><h2>{widget.label}</h2><p>{widget.description}</p></div></div>
     <details className="space-tie-presets" open><summary>Saved configurations</summary><SimulatorPresetControls name={presetName} onNameChange={setPresetName} presets={presetLibrary} currentPreset={currentPreset} onApply={applyPreset} onSave={savePreset} onReset={() => applyPreset('Default')} /></details>
     <details open><summary>Experiment selection</summary>
-      <ParamSelect className="space-tie-select" label="Widget workspace" value={settings.widget} options={workspaceOptions} onChange={(selectedWidget) => update({ widget: selectedWidget })} />
+      <ParamSelect className="space-tie-select" label="Experiment mode" value={settings.widget} options={workspaceOptions} onChange={(selectedWidget) => update({ widget: selectedWidget })} />
       <ParamSelect className="space-tie-select" label="Destination" value={settings.destination} options={SPACE_TIE_DESTINATIONS.map(({ value, label }) => ({ value, label }))} onChange={handleDestination} />
-      <ParamSelect className="space-tie-select" label="Helix strands" value={settings.strandCount} options={STRAND_OPTIONS} onChange={(strandCount) => update({ strandCount })} />
     </details>
-    <details open><summary>Formation geometry</summary>
+    <WorkspaceParameterControls widget={widget} settings={settings} onChange={update} />
+    <details><summary>Shared formation geometry</summary>
+      <ParamSelect className="space-tie-select" label="Helix strands" value={settings.strandCount} options={STRAND_OPTIONS} onChange={(strandCount) => update({ strandCount })} />
       <NumericParamControl className="space-tie-range" label="Tie spacing" value={settings.tieSpacingKm} min={500} max={50000} step={500} suffix="km" onChange={(tieSpacingKm) => update({ tieSpacingKm })} />
       <NumericParamControl className="space-tie-range" label="Interior tunnel width" value={settings.helixRadiusM * 2} min={10} max={500} step={5} suffix="m" onChange={(diameter) => update({ helixRadiusM: diameter / 2 })} />
       <NumericParamControl className="space-tie-range" label="Dynamic inter-strand motion" value={settings.nodeMotion} min={0} max={1} step={0.01} onChange={(nodeMotion) => update({ nodeMotion })} />
@@ -333,7 +454,7 @@ function SpaceTieAcceleratorSim({ onBack }) {
       <div className="space-tie-readout"><span>Route span</span><strong>{routeLengthKm(settings.destination).toLocaleString()} km</strong></div>
       <div className="space-tie-readout"><span>Physical tie count / strand</span><strong>{layout.physicalCountPerStrand.toLocaleString()}</strong></div>
     </details>
-    <details open><summary>Launch and BAT energy</summary>
+    <details><summary>Shared launch and BAT energy</summary>
       <NumericParamControl className="space-tie-range" label="Payload mass" value={settings.payloadMassKg} min={1} max={20000} step={1} suffix="kg" onChange={(payloadMassKg) => update({ payloadMassKg })} />
       <NumericParamControl className="space-tie-range" label="Target velocity" value={settings.launchVelocityKmS} min={0} max={30} step={0.1} suffix="km/s" onChange={(launchVelocityKmS) => update({ launchVelocityKmS })} />
       <NumericParamControl className="space-tie-range" label="BAT capacity" value={settings.batteryCapacityMWh} min={0.01} max={1000} step={0.1} suffix="MWh" onChange={(batteryCapacityMWh) => update({ batteryCapacityMWh })} />
@@ -379,11 +500,11 @@ function SpaceTieAcceleratorSim({ onBack }) {
   </aside>;
 
   return <SimulatorBase className="space-tie-app" headerClassName="space-tie-topbar" mark="ST / ORBIT" title="SPACE TIE ACCELERATOR" subtitle="Discrete helical formation / coilgun energy studies" parameterValue={settings} presetValue={currentPresetValue} onParameterChange={updateAll} actions={<div className="space-tie-top-actions"><button type="button" disabled={!isSceneView} onClick={startOrPause}>{sequenceRunning ? 'Pause sequence' : flightTelemetry.done ? 'Run again' : 'Fire sequence'}</button><button type="button" disabled={!isSceneView} onClick={resetSequence}>Reset</button><button type="button" onClick={() => setPanelVisible((visible) => !visible)}>{panelVisible ? 'Hide params' : 'Show params'}</button></div>} onHome={onBack}>
-    {isSceneView ? <div className="space-tie-scene"><Canvas camera={{ position: [13, 10, 24], fov: 42, near: 0.1, far: 120 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><SpaceTieScene settings={settings} cameraViews={cameraViews} viewMode={cameraView} orbitPlaying={orbitPlaying} launchToken={launchToken} sequenceRunning={sequenceRunning} flightTelemetry={flightTelemetry} onTelemetry={setFlightTelemetry} onSequenceComplete={() => setSequenceRunning(false)} onUserInteraction={() => { setCameraView(null); update({ cameraViewMode: null }); }} /></Canvas></div> : <SpaceTieAnalysis settings={settings} budget={budget} pulse={pulse} payload={payload} recoil={recoil} edt={edt} alignment={alignment} layout={layout} />}
+    {isSceneView ? <div className="space-tie-scene"><Canvas camera={{ position: [13, 10, 24], fov: 42, near: 0.1, far: 120 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><SpaceTieScene settings={settings} cameraViews={cameraViews} viewMode={cameraView} orbitPlaying={orbitPlaying} launchToken={launchToken} sequenceRunning={sequenceRunning} flightTelemetry={flightTelemetry} onTelemetry={setFlightTelemetry} onSequenceComplete={() => setSequenceRunning(false)} onUserInteraction={() => { setCameraView(null); update({ cameraViewMode: null }); }} /></Canvas></div> : <div className="space-tie-workspace"><header className="space-tie-workspace-heading"><span>{widget.presentation.toUpperCase()} / {widget.type.toUpperCase()}</span><h2>{widget.label}</h2><p>{widget.description}</p></header><SpaceTieAnalysis settings={settings} budget={budget} pulse={pulse} payload={payload} recoil={recoil} edt={edt} alignment={alignment} layout={layout} /></div>}
     {isSceneView && <CameraPerspectiveToolbar className="simulator-perspective-toolbar space-tie-perspectives" modesClassName="simulator-perspective-modes" views={cameraViews} viewMode={cameraView} orbitPlaying={orbitPlaying} onViewChange={(cameraViewMode) => { setCameraView(cameraViewMode); update({ cameraViewMode }); }} onToggleOrbit={() => setOrbitPlaying((playing) => !playing)} />}
-    <div className="space-tie-view-heading"><span>{widget.label.toUpperCase()}</span><strong>{SPACE_TIE_DESTINATIONS.find((entry) => entry.value === settings.destination)?.label}</strong></div>
+    {isSceneView && <div className="space-tie-view-heading"><span>{widget.label.toUpperCase()}</span><strong>{SPACE_TIE_DESTINATIONS.find((entry) => entry.value === settings.destination)?.label}</strong></div>}
     {isSceneView && <div className="space-tie-scene-readout"><Metric label="Payload speed" value={`${(flightTelemetry.velocityMS / 1000).toFixed(3)} km/s`} /><Metric label="Kinetic energy" value={formatEnergy(flightTelemetry.kineticEnergyJ)} /><Metric label="Sequence" value={flightTelemetry.done ? 'Complete' : sequenceRunning ? `${(flightTelemetry.progress * 100).toFixed(0)}%` : flightTelemetry.progress > 0 ? `Paused ${(flightTelemetry.progress * 100).toFixed(0)}%` : 'Ready'} /><Metric label="Rendered ties" value={`${layout.nodes.length} / ${settings.strandCount} strands`} />{settings.widget === 'edt-tug' && <><Metric label="Tether thrust estimate" value={`${edt.thrustN.toExponential(2)} N`} /><Metric label="Tether electrical input" value={formatPower(edt.electricalInputW)} /></>}</div>}
-    <div className="space-tie-view-caveat"><span>{widget.label}</span><p>{settings.widget === 'vacuum-channel' ? 'The “superfluid fracture” is unvalidated. This view changes only the visual field envelope; its gain is excluded from solar power and coilgun calculations.' : settings.widget === 'qed-profile' ? 'Weak-field QED birefringence is not a vacuum-viscosity force law.' : 'Discrete nodes are a visualization subset. Route lengths and efficiencies are scenario inputs, not mission design values.'}</p></div>
+    {isSceneView && <div className="space-tie-view-caveat"><span>{widget.label}</span><p>{settings.widget === 'vacuum-channel' ? 'The “superfluid fracture” is unvalidated. This view changes only the visual field envelope; its gain is excluded from solar power and coilgun calculations.' : settings.widget === 'qed-profile' ? 'Weak-field QED birefringence is not a vacuum-viscosity force law.' : 'Discrete nodes are a visualization subset. Route lengths and efficiencies are scenario inputs, not mission design values.'}</p></div>}
     {panel}
   </SimulatorBase>;
 }

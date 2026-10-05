@@ -2,21 +2,80 @@ import { createPositiveGrassmannianCell, DEFAULT_AMPLITUDE_GRAVITY } from './amp
 import { DEFAULT_FIELD_MECHANICS, evaluateFieldModel } from './mechanicsModels.js';
 import { calculateWaveTensorGaussian } from './waveModel.js';
 
+const rangeParameter = (key, label, min, max, step, suffix) => ({ key, label, min, max, step, suffix });
+const selectParameter = (key, label, options) => ({ key, label, type: 'select', options });
+
 export const SPACE_TIE_WIDGETS = [
-  { value: 'mass-driver', label: 'Orbital helix mass driver', type: 'scene' },
-  { value: 'tunnel-envelope', label: 'Space-tie tunnel envelope', type: 'scene' },
-  { value: 'helical-formation', label: 'Double / triple helix', type: 'scene' },
-  { value: 'tie-spacing', label: 'Tie spacing study', type: 'scene' },
-  { value: 'dynamic-mesh', label: 'Moving orbital mesh', type: 'scene' },
-  { value: 'energy-budget', label: 'BAT energy budget', type: 'analysis' },
-  { value: 'propellant-logistics', label: 'Propellant logistics', type: 'diagram' },
-  { value: 'edt-tug', label: 'Electrodynamic-tether tug', type: 'scene' },
-  { value: 'halbach-alignment', label: 'Halbach alignment field', type: 'analysis' },
-  { value: 'recoil-harvesting', label: 'Recoil energy harvesting', type: 'analysis' },
-  { value: 'payload-energy', label: 'Payload energy budget', type: 'analysis' },
-  { value: 'vacuum-channel', label: 'Vacuum-channel hypothesis', type: 'scene' },
-  { value: 'qed-profile', label: 'Halbach / QED profile', type: 'analysis' },
-  { value: 'vortex-sail', label: 'Helical vortex sail', type: 'scene' }
+  {
+    value: 'mass-driver', label: 'Orbital helix mass driver', type: 'scene', presentation: 'coilgun',
+    description: 'Sequence discrete coil pulses and track payload energy against the charged BAT reserve.',
+    parameters: [rangeParameter('tieSpacingKm', 'Tie spacing', 500, 50000, 500, 'km'), rangeParameter('helixRadiusM', 'Formation radius', 5, 250, 1, 'm'), rangeParameter('payloadMassKg', 'Payload mass', 1, 20000, 1, 'kg'), rangeParameter('coilPulseEnergyMJ', 'Pulse energy', 0, 50000, 10, 'MJ'), rangeParameter('coilFluxT', 'Coil flux density', 0, 30, 0.1, 'T'), rangeParameter('pulseEfficiency', 'Pulse efficiency', 0, 1, 0.01), rangeParameter('payloadCoupling', 'Payload coupling', 0, 1, 0.01)]
+  },
+  {
+    value: 'tunnel-envelope', label: 'Space-tie tunnel envelope', type: 'scene', presentation: 'envelope',
+    description: 'Inspect the radius and tie density of the transparent accelerator bore.',
+    parameters: [rangeParameter('tunnelRadiusM', 'Tunnel radius', 1, 250, 1, 'm'), rangeParameter('helixRadiusM', 'Tie orbit radius', 5, 250, 1, 'm'), rangeParameter('tieSpacingKm', 'Tie spacing', 500, 50000, 500, 'km'), rangeParameter('strandCount', 'Helix strands', 2, 3, 1)]
+  },
+  {
+    value: 'helical-formation', label: 'Double / triple helix', type: 'scene', presentation: 'formation',
+    description: 'Compare two- and three-strand formations, their radius, twist, and breathing motion.',
+    parameters: [selectParameter('strandCount', 'Formation', [{ value: 2, label: 'Double helix' }, { value: 3, label: 'Triple helix' }]), rangeParameter('helixRadiusM', 'Formation radius', 5, 250, 1, 'm'), rangeParameter('tieSpacingKm', 'Tie spacing', 500, 50000, 500, 'km'), rangeParameter('nodeMotion', 'Radial breathing', 0, 1, 0.01), rangeParameter('swirlRate', 'Formation rotation', 0, 2, 0.01, 'rad/s')]
+  },
+  {
+    value: 'tie-spacing', label: 'Tie spacing study', type: 'scene', presentation: 'spacing',
+    description: 'Change route spacing and inspect the physical count versus the render-capped sample.',
+    parameters: [rangeParameter('tieSpacingKm', 'Physical tie spacing', 500, 50000, 500, 'km'), rangeParameter('strandCount', 'Measured strands', 2, 3, 1), rangeParameter('helixRadiusM', 'Formation radius', 5, 250, 1, 'm')]
+  },
+  {
+    value: 'dynamic-mesh', label: 'Moving orbital mesh', type: 'scene', presentation: 'mesh',
+    description: 'Vary inter-strand motion and estimate recoil energy available to the mesh harvesters.',
+    parameters: [rangeParameter('nodeMotion', 'Mesh breathing', 0, 1, 0.01), rangeParameter('swirlRate', 'Mesh rotation', 0, 2, 0.01, 'rad/s'), rangeParameter('meshPulsesPerHour', 'Harvest cycles', 0, 24, 0.1, '/h'), rangeParameter('recoilInternalMassKg', 'Internal proof mass', 0, 20000, 1, 'kg'), rangeParameter('recoilHullMassKg', 'Tie hull mass', 0, 20000, 1, 'kg'), rangeParameter('recoilVelocityMS', 'Recoil velocity', 0, 1000, 0.1, 'm/s')]
+  },
+  {
+    value: 'energy-budget', label: 'BAT energy budget', type: 'analysis', presentation: 'energy',
+    description: 'Compare pulse demand, stored battery energy, solar input, and captured beamed power.',
+    parameters: [rangeParameter('batteryCapacityMWh', 'BAT capacity', 0.01, 1000, 0.01, 'MWh'), rangeParameter('batteryChargePercent', 'BAT charge', 0, 100, 1, '%'), rangeParameter('coilPulseEnergyMJ', 'Pulse energy', 0, 50000, 10, 'MJ'), rangeParameter('pulseEfficiency', 'Pulse efficiency', 0, 1, 0.01), rangeParameter('payloadCoupling', 'Payload coupling', 0, 1, 0.01), rangeParameter('solarArrayAreaM2', 'Solar collector area', 0, 100000, 100, 'm²'), rangeParameter('solarConversionEfficiency', 'Solar conversion', 0, 1, 0.01), rangeParameter('solarBeamPowerMW', 'SBSP beam power', 0, 100000, 10, 'MW'), rangeParameter('beamApertureM', 'Transmitter aperture', 0.1, 200, 0.1, 'm'), rangeParameter('receiverRadiusM', 'Receiver radius', 0.1, 250, 0.1, 'm')]
+  },
+  {
+    value: 'propellant-logistics', label: 'Propellant logistics', type: 'diagram', presentation: 'logistics',
+    description: 'Size cartridge transfers, depot inventory, tug fleet, and route turnaround assumptions.',
+    parameters: [rangeParameter('logisticsCartridgeMassKg', 'Cartridge mass', 10, 100000, 10, 'kg'), rangeParameter('logisticsDepotCapacityKg', 'Depot capacity', 0, 10000000, 100, 'kg'), rangeParameter('logisticsTugFleetCount', 'Reusable tug fleet', 1, 100, 1), rangeParameter('logisticsTransferDays', 'Transfer turnaround', 1, 365, 1, 'days')]
+  },
+  {
+    value: 'edt-tug', label: 'Electrodynamic-tether tug', type: 'scene', presentation: 'tug',
+    description: 'Set tether current, length, field angle, and solar power for a bounded Lorentz-thrust estimate.',
+    parameters: [rangeParameter('edtCurrentA', 'Tether current', -1000, 1000, 1, 'A'), rangeParameter('edtTetherLengthM', 'Tether length', 0, 100000, 10, 'm'), rangeParameter('edtFieldTesla', 'Magnetic field', 0, 0.001, 0.000001, 'T'), rangeParameter('edtAngleDeg', 'Field angle', 0, 180, 1, 'deg'), rangeParameter('edtSolarPowerKW', 'Available solar power', 0, 100000, 1, 'kW')]
+  },
+  {
+    value: 'halbach-alignment', label: 'Halbach alignment field', type: 'analysis', presentation: 'alignment',
+    description: 'Vary idealized array gap, flux, pole pitch, and active area to inspect alignment force decay.',
+    parameters: [rangeParameter('halbachArrayFluxT', 'Array flux density', 0, 30, 0.1, 'T'), rangeParameter('halbachActiveAreaM2', 'Active area', 0, 100, 0.01, 'm²'), rangeParameter('halbachGapM', 'Array gap', 0, 50, 0.1, 'm'), rangeParameter('halbachCharacteristicLengthM', 'Characteristic length', 0.1, 50, 0.1, 'm'), rangeParameter('halbachPolePairs', 'Pole pairs', 1, 24, 1)]
+  },
+  {
+    value: 'recoil-harvesting', label: 'Recoil energy harvesting', type: 'analysis', presentation: 'recoil',
+    description: 'Bound piezoelectric and triboelectric recovery by the recoil energy of an internal proof mass.',
+    parameters: [rangeParameter('recoilInternalMassKg', 'Internal proof mass', 0, 20000, 1, 'kg'), rangeParameter('recoilHullMassKg', 'Tie hull mass', 0, 20000, 1, 'kg'), rangeParameter('recoilVelocityMS', 'Recoil velocity', 0, 1000, 0.1, 'm/s'), rangeParameter('piezoSplit', 'Piezo energy share', 0, 1, 0.01), rangeParameter('piezoCoupling', 'Piezo coupling', 0, 1, 0.01), rangeParameter('tengEfficiency', 'TENG efficiency', 0, 1, 0.01)]
+  },
+  {
+    value: 'payload-energy', label: 'Payload energy budget', type: 'analysis', presentation: 'payload',
+    description: 'Compare payload mass, target velocity, useful kinetic energy, and assumed coupling losses.',
+    parameters: [rangeParameter('payloadMassKg', 'Payload mass', 1, 20000, 1, 'kg'), rangeParameter('launchVelocityKmS', 'Target velocity', 0, 30, 0.1, 'km/s'), rangeParameter('payloadCoupling', 'Payload coupling', 0, 1, 0.01)]
+  },
+  {
+    value: 'vacuum-channel', label: 'Vacuum-channel hypothesis', type: 'scene', presentation: 'vacuum',
+    description: 'Visualize a bounded channel-contrast hypothesis without adding energy to the launch budget.',
+    parameters: [rangeParameter('tunnelRadiusM', 'Channel radius', 1, 250, 1, 'm'), rangeParameter('vacuumChannelContrast', 'Visual channel contrast', 0, 1, 0.01), rangeParameter('ddfStrength', 'DDF dilatancy', 0, 20, 0.1), rangeParameter('ddfSpeedLimitMS', 'DDF speed limit', 100, 100000, 100, 'm/s'), rangeParameter('tensorGaussianWaistM', 'Tensor-Gaussian waist', 0.2, 100, 0.2, 'm')]
+  },
+  {
+    value: 'qed-profile', label: 'Halbach / QED profile', type: 'analysis', presentation: 'qed',
+    description: 'Inspect a multipole field profile and weak-field birefringence scaling only.',
+    parameters: [rangeParameter('tunnelRadiusM', 'Profile radius', 1, 250, 1, 'm'), rangeParameter('edgeFluxT', 'Edge field', 0, 1000, 1, 'T'), selectParameter('multipoleOrder', 'Multipole order', [{ value: 2, label: 'Quadrupole' }, { value: 3, label: 'Sextupole' }, { value: 4, label: 'Octupole' }])]
+  },
+  {
+    value: 'vortex-sail', label: 'Helical vortex sail', type: 'scene', presentation: 'vortex',
+    description: 'Inspect a helical phase-charge field intersecting an annular sail; the vortex is a beam hypothesis.',
+    parameters: [rangeParameter('vortexCharge', 'Vortex topological charge', -3, 3, 1), rangeParameter('tensorGaussianWaistM', 'Beam waist', 0.2, 100, 0.2, 'm'), rangeParameter('sailInnerRadiusM', 'Sail inner radius', 0, 50, 1, 'm'), rangeParameter('sailOuterRadiusM', 'Sail outer radius', 5, 56, 1, 'm')]
+  }
 ];
 
 export const SPACE_TIE_DESTINATIONS = [
@@ -60,6 +119,11 @@ export const SPACE_TIE_DEFAULTS = Object.freeze({
   vortexCharge: 1,
   sailInnerRadiusM: 5,
   sailOuterRadiusM: 25,
+  meshPulsesPerHour: 1,
+  logisticsCartridgeMassKg: 500,
+  logisticsDepotCapacityKg: 25000,
+  logisticsTugFleetCount: 3,
+  logisticsTransferDays: 21,
   recoilInternalMassKg: 600,
   recoilHullMassKg: 400,
   recoilVelocityMS: 5,
@@ -140,6 +204,11 @@ export function sanitizeSpaceTieSettings(value = {}) {
     ddfSpeedLimitMS: clamp(finite(value.ddfSpeedLimitMS, SPACE_TIE_DEFAULTS.ddfSpeedLimitMS), 0.1, 1e7),
     geometryAccelerationCoupling: clamp(finite(value.geometryAccelerationCoupling, SPACE_TIE_DEFAULTS.geometryAccelerationCoupling), 0, 0.25),
     vacuumChannelContrast: clamp(finite(value.vacuumChannelContrast, SPACE_TIE_DEFAULTS.vacuumChannelContrast), 0, 1),
+    ...Object.fromEntries(SPACE_TIE_WIDGETS.flatMap(({ parameters }) => parameters).filter(({ type }) => type !== 'select').map(({ key, min, max }) => [key, clamp(finite(value[key], SPACE_TIE_DEFAULTS[key]), min, max)])),
+    ...Object.fromEntries(SPACE_TIE_WIDGETS.flatMap(({ parameters }) => parameters).filter(({ type }) => type === 'select').map(({ key, options }) => {
+      const selected = options.find((option) => option.value === value[key])?.value;
+      return [key, selected ?? SPACE_TIE_DEFAULTS[key]];
+    })),
     particleCount: Math.round(clamp(finite(value.particleCount, SPACE_TIE_DEFAULTS.particleCount), 512, 8192) / 256) * 256,
     particleAppearance: { ...SPACE_TIE_DEFAULTS.particleAppearance, ...(value.particleAppearance ?? {}) }
   };
