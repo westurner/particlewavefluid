@@ -27,13 +27,15 @@ export function PresetParametersProvider({ value, preset, onChange, children }) 
 }
 
 export function ParameterGroup({ title, paths = [], children, className = 'parameter-group', open, defaultOpen, onResetGroup }) {
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
   const preset = useContext(PresetParametersContext);
   const changedPaths = preset?.changedPaths(paths) ?? [];
   const resetGroup = () => {
     if (onResetGroup) onResetGroup(changedPaths);
     else preset?.resetPaths(changedPaths);
   };
-  return <details className={`${className}${changedPaths.length ? ' has-preset-changes' : ''}`} open={open} defaultOpen={defaultOpen}>
+  const handleToggle = open === undefined && defaultOpen !== undefined ? (event) => setUncontrolledOpen(event.currentTarget.open) : undefined;
+  return <details className={`${className}${changedPaths.length ? ' has-preset-changes' : ''}`} open={open ?? uncontrolledOpen} onToggle={handleToggle}>
     <summary><span>{title}</span>{changedPaths.length > 0 && <span className="parameter-group-changes"><span>{changedPaths.length} changed</span><ConfirmButton className="parameter-reset-trigger" actionName={`Reset ${title} to current preset`} triggerAriaLabel={`Reset ${title} to current preset`} confirmationMessage={`Reset ${title} to the current preset?`} onConfirm={resetGroup}>Reset group</ConfirmButton></span>}</summary>
     {children}
   </details>;

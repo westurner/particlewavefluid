@@ -403,3 +403,139 @@ Acceptance criteria:
 6. **Phase 1 complete:** phase-signal lab supports synthetic events and opt-in analogy; recorded/live stream import remains follow-up work.
 
 Each phase requires pure-model tests, GPU shader compilation in-browser, desktop/mobile screenshots, nonblank canvas checks, and conservation/error telemetry appropriate to the model.
+
+## Sustainable Rail-Tie and Materials Program
+
+The sustainable tie transcript and `smart_rail_tie_3d_explorer_simulator_v0.1.0.tsx` are design inputs, not qualified material data. The rail-tie explorer currently exposes material comparisons, a simple-beam response proxy, axle telemetry, graphene/percolation screening, harvesting and storage arithmetic, a rail-isolation input screen, and editable lifecycle scenarios. Its calculations are explicitly screening estimates; the UI must not label a material, battery, harvester, signaling circuit, or lifecycle claim as verified or certified.
+
+### Source and model guardrails
+
+- Preserve provenance on each material property and financial input: sourced measurement, literature estimate, transcript assumption, or user-entered scenario.
+- Keep bulk material modulus distinct from track-system modulus. A tie-pad-ballast model is required before treating one as a proxy for the other.
+- Do not infer rail-to-rail resistance from graphene loading alone. Percolation is a material risk screen; signaling acceptance requires measured resistance and the applicable track-circuit limits.
+- Treat the transcript's `$2` resistance threshold, graphene percolation percentage, 50,000 battery cycles, 280 Wh/kg, 500 Wh/L, piezo/TENG joules per axle, 1 MHz up-conversion, 68% acoustic transfer, 78% piezo conversion, and `$40,000/MWh-year` VPP value as adjustable hypotheses until independently sourced and tested.
+- Do not equate a fuse, earth stake, or dielectric barrier with fail-safe signaling certification. Any circuit or lightning model remains a conceptual FMEA until reviewed against the railroad's signal design, protection coordination, and installation standards.
+- Replace the transcript's “superfluid fracture” and “catalyzed vacuum fracture” explanations with ordinary, testable mechanics. A bistable beam may be modeled with a Duffing-type potential only after geometry, damping, forcing, and measured snap-through data are available.
+- Keep ocean-voltage/coastal-lightning concepts separate from track electronics. Shared surge-protection questions can be studied later, but seawater grounding and rail signaling are not interchangeable boundary conditions.
+
+### Simulator sequence
+
+| Phase | Simulator | Mechanics and outputs | Gate before advancing |
+| --- | --- | --- | --- |
+| 1. Design screen (implemented baseline) | Rail Tie Materials Explorer | Creosote oak, prestressed OPC, E-glass/lignin vitrimer, LVH, LVCF, LVH/LVCF hybrid, recycled polyolefin, and basalt geopolymer; simple-beam deflection/stress, damping-loss-factor references, rail-seat pressure, axle contact telemetry, particle/camera/preset controls, graphene loading and electrical-isolation input, piezo/TENG energy arithmetic, battery storage sizing, and scenario cash flow. | Keep output labels as estimates; validate formulas and interaction boundaries with unit/browser tests. Replace reference values only with cited or measured data. |
+| 2. Constitutive materials lab | Rail Tie Creep and Fatigue Lab | Burgers compliance, Findley power-law creep, Arrhenius vitrimer relaxation, temperature dependence, 5–50 Hz dynamic compliance and tan δ, hemp/carbon/glass orientation, matrix/fiber interface, and LVH versus LVCF skin-core scans. | Dimensional tests; reproduce coupon creep, DMA, and fatigue curves; report fitted parameters and uncertainty. Do not project 50-year life from an unvalidated short test. |
+| 3. Track-seat structural lab | Sleeper / Ballast Interaction Lab | Rail-seat compression and cutting, three-point bending, tie-pad contact, system track modulus, ballast pressure and degradation proxy, thermal expansion/buckling, impact loads, fatigue accumulation, and prestressed-concrete comparison. | Compare against instrumented sleeper and track-panel measurements; distinguish rail-seat load distribution from full axle load; demonstrate mesh/time-step convergence for any FE/continuum solver. |
+| 4. Harvesting and storage lab | Energy-Active Tie Lab | Separate piezoelectric/BaTiO3, ZnO, TENG/LIG, and hybrid harvesters; measured force-to-charge curves; bistable snap-through and frequency response; rectification, PMIC, battery charge/SoC, power demand, and optional inductive versus ultrasonic-transfer paths. | Close mechanical-to-electrical energy balance, include conversion and standby losses, and validate transducer bandwidth and fatigue. WPT efficiency must come from measured coupling/attenuation versus gap and alignment, not an assumed “impedance fracture” or headline percentage. |
+| 5. Signaling and electrical safety lab | Rail Isolation and Fault Lab | Rail-seat dielectric zones, bulk resistance input, graphene/percolation risk, leakage paths, moisture/salt ingress, independent harvester cells, fuse/isolation states, surge/EMI scenarios, and single-fault FMEA. Formal state invariants may use TLA+ after circuit topology is reviewed. | Test wet/dry and aged specimens; fault-inject shorts and barrier failures; verify against the selected signaling circuit. A passing proxy is never a safety certification. Do not prescribe ballast earth stakes or rail-connected grounds without a qualified signal engineer. |
+| 6. ZnO acoustic diagnostics lab | Tie Health / AE Signal Lab | Analog front-end bandwidth, anti-alias filtering, sample-rate choices, STFT/wavelet features, ring-down count and event energy, operational-noise rejection, crack/delamination labels, battery strain/temperature monitoring, and calibrated condition alerts. | Use calibrated sensors and labeled coupon/track recordings; split train/test data by site and operating condition; publish false-alarm/missed-event rates. The transcript's frequency bands are candidate windows, not established crack signatures. |
+| 7. Deployment economics lab | Rail Tie TCO / VPP Lab | 20- and 60-year cash flows, replacement/installation/disposal timing, NPV/discount rate, grant/45X eligibility toggles, VPP revenue and downside, maintenance/possession savings, storage degradation/replacement, harvest value, end-of-life recovery, and sensitivity bands. | Separate revenue from avoided cost and capital subsidy; source tariffs, market contracts, grant rules, tax treatment, and discount rate. Include battery degradation and replacement before reporting payback or IRR. |
+| 8. Sustainable masonry lab | Low-Carbon Block Process Lab | Electrochemical sand cementation, sonicated gravity-cast bauxite residue/brine, Sargassum geopolymer, LVH blocks, OPC CMU reference, graphene dosage, compressive/tensile response, modulus, process energy, CapEx/OpEx, safety, and durability. | Validate processing recipes, curing, leachate/alkalinity, repeatability, and ASTM/EN-relevant test methods. Keep masonry results separate from sleeper qualification. |
+
+### Delivery gates
+
+1. Maintain pure model functions and focused tests for units, limits, monotonicity, and energy/cost balances before expanding a simulator UI.
+2. Store assumptions and provenance in presets/exports so a chart can be reproduced and a transcript estimate cannot silently appear as measured data.
+3. Add charts only for computed quantities; remove static “verified pass” labels unless they reflect an executed, named test.
+4. For each 3D phase, validate camera presets, controls, pixel-visible rendering at desktop/mobile, and scene-resource cleanup. For each safety or material phase, pair the visualization with the corresponding physical test and uncertainty report.
+5. Gate real-world claims on independent materials, rail signaling, battery, and track-maintenance review. Keep all financial outputs scenario-based until project bids, eligibility, and market contracts exist.
+
+## Space-Tie Accelerator Program
+
+`SpaceTieAcceleratorSim` groups the 14 `GenerateWidget` concepts from `_Space-Helix-Power-and-Propulsion.md` into one `SimulatorBase` workspace with common presets, camera, particle, and parameter controls. The current UI is a scenario demonstrator, not an orbital mission or propulsion design. The pulse model enforces a per-stage energy ceiling; solar, recoil harvesting, beam capture, and orbital values remain explicit inputs or reduced models.
+
+### Implemented workspace map
+
+| Workspace | Current surface | Follow-up needed |
+| --- | --- | --- |
+| Orbital helix mass driver | Discrete coil ties, payload, pulse sequence, BAT state and kinetic telemetry | Calibrate pulse timing/field overlap and include coil inductance, switching, and saturation. |
+| Helix tunnel envelope | Visual field envelope around unconnected tie nodes | Treat the envelope as a visualization, not a physical structure or a continuous tunnel. |
+| Double / triple helix | Selectable strands and visible tunnel radius | Add collision, clearance, deployment, and attitude constraints. |
+| Tie spacing | Spacing changes conceptual count and rendered node distribution | Separate route scale, actual node count, and visual decimation in exported results. |
+| Moving orbital mesh | Breathing/precessing node motion | Replace sinusoidal motion with propagated orbital states and formation-control inputs. |
+| BAT energy budget | Battery capacity/charge and per-pulse input, payload energy, and losses | Add charge/discharge limits, converter efficiency, thermal state, aging, and verified battery data. |
+| Propellant logistics | Terrestrial processing → depot → tug → tie flow diagram | Add inventory, launch cadence, transfer windows, throughput, and cost models. |
+| EDT tug | Earth-field/current/tether thrust scenario | Couple orbit propagation, tether orientation, plasma-contact resistance, heating, and Lorentz force. |
+| Halbach alignment | Distance-decaying idealized magnetic-pressure envelope | Replace with finite-array field/force computation and measured geometry/material properties. |
+| Recoil harvesting | Reduced-mass energy bound split between piezo and TENG scenarios | Couple an internal suspension oscillator, force/displacement limits, and measured conversion curves. |
+| Payload energy | Kinetic-energy, coupling, and loss comparison for sail/synchronous/passive payload assumptions | Add trajectory, acceleration, deceleration, thermal limits, structural loads, and mission constraints. |
+| Vacuum-channel hypothesis | Separate visual-contrast overlay; excluded from power balance | Keep hypothetical unless a sourced, falsifiable constitutive law and independent evidence become available. |
+| Halbach / QED profile | Ideal multipole field and weak-field birefringence scaling | Validate finite Halbach fields and report the tiny QED effect in physical units; do not map it to viscosity or thrust. |
+| Helical vortex sail | Tensor-Gaussian/vortex field overlay and annular sail visualization | Compare against paraxial Maxwell/Laguerre-Gaussian propagation, diffraction, aperture capture, and sail radiation pressure. |
+
+### Development phases
+
+#### Phase 1 - conservative coilgun and energy accounting
+
+Keep the baseline operator classical. Represent each tie pulse as a bounded energy transfer, update payload kinetic energy from the transferred energy, and book the remainder to loss. Apply the equal-and-opposite momentum change to the active tie or a declared support structure. Do not infer a field-formation force from the DDF or Grassmannian visualization.
+
+Acceptance criteria:
+
+- [ ] Pulse output never exceeds BAT energy removed; payload kinetic-energy change matches pulse output within tolerance.
+- [ ] Payload momentum gain and tie/support recoil close for each pulse and across a full sequence.
+- [ ] Fire, pause, reset, resume, and depleted-BAT behavior are deterministic and covered by tests.
+- [ ] Moon/Mars labels are scenario destinations only; results report required velocity and kinetic energy without implying transfer-time or route feasibility.
+
+#### Phase 2 - propagated orbital formation
+
+Replace the breathing sinusoid with orbital element propagation. Begin with two-body Kepler propagation and a relative-motion model for nearby nodes (for example, Clohessy-Wiltshire only where its circular-reference assumptions apply). Add Sun/Earth/Moon/Mars perturbations, solar radiation pressure, attitude, and finite thrust only as separate validated increments. The double/triple helix is then a formation target to control, not a pre-imposed orbital orbit.
+
+Acceptance criteria:
+
+- [ ] Kepler fixtures conserve specific orbital energy and angular momentum.
+- [ ] Relative-orbit fixtures match an independent propagator in their stated regime.
+- [ ] Formation error, collision clearance, control effort, propellant, and uncertainty are reported separately.
+- [ ] The number of rendered ties may be decimated, but physical tie counts and spacing remain explicit and reproducible.
+
+#### Phase 3 - electromagnetic accelerator hardware
+
+Build a circuit/field model for the coil stage: inductance, resistance, mutual coupling, current ramp, switch-off timing, saturation, eddy-current heating, pulse repetition, and duty limits. Compare passive induced payloads with synchronized onboard magnets. Use measured coupling maps and include projectile attitude and lateral offset.
+
+Acceptance criteria:
+
+- [ ] Circuit energy closes across stored magnetic energy, resistive/eddy losses, mechanical work, and switching losses.
+- [ ] Active-payload and passive-payload cases have independent, sourced coupling assumptions.
+- [ ] Coil timing includes the deceleration risk from remaining energized after the payload center crosses.
+- [ ] Structural stress, coil temperature, payload temperature, and peak field remain inside declared hardware limits.
+
+#### Phase 4 - solar, sails, and wireless power
+
+Use inverse-square solar irradiance, photovoltaic conversion, diffraction-limited beam capture, receiver aperture, pointing error, and measured optical/microwave conversion. Model sail force from photon momentum and separate direct sunlight from beamed power. The vortex-sail workspace uses the existing normalized tensor-Gaussian visualization alongside a Maxwell/Laguerre-Gaussian reference; the dark core is an optical intensity feature, not a vacuum channel.
+
+Acceptance criteria:
+
+- [ ] Solar input, captured beam power, stored energy, coil input, and losses reconcile in a unit-tested energy ledger.
+- [ ] Beam capture respects wavelength, transmitter aperture, range, receiver area, and pointing assumptions.
+- [ ] Solar-sail force and acceleration agree with the radiation-pressure formula for absorbing and reflecting limits.
+- [ ] “Superfluid fracture” remains disabled from physical efficiency/force calculations unless independently evidenced and parameterized.
+
+#### Phase 5 - tie harvesting, recoil, and storage
+
+Model recoil harvesting as an internal compliant suspension with piezoelectric and triboelectric transducers. Couple a mass-spring-damper response to the coil pulse and enforce harvested electrical energy below mechanical energy dissipated by that suspension. Add battery charge rate, cycle life, thermal state, and storage degradation from measured cell data.
+
+Acceptance criteria:
+
+- [ ] Recovered energy is bounded by internal mechanical dissipation; no energy is harvested from whole-vehicle translation without a reaction mass or external interaction.
+- [ ] Piezo/TENG outputs include bandwidth, loading, rectifier, and converter losses.
+- [ ] BAT lifetime derives from validated cycle/depth-of-discharge and temperature curves, not transcript targets alone.
+
+#### Phase 6 - operator and splat research comparisons
+
+Keep the Newtonian/Maxwell operator as the reference. Reuse `evaluateFieldModel('ddf')` for a bounded, explicitly hypothetical constitutive overlay. Reuse `calculateWaveTensorGaussian` for normalized splat rendering. Reuse `createPositiveGrassmannianCell` for positive minors and the Plucker residual, and expose any geometry-to-acceleration coefficient as a separate hypothesis parameter with a default of zero. Twistor variables may be used as a representation only; they do not supply a new force law by themselves.
+
+Acceptance criteria:
+
+- [ ] Splat normalization and particle appearance do not change energy or momentum in the classical model.
+- [ ] DDF response remains passive/bounded and is not added to coilgun energy without a measured coupling model.
+- [ ] Grassmannian cell minors and Plucker relation pass shared amplitude-gravity tests.
+- [ ] Any nonzero geometry-acceleration coupling is marked hypothetical, bounded, and compared against the zero-coupling classical baseline.
+
+#### Phase 7 - mission and logistics analysis
+
+Only after Phases 1–6 have validated inputs should the model compare full Earth-Moon/Mars transfer architectures. Include launch/deceleration stages, orbital insertion, radiation environment, depot/tug throughput, propellant or electrodynamic-tether limits, reliability, maintenance, and uncertainty. Report which quantities are physics outputs versus user-entered targets.
+
+Acceptance criteria:
+
+- [ ] Mission delta-v includes departure, arrival, targeting, and contingency budgets.
+- [ ] Tug and depot scenarios close mass, propellant, power, and schedule balances.
+- [ ] No claimed solar, BAT, mass-driver, or orbital performance is presented without cited source data or calibrated measurements.
+- [ ] Browser tests cover all 14 workspaces, shared presets/camera/particle controls, landscape/mobile rendering, and nonblank canvas pixels.

@@ -13,6 +13,9 @@ const PhaseSignalSim = lazy(() => import('./PhaseSignalSim.jsx'));
 const OamSolitonSim = lazy(() => import('./OamSolitonSim.jsx'));
 const FrcFusionSim = lazy(() => import('./FrcFusionSim.jsx'));
 const SubwaySim = lazy(() => import('./SubwaySim.jsx').then(({ SubwaySim: component }) => ({ default: component })));
+const RailTieMaterialSim = lazy(() => import('./RailTieMaterialSim.jsx'));
+const RailHeatSim = lazy(() => import('./RailHeatSim.jsx'));
+const SpaceTieAcceleratorSim = lazy(() => import('./SpaceTieAcceleratorSim.jsx'));
 
 const SIMULATION_MODES = [
   {
@@ -131,6 +134,33 @@ const SIMULATION_MODES = [
     description: 'Combine coherent orbital-angular-momentum solitons with dual-rail quantum operators and inspect mode-resolved output.',
     detail: 'OAM / UNITARIES / PHOTONIC BUS',
     accent: 'teal'
+  },
+  {
+    id: 'railtiesim',
+    index: '14',
+    name: 'railtiesim',
+    label: 'Sustainable rail ties',
+    description: 'Explore lignin-vitrimer and alternative sleeper concepts with wheel loading, particle telemetry, and lifecycle assumptions.',
+    detail: 'LVH / MECHANICS / CIRCULARITY',
+    accent: 'orange'
+  },
+  {
+    id: 'railheatsim',
+    index: '15',
+    name: 'railheatsim',
+    label: 'Rail heat transfer',
+    description: 'Compare Fourier diffusion, finite-speed conduction, and a bounded DDF hypothesis with normalized tensor-Gaussian heat splatters.',
+    detail: 'FOURIER / CATANNEO / DDF',
+    accent: 'teal'
+  },
+  {
+    id: 'spacetieaccelerator',
+    index: '16',
+    name: 'spacetieaccelerator',
+    label: 'Space tie accelerator',
+    description: 'Explore a moving double/triple-helical tie formation, energy-bounded coilgun pulses, solar input, and bounded field hypotheses.',
+    detail: 'ORBITAL / COILGUN / ENERGY',
+    accent: 'blue'
   }
 ];
 
@@ -155,6 +185,9 @@ function SimulationLoader() {
   if (selectedSimulation === 'thermalloopsim') simulation = <ThermalLoopSim onBack={onBack} />;
   if (selectedSimulation === 'phasesignalsim') simulation = <PhaseSignalSim onBack={onBack} />;
   if (selectedSimulation === 'oamsolitonsim') simulation = <OamSolitonSim onBack={onBack} />;
+  if (selectedSimulation === 'railtiesim') simulation = <RailTieMaterialSim onBack={onBack} />;
+  if (selectedSimulation === 'railheatsim') simulation = <RailHeatSim onBack={onBack} />;
+  if (selectedSimulation === 'spacetieaccelerator') simulation = <SpaceTieAcceleratorSim onBack={onBack} />;
   if (simulation) return <Suspense fallback={<LoadingScreen />}>{simulation}</Suspense>;
 
   return (
