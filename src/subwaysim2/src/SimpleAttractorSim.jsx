@@ -633,6 +633,10 @@ function createConfiguration(variant = 'simple') {
     spinningStrength: 2.75,
     scale: 0.06,
     boundHalfExtent: 8,
+    axesVisible: true,
+    axesColorX: '#e66b5d',
+    axesColorY: '#74d3c5',
+    axesColorZ: '#f2c14e',
     colorA: hypothesisVariant ? '#4de8ff' : '#33905f',
     colorB: variant === 'ddf' ? '#f4c750' : hypothesisVariant ? '#e74315' : '#55e699',
     controlsColorX: '#e66b5d',
@@ -801,6 +805,8 @@ function sanitizeConfiguration(data, variant) {
   next.particleCount = Number.isFinite(particleCount)
     ? Math.min(PARTICLE_COUNT, Math.max(1024, Math.round(particleCount / 1024) * 1024))
     : base.particleCount;
+  const timeScale = Number(data.timeScale ?? base.timeScale);
+  next.timeScale = Number.isFinite(timeScale) ? Math.min(10, Math.max(0, timeScale)) : base.timeScale;
   next.showTransformControls = data.showTransformControls === undefined ? base.showTransformControls : Boolean(data.showTransformControls);
   next.controlsMode = data.controlsMode === 'translate' || data.controlsMode === 'rotate'
     ? data.controlsMode
@@ -814,6 +820,10 @@ function sanitizeConfiguration(data, variant) {
   next.cameraZoomAffectsField = Boolean(data.cameraZoomAffectsField);
   next.cameraWheelMode = data.cameraWheelMode === 'dolly' ? 'dolly' : 'zoom';
   next.helperShowAttributes = Boolean(data.helperShowAttributes);
+  next.axesVisible = data.axesVisible === undefined ? base.axesVisible : Boolean(data.axesVisible);
+  next.axesColorX = typeof data.axesColorX === 'string' && /^#[\da-f]{6}$/i.test(data.axesColorX) ? data.axesColorX.toLowerCase() : base.axesColorX;
+  next.axesColorY = typeof data.axesColorY === 'string' && /^#[\da-f]{6}$/i.test(data.axesColorY) ? data.axesColorY.toLowerCase() : base.axesColorY;
+  next.axesColorZ = typeof data.axesColorZ === 'string' && /^#[\da-f]{6}$/i.test(data.axesColorZ) ? data.axesColorZ.toLowerCase() : base.axesColorZ;
   next.fieldMechanics = sanitizeFieldMechanics(data.fieldMechanics, base.fieldMechanics);
   next.blackHoleStarsVisible = data.blackHoleStarsVisible === undefined ? base.blackHoleStarsVisible : Boolean(data.blackHoleStarsVisible);
   next.blackHoleStarColor = typeof data.blackHoleStarColor === 'string' && /^#[\da-f]{6}$/i.test(data.blackHoleStarColor)
@@ -1034,7 +1044,7 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount,
     const frameDelta = Math.min(delta, 1 / 30);
     const positionUniforms = positionVariable.material.uniforms;
     const velocityUniforms = velocityVariable.material.uniforms;
-    positionUniforms.uDt.value = frameDelta;
+    positionUniforms.uDt.value = frameDelta * current.timeScale;
     positionUniforms.uBoundHalfExtent.value = calculateZoomCoupledFieldExtent(current.boundHalfExtent, current.cameraZoom, current.cameraZoomAffectsField);
     velocityUniforms.uDt.value = frameDelta * current.timeScale;
     velocityUniforms.uAttractorMass.value = 10 ** current.attractorMassExponent;
@@ -1568,8 +1578,12 @@ function AttractorPaths({ configuration, simulationPlaying }) {
 function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing, simulationPlaying, onCameraChange, paramsVisible, viewMode, orbitalPlaying, onManualChange, variant }) {
   const blackHoleStarStateRef = useRef(null);
   if (!blackHoleStarStateRef.current) blackHoleStarStateRef.current = createBlackHoleStarRuntimeState();
+  const axesRef = useRef(null);
   const particleCount = E2E_PARTICLE_COUNT ?? configuration.particleCount;
   const fieldHalfExtent = calculateZoomCoupledFieldExtent(configuration.boundHalfExtent, configuration.cameraZoom, configuration.cameraZoomAffectsField);
+  useEffect(() => {
+    axesRef.current?.setColors(configuration.axesColorX, configuration.axesColorY, configuration.axesColorZ);
+  }, [configuration.axesColorX, configuration.axesColorY, configuration.axesColorZ]);
   return (
     <>
       <color attach="background" args={['#050810']} />
@@ -1578,7 +1592,7 @@ function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing,
       <directionalLight color="#fff2d4" intensity={1.5} position={[4, 5, 2]} />
       <pointLight color="#ff885e" intensity={2.2} distance={18} position={[0, 0, 0]} />
       <gridHelper args={[fieldHalfExtent * 2, 16, '#31515b', '#172830']} position={[0, -fieldHalfExtent - 2, 0]} />
-      <axesHelper args={[3]} />
+      <axesHelper ref={axesRef} args={[3]} visible={configuration.axesVisible} />
       {!E2E_MODE && <AttractorParticles key={particleCount} configuration={configuration} onGpuError={onGpuError} variant={variant} particleCount={particleCount} blackHoleStarStateRef={blackHoleStarStateRef} simulationPlaying={simulationPlaying} />}
       <BlackHoleEffects configuration={configuration} starStateRef={blackHoleStarStateRef} simulationPlaying={simulationPlaying} />
       <AttractorPaths configuration={configuration} simulationPlaying={simulationPlaying} />
@@ -1633,20 +1647,25 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
 
       <SimulatorPresetControls className="attractor-section" selectClassName="attractor-preset" name={presetName} onNameChange={onPresetName} presets={presets} currentPreset={currentPreset} onApply={onApplyPreset} onSave={onSavePreset} onReset={onReset} />
       <details className="attractor-details" open>
-        <summary>Modify particle field</summary>
+        <summary>Particle field</summary>
         <RangeControl label="Attractor mass exponent" value={configuration.attractorMassExponent} min={1} max={10} step={1} onChange={(value) => onChange({ attractorMassExponent: value }, 'attractorMassExponent')} />
         <RangeControl label="Particle mass exponent" value={configuration.particleGlobalMassExponent} min={1} max={10} step={1} onChange={(value) => onChange({ particleGlobalMassExponent: value }, 'particleGlobalMassExponent')} />
         <RangeControl label="Particle count" value={configuration.particleCount} min={1024} max={PARTICLE_COUNT} step={1024} onChange={(value) => onChange({ particleCount: value }, 'particleCount')} />
         <RangeControl label="Maximum speed" value={configuration.maxSpeed} min={0} max={10} step={0.01} onChange={(value) => onChange({ maxSpeed: value }, 'maxSpeed')} />
         <RangeControl label="Velocity damping" value={configuration.velocityDamping} min={0} max={0.1} step={0.001} onChange={(value) => onChange({ velocityDamping: value }, 'velocityDamping')} />
         <RangeControl label="Spinning strength" value={configuration.spinningStrength} min={0} max={10} step={0.01} onChange={(value) => onChange({ spinningStrength: value }, 'spinningStrength')} />
+      </details>
+
+      <details className="attractor-details" open>
+        <summary>Simulation</summary>
+        <RangeControl label="Simulation speed" value={configuration.timeScale} min={0} max={5} step={0.05} onChange={(value) => onChange({ timeScale: value }, 'timeScale')} suffix="x" />
         <RangeControl label="Bound half extent" value={configuration.boundHalfExtent} min={0.5} max={20} step={0.01} onChange={(value) => onChange({ boundHalfExtent: value }, 'boundHalfExtent')} />
         <BooleanControl label="Scale field boundary with camera zoom" value={configuration.cameraZoomAffectsField} onChange={(value) => onChange({ cameraZoomAffectsField: value }, 'cameraZoomAffectsField')} />
         <p className="attractor-model-note">Camera zoom changes only the view by default. Enable this to scale the particle boundary with zoom.</p>
       </details>
 
       <details className="attractor-details" open>
-        <summary>Modify particle display</summary>
+        <summary>Particle display</summary>
         <RangeControl label="Displayed particle size" value={configuration.scale} min={0} max={0.1} step={0.001} onChange={(value) => onChange({ scale: value }, 'scale')} />
         <p className="attractor-model-note">Render-only control: changing size changes apparent splat area, not particle state. With normalized tensor-Gaussian mechanics enabled, the displayed area is not energy-renormalized.</p>
         <SelectControl label="Particle orientation" value={configuration.particleFacing} options={['world', 'camera']} onChange={(value) => onChange({ particleFacing: value }, 'particleFacing')} />
@@ -1660,18 +1679,6 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
         <RangeControl label="Path duration" value={configuration.attractorPathLength} min={1} max={12} step={0.1} onChange={(value) => onChange({ attractorPathLength: value }, 'attractorPathLength')} />
         <ColorControl label="Path color" value={configuration.attractorPathColor} onChange={(value) => onChange({ attractorPathColor: value }, 'attractorPathColor')} />
         <RangeControl label="Path opacity" value={configuration.attractorPathOpacity} min={0} max={1} step={0.01} onChange={(value) => onChange({ attractorPathOpacity: value }, 'attractorPathOpacity')} />
-        <BooleanControl label="Show mechanics difference" value={mechanics.comparisonEnabled} onChange={(value) => updateMechanics('comparisonEnabled', value)} />
-        {mechanics.comparisonEnabled && <>
-          <SelectControl label="Compare against" value={mechanics.comparisonModel} options={FIELD_MODEL_OPTIONS} onChange={(value) => updateMechanics('comparisonModel', value)} />
-          <RangeControl label="Difference gain" value={mechanics.differenceScale} min={0} max={10} step={0.1} onChange={(value) => updateMechanics('differenceScale', value)} />
-          <p className="attractor-model-difference">Reference delta at 2 core radii: <strong>{(comparison.relativeDifference * 100).toFixed(1)}%</strong></p>
-        </>}
-        {hasBlackHoles && <>
-          <BooleanControl label="Show stress streamlines" value={configuration.blackHoleStreamlines} onChange={(value) => onChange({ blackHoleStreamlines: value }, 'blackHoleStreamlines')} />
-          <BooleanControl label="Show black-hole star splats" value={configuration.blackHoleStarsVisible} onChange={(value) => onChange({ blackHoleStarsVisible: value }, 'blackHoleStarsVisible')} />
-          <ColorControl label="Black-hole star color" value={configuration.blackHoleStarColor} onChange={(value) => onChange({ blackHoleStarColor: value }, 'blackHoleStarColor')} />
-          <RangeControl label="Black-hole star opacity" value={configuration.blackHoleStarOpacity} min={0} max={1} step={0.01} onChange={(value) => onChange({ blackHoleStarOpacity: value }, 'blackHoleStarOpacity')} />
-        </>}
       </details>
 
       <details className="attractor-details" open>
@@ -1688,10 +1695,35 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
       </details>
 
       <details className="attractor-details" open>
+        <summary>Compare mechanics</summary>
+        <BooleanControl label="Show mechanics difference" value={mechanics.comparisonEnabled} onChange={(value) => updateMechanics('comparisonEnabled', value)} />
+        {mechanics.comparisonEnabled && <>
+          <SelectControl label="Compare against" value={mechanics.comparisonModel} options={FIELD_MODEL_OPTIONS} onChange={(value) => updateMechanics('comparisonModel', value)} />
+          <RangeControl label="Difference gain" value={mechanics.differenceScale} min={0} max={10} step={0.1} onChange={(value) => updateMechanics('differenceScale', value)} />
+          <p className="attractor-model-difference">Reference delta at 2 core radii: <strong>{(comparison.relativeDifference * 100).toFixed(1)}%</strong></p>
+        </>}
+      </details>
+      {hasBlackHoles && <>
+      <details className="attractor-details" open>
+        <summary>Black hole attractors</summary>
+          <BooleanControl label="Show stress streamlines" value={configuration.blackHoleStreamlines} onChange={(value) => onChange({ blackHoleStreamlines: value }, 'blackHoleStreamlines')} />
+          <BooleanControl label="Show black-hole star splats" value={configuration.blackHoleStarsVisible} onChange={(value) => onChange({ blackHoleStarsVisible: value }, 'blackHoleStarsVisible')} />
+          <ColorControl label="Black-hole star color" value={configuration.blackHoleStarColor} onChange={(value) => onChange({ blackHoleStarColor: value }, 'blackHoleStarColor')} />
+          <RangeControl label="Black-hole star opacity" value={configuration.blackHoleStarOpacity} min={0} max={1} step={0.01} onChange={(value) => onChange({ blackHoleStarOpacity: value }, 'blackHoleStarOpacity')} />
+      </details>
+      </>}
+
+      <details className="attractor-details" open>
         <summary>Attractor rig</summary>
         {configuration.showTransformControls && <SelectControl label="Transform mode" value={configuration.controlsMode} options={TRANSFORM_MODE_OPTIONS} onChange={(value) => onChange({ controlsMode: value }, 'controlsMode')} />}
         <BooleanControl label="Show transform controls" value={configuration.showTransformControls} onChange={(value) => onChange({ showTransformControls: value }, 'showTransformControls')} />
         <BooleanControl label="Show helper rings" value={configuration.helperVisible} onChange={(value) => onChange({ helperVisible: value }, 'helperVisible')} />
+        <BooleanControl label="Show coordinate axes" value={configuration.axesVisible} onChange={(value) => onChange({ axesVisible: value }, 'axesVisible')} />
+        {configuration.axesVisible && <>
+          <ColorControl label="X axis color" value={configuration.axesColorX} onChange={(value) => onChange({ axesColorX: value }, 'axesColorX')} />
+          <ColorControl label="Y axis color" value={configuration.axesColorY} onChange={(value) => onChange({ axesColorY: value }, 'axesColorY')} />
+          <ColorControl label="Z axis color" value={configuration.axesColorZ} onChange={(value) => onChange({ axesColorZ: value }, 'axesColorZ')} />
+        </>}
         <BooleanControl label="Show names" value={configuration.helperShowName} onChange={(value) => onChange({ helperShowName: value }, 'helperShowName')} />
         <BooleanControl label="Show attractor attributes" value={configuration.helperShowAttributes} onChange={(value) => onChange({ helperShowAttributes: value }, 'helperShowAttributes')} />
         <SelectControl label="Label placement" value={configuration.helperNamePlacement} options={['above', 'center', 'below']} onChange={(value) => onChange({ helperNamePlacement: value }, 'helperNamePlacement')} />
