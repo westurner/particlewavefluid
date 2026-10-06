@@ -158,6 +158,27 @@ test('amplitude gravity lab exposes positive-cell and model-difference diagnosti
   assert.match(await page.locator('.amplitude-body-facts summary').textContent(), /Io/);
   assert.match(await page.getByText('JPL GM').locator('..').textContent(), /5959\.915 km³\/s²/);
   assert.equal(await page.getByRole('link', { name: 'JPL satellite GM table' }).getAttribute('href'), 'https://ssd.jpl.nasa.gov/sats/phys_par/');
+  await page.getByRole('button', { name: 'Pause' }).click();
+  await page.waitForTimeout(250);
+  const canvas = page.locator('.amplitude-scene canvas');
+  const beforeFocus = await canvas.screenshot();
+  const focusButton = page.getByRole('button', { name: 'Focus' });
+  await focusButton.click();
+  await page.waitForTimeout(1100);
+  assert.equal(await focusButton.getAttribute('aria-pressed'), 'true');
+  const afterFocus = await canvas.screenshot();
+  assert.notDeepEqual(afterFocus, beforeFocus, 'focusing a body should change the rendered camera view');
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await inspectedBody.click();
+  await page.getByRole('option', { name: 'Titan / Saturn' }).click();
+  await page.waitForTimeout(250);
+  const mobileBeforeFocus = await canvas.screenshot();
+  await focusButton.click();
+  await page.waitForTimeout(1100);
+  const mobileAfterFocus = await canvas.screenshot();
+  assert.notDeepEqual(mobileAfterFocus, mobileBeforeFocus, 'focused camera should move on a mobile-sized canvas');
+  await page.setViewportSize({ width: 1280, height: 900 });
 
   const diameterScale = page.getByRole('combobox', { name: 'Planet diameter scale' });
   await diameterScale.click();
@@ -184,6 +205,12 @@ test('amplitude gravity lab exposes positive-cell and model-difference diagnosti
   await page.getByRole('combobox', { name: 'Historic mission path' }).click();
   await page.getByRole('option', { name: 'Voyager 2 · Grand Tour' }).click();
   assert.match(await page.locator('.amplitude-mission-note').textContent(), /schematic/);
+  const historicMission = page.getByRole('combobox', { name: 'Historic mission path' });
+  for (const label of ['Apollo 11 · First lunar landing', 'Artemis II · Crewed lunar flyby', 'Viking 1 · Mars orbiter / lander', 'Perseverance / Ingenuity · Mars', 'Juno · Jupiter orbiter']) {
+    await historicMission.click();
+    await page.getByRole('option', { name: label }).click();
+    assert.match(await historicMission.textContent(), new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
 
   assert.match(await gravityModel.textContent(), /GR \(Normed Tensor Gaussian Splatter\)/);
   const pluckerResidual = Number(await page.getByText('Plücker residual').locator('..').locator('strong').textContent());
@@ -192,6 +219,59 @@ test('amplitude gravity lab exposes positive-cell and model-difference diagnosti
   await difference.click();
   assert.equal(await difference.isChecked(), true);
   await page.waitForTimeout(500);
+  assert.deepEqual(errors, []);
+});
+
+test('amplitude gravity validation scores all models, shows JPL tracks, and reports pair-distance contributions', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+
+  await page.goto(`${baseUrl}?e2e=1`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /07 \/ LOAD FIELD/ }).click();
+  await page.locator('.amplitude-panel').waitFor();
+  await page.getByRole('combobox', { name: 'Study mode' }).click();
+  await page.getByRole('option', { name: 'Observed-orbit validation' }).click();
+  await page.locator('.orbital-validation-panel').waitFor();
+  assert.equal(await page.locator('.orbit-validation-table tbody tr').count(), 0);
+  assert.match(await page.locator('.orbital-validation-readout').textContent(), /Not run/);
+  await page.getByRole('button', { name: 'Run all model tests' }).click();
+  await page.locator('.orbit-validation-table tbody tr').nth(5).waitFor();
+  assert.equal(await page.locator('.orbit-validation-table tbody tr').count(), 6);
+  assert.match(await page.locator('.orbital-validation-readout').textContent(), /pts/);
+  assert.match(await page.locator('.orbital-validation-panel .amplitude-note').filter({ hasText: /JPL Horizons DE441/ }).textContent(), /six 5-day DE441 samples/);
+
+  const modelSelect = page.getByRole('combobox', { name: 'Gravity model' });
+  await modelSelect.click();
+  await page.getByRole('option', { name: 'GR (Normed Tensor Gaussian Splatter)' }).click();
+  assert.match(await page.locator('.orbital-validation-readout').textContent(), /pts/);
+  const gaussianWaist = page.getByRole('slider', { name: 'GR splatter Gaussian waist' });
+  await gaussianWaist.focus();
+  await gaussianWaist.press('End');
+  await page.getByText(/Settings changed since this report ran/).waitFor();
+
+  await page.getByRole('checkbox', { name: 'Show JPL and predicted tracks together' }).check();
+  assert.match(await page.locator('.orbit-validation-legend').textContent(), /JPL observations.*Selected model/);
+  await page.getByRole('checkbox', { name: 'Show pair distances contributing to score' }).check();
+  assert.equal(await page.locator('.orbit-validation-distance-table tbody tr').count(), 36);
+  assert.match(await page.locator('.orbit-validation-distance-table').textContent(), /RMS Δ km/);
+  await page.locator('.orbit-validation-distance-table details summary').first().click();
+  assert.equal(await page.locator('.orbit-validation-distance-table details').first().locator('.orbit-validation-distance-samples p').count(), 6);
+
+  await page.getByText('About this sim', { exact: true }).click();
+  await page.getByText('JPL Horizons / DE441 planetary ephemeris', { exact: true }).waitFor();
+  await page.getByText('Adding a future model', { exact: true }).waitFor();
+  await page.locator('.amplitude-citation-list a[href="https://ssd.jpl.nasa.gov/sats/elem/"]').waitFor();
+
+  await page.getByRole('button', { name: 'Run all model tests' }).click();
+  await page.getByRole('button', { name: 'Run all model tests' }).waitFor();
+  const reportSelect = page.getByRole('combobox', { name: 'Validation report' });
+  await reportSelect.click();
+  assert.equal(await page.getByRole('option').count(), 2);
+  await page.keyboard.press('Escape');
   assert.deepEqual(errors, []);
 });
 

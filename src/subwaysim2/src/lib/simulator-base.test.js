@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendJournalEntry, buildParameterReplayJournal, CAMERA_WHEEL_MODE_OPTIONS, createCameraViews, createOrbitCameraParams, DEFAULT_ORBIT_CAMERA_PARAMS, DEFAULT_SIMULATOR_CAMERA_CONFIGURATION, deletePresetLibrary, parameterLogCategory, parseParameterEditLogYaml, parseSimulatorJson, readPresetLibrary, rewindJournal, serializeParameterEditLog, snapshotAtJournalTime, writePresetLibrary } from './simulator-base.js';
+import { appendJournalEntry, buildParameterReplayJournal, CAMERA_WHEEL_MODE_OPTIONS, createCameraViews, createOrbitCameraParams, DEFAULT_ORBIT_CAMERA_PARAMS, DEFAULT_SIMULATOR_CAMERA_CONFIGURATION, deletePresetLibrary, easeCameraFocus, getCameraFocusPose, parameterLogCategory, parseParameterEditLogYaml, parseSimulatorJson, readPresetLibrary, rewindJournal, serializeParameterEditLog, snapshotAtJournalTime, writePresetLibrary } from './simulator-base.js';
 
 function createStorage() {
   const values = new Map();
@@ -20,6 +20,14 @@ test('shared camera helpers retain presets, targets, and overrideable orbit para
   assert.deepEqual(createOrbitCameraParams({ minDistance: 5, target: [1, 2, 3] }), { ...DEFAULT_ORBIT_CAMERA_PARAMS, minDistance: 5, target: [1, 2, 3] });
   assert.equal(DEFAULT_SIMULATOR_CAMERA_CONFIGURATION.cameraFov, 25);
   assert.deepEqual(CAMERA_WHEEL_MODE_OPTIONS.map(({ value, label }) => [value, label]), [['zoom', 'Zoom'], ['dolly', 'Move camera']]);
+});
+
+test('camera focus pose preserves viewing direction and uses eased endpoints', () => {
+  const pose = getCameraFocusPose([0, 0, 10], [0, 0, 0], [1, 2, 3], 2);
+  assert.deepEqual(pose, { target: [1, 2, 3], position: [1, 2, 5] });
+  assert.equal(easeCameraFocus(0), 0);
+  assert.equal(easeCameraFocus(1), 1);
+  assert.equal(easeCameraFocus(0.5), 0.875);
 });
 
 test('preset storage preserves defaults and round-trips simulator snapshots', () => {

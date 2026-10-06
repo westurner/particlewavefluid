@@ -7,6 +7,7 @@ import {
   createSolarSystemOrbitPaths,
   createSpacecraftLaunchBody,
   JPL_SATELLITE_GM_KM3_S2,
+  SOLAR_SYSTEM_DATASET_CITATIONS,
   PLANET_DIAMETER_MODES,
   HISTORIC_MISSIONS,
   MAX_OPTIONAL_MOONS_PER_PLANET,
@@ -16,6 +17,12 @@ import {
   propagateKeplerOrbit,
   SOLAR_SYSTEM_SCENE_SCALE
 } from './solarSystemModel.js';
+
+test('Solar System dataset citations identify sources and approximation limits', () => {
+  assert.ok(SOLAR_SYSTEM_DATASET_CITATIONS.length >= 6);
+  assert.ok(SOLAR_SYSTEM_DATASET_CITATIONS.every(({ label, source, description, limitations }) => label && source.startsWith('https://') && description && limitations));
+  assert.match(SOLAR_SYSTEM_DATASET_CITATIONS.find(({ id }) => id === 'satellite-elements').limitations, /not intended for ephemeris computation/);
+});
 
 test('default Solar System contains the Sun, eight planets, and Earth’s Moon with finite state vectors', () => {
   const bodies = createSolarSystemBodies(new Date('2026-10-06T00:00:00Z'));
@@ -87,12 +94,27 @@ test('actual body diameters retain their physical ratios while illustrative scal
 });
 
 test('historic mission waypoint paths use dated ephemeris locations and disclose schematic interpolation', () => {
-  assert.equal(HISTORIC_MISSIONS.length, 4);
+  assert.ok(HISTORIC_MISSIONS.length >= 30);
   for (const mission of HISTORIC_MISSIONS) {
     const trajectory = createHistoricMissionTrajectory(mission.id);
     assert.equal(trajectory.waypoints.length, mission.events.length + 1);
     assert.match(trajectory.note, /schematic/);
+    assert.match(trajectory.note, /not spacecraft positions/);
+    assert.match(trajectory.source, /^https:\/\/(www\.|science\.)?nasa\.gov\//);
+    assert.equal(trajectory.waypoints[0].body, 'Earth');
+    assert.equal(trajectory.waypoints[0].date, mission.launchDate);
     assert.ok(trajectory.waypoints.every(({ position }) => position.every(Number.isFinite)));
+  }
+  const missionById = new Map(HISTORIC_MISSIONS.map((mission) => [mission.id, mission]));
+  for (const id of ['apollo-8', 'apollo-10', 'apollo-11', 'apollo-12', 'apollo-13', 'apollo-14', 'apollo-15', 'apollo-16', 'apollo-17', 'artemis-2']) {
+    assert.ok(missionById.get(id).events.some(({ body }) => body === 'Moon'), `${id} should include a Moon waypoint`);
+  }
+  for (const id of ['viking-1', 'viking-2', 'curiosity', 'perseverance-ingenuity', 'maven', 'insight']) {
+    assert.ok(missionById.get(id).events.some(({ body }) => body === 'Mars'), `${id} should include a Mars waypoint`);
+  }
+  assert.ok(missionById.get('perseverance-ingenuity').events.some(({ date }) => date === '2021-04-19'));
+  for (const id of ['mariner-2', 'mariner-10', 'magellan', 'messenger', 'galileo', 'juno', 'cassini']) {
+    assert.ok(missionById.has(id), `${id} should be available in the historic mission catalog`);
   }
   assert.equal(createHistoricMissionTrajectory('unknown'), null);
 });

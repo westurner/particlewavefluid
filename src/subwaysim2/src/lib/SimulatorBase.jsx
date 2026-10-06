@@ -4,7 +4,7 @@ import { OrbitControls } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import { NumericParamControl } from './ParamControls.jsx';
 import { changedParameterPaths, cloneState, getAtPath, resetStatePaths, statesEqual } from './simulation-state.js';
-import { appendJournalEntry, CAMERA_WHEEL_MODE_OPTIONS, createCameraViews, createOrbitCameraParams, DEFAULT_CAMERA_VIEWS, DEFAULT_ORBITAL_TRACKING_CONFIGURATION, DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, rewindJournal, snapshotAtJournalTime } from './simulator-base.js';
+import { appendJournalEntry, CAMERA_WHEEL_MODE_OPTIONS, createCameraViews, createOrbitCameraParams, DEFAULT_CAMERA_VIEWS, DEFAULT_ORBITAL_TRACKING_CONFIGURATION, DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, easeCameraFocus, getCameraFocusPose, rewindJournal, snapshotAtJournalTime } from './simulator-base.js';
 import { Euler, Vector3 } from 'three';
 import ConfirmButton from './ConfirmButton.jsx';
 
@@ -32,9 +32,12 @@ export function CameraPerspectiveToolbar({ views = DEFAULT_CAMERA_VIEWS, viewMod
   );
 }
 
-export function PerspectiveOrbitControls({ viewMode, orbitPlaying, views = DEFAULT_CAMERA_VIEWS, cameraParams = {}, orbitSettings = DEFAULT_ORBITAL_TRACKING_CONFIGURATION, onUserInteraction, controlsRef: forwardedControlsRef, children }) {
+export function PerspectiveOrbitControls({ viewMode, orbitPlaying, views = DEFAULT_CAMERA_VIEWS, cameraParams = {}, orbitSettings = DEFAULT_ORBITAL_TRACKING_CONFIGURATION, focusRequest, onUserInteraction, controlsRef: forwardedControlsRef, children }) {
   const { camera, gl } = useThree();
   const controlsRef = useRef(null);
+  const focusTransitionRef = useRef(null);
+  const focusClipRadiusRef = useRef(null);
+  const cameraClipRangeRef = useRef(null);
   const assignControlsRef = useCallback((instance) => {
     controlsRef.current = instance;
     if (typeof forwardedControlsRef === 'function') forwardedControlsRef(instance);
@@ -46,11 +49,31 @@ export function PerspectiveOrbitControls({ viewMode, orbitPlaying, views = DEFAU
   const stableViews = useMemo(() => views, [viewKey]);
   const orbitTargetKey = JSON.stringify(stableCameraParams.target);
   const orbitSettingsKey = JSON.stringify(orbitSettings);
+  const updateFocusClipRange = useCallback((controls) => {
+    const radius = focusClipRadiusRef.current;
+    const baseRange = cameraClipRangeRef.current;
+    if (!radius || !baseRange) return;
+    const distance = camera.position.distanceTo(controls.target);
+    const near = Math.max(1e-9, Math.min(baseRange.near, Math.max(radius * 0.1, distance * 0.01)));
+    const far = Math.max(1e-6, distance * 8, radius * 100);
+    if (camera.near !== near || camera.far !== far) {
+      camera.near = near;
+      camera.far = far;
+      camera.updateProjectionMatrix();
+    }
+  }, [camera]);
 
   useEffect(() => {
     if (!viewMode || viewMode === 'orbital') return;
     const view = stableViews.find((entry) => entry.id === viewMode);
     if (!view?.position) return;
+    focusTransitionRef.current = null;
+    focusClipRadiusRef.current = null;
+    if (cameraClipRangeRef.current) {
+      camera.near = cameraClipRangeRef.current.near;
+      camera.far = cameraClipRangeRef.current.far;
+      camera.updateProjectionMatrix();
+    }
     camera.position.fromArray(view.position);
     const target = view.target ?? stableCameraParams.target;
     controlsRef.current?.target.fromArray(target);
@@ -58,15 +81,49 @@ export function PerspectiveOrbitControls({ viewMode, orbitPlaying, views = DEFAU
     controlsRef.current?.update();
   }, [camera, orbitTargetKey, stableCameraParams.target, stableViews, viewMode]);
 
+  useEffect(() => {
+    if (!focusRequest?.position) return undefined;
+    const controls = controlsRef.current;
+    if (!controls) return undefined;
+    const radius = Math.max(Number(focusRequest.radius) || 0, 1e-9);
+    const distance = Math.max(radius * 12, 1e-7);
+    const pose = getCameraFocusPose(camera.position.toArray(), controls.target.toArray(), focusRequest.position, distance);
+    focusClipRadiusRef.current = radius;
+    focusTransitionRef.current = {
+      startPosition: camera.position.clone(),
+      endPosition: new Vector3(...pose.position),
+      startTarget: controls.target.clone(),
+      endTarget: new Vector3(...pose.target),
+      elapsed: 0,
+      duration: 0.9
+    };
+    return () => { focusTransitionRef.current = null; };
+  }, [camera, focusRequest?.id]);
+
   useFrame((_, delta) => {
     const controls = controlsRef.current;
-    if (!controls || viewMode !== 'orbital' || !orbitPlaying || !orbitSettings.cameraOrbitOn) return;
-    const target = controls.target;
-    const offset = camera.position.clone().sub(target);
-    const angle = Math.max(0, Number(orbitSettings.replayCameraOrbitSpeed) || 0) * delta;
-    offset.applyEuler(new Euler(angle * (orbitSettings.replayCameraOrbitX || 0), angle * (orbitSettings.replayCameraOrbitY || 0), angle * (orbitSettings.replayCameraOrbitZ || 0)));
-    camera.position.copy(target).add(offset);
-    controls.update();
+    if (!controls) return;
+    const transition = focusTransitionRef.current;
+    if (transition) {
+      transition.elapsed = Math.min(1, transition.elapsed + Math.max(0, delta) / transition.duration);
+      const amount = easeCameraFocus(transition.elapsed);
+      camera.position.lerpVectors(transition.startPosition, transition.endPosition, amount);
+      controls.target.lerpVectors(transition.startTarget, transition.endTarget, amount);
+      camera.lookAt(controls.target);
+      updateFocusClipRange(controls);
+      controls.update();
+      if (transition.elapsed >= 1) focusTransitionRef.current = null;
+      return;
+    }
+    if (viewMode === 'orbital' && orbitPlaying && orbitSettings.cameraOrbitOn) {
+      const target = controls.target;
+      const offset = camera.position.clone().sub(target);
+      const angle = Math.max(0, Number(orbitSettings.replayCameraOrbitSpeed) || 0) * delta;
+      offset.applyEuler(new Euler(angle * (orbitSettings.replayCameraOrbitX || 0), angle * (orbitSettings.replayCameraOrbitY || 0), angle * (orbitSettings.replayCameraOrbitZ || 0)));
+      camera.position.copy(target).add(offset);
+      controls.update();
+    }
+    updateFocusClipRange(controls);
   });
 
   useEffect(() => {
@@ -76,6 +133,7 @@ export function PerspectiveOrbitControls({ viewMode, orbitPlaying, views = DEFAU
     if (Number.isFinite(orbitSettings.cameraFar)) camera.far = orbitSettings.cameraFar;
     if (Number.isFinite(orbitSettings.cameraZoom)) camera.zoom = orbitSettings.cameraZoomEnabled ? orbitSettings.cameraZoom : 1;
     camera.updateProjectionMatrix();
+    cameraClipRangeRef.current = { near: camera.near, far: camera.far };
   }, [camera, orbitSettingsKey]);
 
   useEffect(() => {
@@ -83,6 +141,10 @@ export function PerspectiveOrbitControls({ viewMode, orbitPlaying, views = DEFAU
       if (orbitSettings.cameraZoomEnabled && orbitSettings.cameraWheelMode === 'zoom') {
         event.preventDefault();
         event.stopImmediatePropagation();
+        if (focusClipRadiusRef.current) {
+          focusTransitionRef.current = null;
+          onUserInteraction?.();
+        }
         camera.zoom = Math.min(10, Math.max(0.1, camera.zoom * Math.pow(0.95, event.deltaY / 100)));
         camera.updateProjectionMatrix();
         controlsRef.current?.update();
@@ -94,11 +156,22 @@ export function PerspectiveOrbitControls({ viewMode, orbitPlaying, views = DEFAU
     return () => gl.domElement.removeEventListener('wheel', handleWheel, { capture: true });
   }, [camera, gl, orbitSettings.cameraWheelMode, orbitSettings.cameraZoomEnabled, onUserInteraction]);
 
+  const handleControlStart = useCallback(() => {
+    focusTransitionRef.current = null;
+    const clipRange = cameraClipRangeRef.current;
+    if (clipRange && (camera.near !== clipRange.near || camera.far !== clipRange.far)) {
+      camera.near = clipRange.near;
+      camera.far = clipRange.far;
+      camera.updateProjectionMatrix();
+    }
+    onUserInteraction?.();
+  }, [camera, onUserInteraction]);
+
   return <>
     <OrbitCameraControls
       ref={assignControlsRef}
       cameraParams={{ ...stableCameraParams, autoRotate: false, enabled: (orbitSettings.cameraControlsEnabled ?? true) && (stableCameraParams.enabled ?? true), enableZoom: orbitSettings.cameraZoomEnabled && orbitSettings.cameraWheelMode === 'dolly' }}
-      onStart={() => onUserInteraction?.()}
+      onStart={handleControlStart}
     />
     {children}
   </>;

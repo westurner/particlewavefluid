@@ -69,7 +69,7 @@ export function sanitizeAmplitudeGravity(value = {}) {
     ddfStrength: clamp(finiteOr(value.ddfStrength, DEFAULT_AMPLITUDE_GRAVITY.ddfStrength), 0, 20),
     ddfSpeedLimitMS: clamp(finiteOr(value.ddfSpeedLimitMS, DEFAULT_AMPLITUDE_GRAVITY.ddfSpeedLimitMS), 0.1, 1e6),
     ddfBaseViscosity: clamp(finiteOr(value.ddfBaseViscosity, DEFAULT_AMPLITUDE_GRAVITY.ddfBaseViscosity), 0, 1),
-    softening: clamp(finiteOr(value.softening, DEFAULT_AMPLITUDE_GRAVITY.softening), 0.001, 10),
+    softening: clamp(finiteOr(value.softening, DEFAULT_AMPLITUDE_GRAVITY.softening), 1e-9, 10),
     gravitationalConstant: clamp(finiteOr(value.gravitationalConstant, DEFAULT_AMPLITUDE_GRAVITY.gravitationalConstant), 0, 100),
     speedOfLight: clamp(finiteOr(value.speedOfLight, DEFAULT_AMPLITUDE_GRAVITY.speedOfLight), 1, 1e6),
     grSpeedOfLight: clamp(finiteOr(value.grSpeedOfLight, DEFAULT_AMPLITUDE_GRAVITY.grSpeedOfLight), 1, 1e9),

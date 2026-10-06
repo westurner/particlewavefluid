@@ -26,6 +26,11 @@ test('streamline settings are bounded and colors are validated', () => {
   assert.equal(settings.streamlineOpacity, 0);
 });
 
+test('gravity softening preserves sub-AU physical scales while clamping singular zero input', () => {
+  assert.equal(sanitizeAmplitudeGravity({ softening: 1e-8 }).softening, 1e-8);
+  assert.equal(sanitizeAmplitudeGravity({ softening: 0 }).softening, 1e-9);
+});
+
 test('streamline sampling reuses its buffer and honors configured length', () => {
   const bodies = [{ mass: 10, radius: 0.5, position: [0, 0, 0] }];
   const positions = new Float32Array(AMPLITUDE_GRAVITY_STREAMLINES_PER_BODY * AMPLITUDE_GRAVITY_STREAMLINE_SEGMENTS * 6);

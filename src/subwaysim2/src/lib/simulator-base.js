@@ -1,4 +1,5 @@
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { Vector3 } from 'three';
 import { cloneState, setAtPath } from './simulation-state.js';
 
 export const DEFAULT_SIMULATOR_CAMERA_CONFIGURATION = Object.freeze({
@@ -67,6 +68,23 @@ export function createOrbitCameraParams(overrides = {}) {
     ...overrides,
     target: [...(overrides.target ?? DEFAULT_ORBIT_CAMERA_PARAMS.target)]
   };
+}
+
+export function getCameraFocusPose(cameraPosition, cameraTarget, focusTarget, distance) {
+  const direction = new Vector3(...cameraPosition).sub(new Vector3(...cameraTarget));
+  if (direction.lengthSq() < 1e-12) direction.set(1, 1, 1);
+  direction.normalize();
+  const target = new Vector3(...focusTarget);
+  const safeDistance = Number.isFinite(distance) && distance > 0 ? distance : 1;
+  return {
+    target: target.toArray(),
+    position: target.clone().addScaledVector(direction, safeDistance).toArray()
+  };
+}
+
+export function easeCameraFocus(progress) {
+  const amount = Math.max(0, Math.min(1, progress));
+  return 1 - (1 - amount) ** 3;
 }
 
 export function createCameraViews({ target = [0, 0, 0], distance = 24, frontDistance = distance, frontDirection = 1, ortho1Offset, ortho2Offset } = {}) {

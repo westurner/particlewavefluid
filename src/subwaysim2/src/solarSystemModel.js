@@ -21,6 +21,7 @@ const J2000_UTC_MS = Date.UTC(2000, 0, 1, 12);
 const DAYS_PER_MILLENNIUM = 365250;
 const BODY_FACTS_SOURCE = 'https://nssdc.gsfc.nasa.gov/planetary/factsheet/';
 const SATELLITE_MASS_SOURCE = 'https://ssd.jpl.nasa.gov/sats/phys_par/';
+const SATELLITE_ELEMENTS_SOURCE = 'https://ssd.jpl.nasa.gov/sats/elem/';
 const ROTATION_SOURCE = 'https://github.com/cosinekitty/astronomy';
 
 export const JPL_SATELLITE_GM_KM3_S2 = Object.freeze({
@@ -170,34 +171,67 @@ const OPTIONAL_MOONS = [
   { parentId: 'Neptune', name: 'Sao', massKg: 1.5e17, radiusKm: 22, orbitRadiusKm: 22422000, periodDays: 2914, inclinationDeg: 53, phase: 5.8 }
 ];
 
+const historicMission = (id, label, launchDate, events, source) => ({
+  id,
+  label,
+  launchDate,
+  events,
+  source,
+  note: 'Earth and target-body positions are dated ephemeris waypoints, not spacecraft positions; the connecting curve is schematic, not reconstructed trajectory telemetry.'
+});
+
 export const HISTORIC_MISSIONS = [
-  {
-    id: 'pioneer-10', label: 'Pioneer 10 · Jupiter', launchDate: '1972-03-02',
-    events: [{ body: 'Jupiter', date: '1973-12-03' }],
-    source: 'https://science.nasa.gov/mission/pioneer-10/',
-    note: 'Launch and Jupiter encounter locations are ephemeris waypoints; the connecting curve is schematic, not reconstructed spacecraft telemetry.'
-  },
-  {
-    id: 'voyager-1', label: 'Voyager 1 · Jupiter / Saturn', launchDate: '1977-09-05',
-    events: [{ body: 'Jupiter', date: '1979-03-05' }, { body: 'Saturn', date: '1980-11-12' }],
-    source: 'https://science.nasa.gov/mission/voyager/voyager-1/',
-    note: 'Launch and flyby locations are ephemeris waypoints; the connecting curve is schematic, not reconstructed spacecraft telemetry.'
-  },
-  {
-    id: 'voyager-2', label: 'Voyager 2 · Grand Tour', launchDate: '1977-08-20',
-    events: [
-      { body: 'Jupiter', date: '1979-07-09' }, { body: 'Saturn', date: '1981-08-26' },
-      { body: 'Uranus', date: '1986-01-24' }, { body: 'Neptune', date: '1989-08-25' }
-    ],
-    source: 'https://science.nasa.gov/mission/voyager/voyager-2/',
-    note: 'Launch and flyby locations are ephemeris waypoints; the connecting curve is schematic, not reconstructed spacecraft telemetry.'
-  },
-  {
-    id: 'new-horizons', label: 'New Horizons · Jupiter / Pluto', launchDate: '2006-01-19',
-    events: [{ body: 'Jupiter', date: '2007-02-28' }, { body: 'Pluto', date: '2015-07-14' }],
-    source: 'https://science.nasa.gov/mission/new-horizons/',
-    note: 'Launch and flyby locations are ephemeris waypoints; the connecting curve is schematic, not reconstructed spacecraft telemetry.'
-  }
+  historicMission('apollo-8', 'Apollo 8 · First crewed lunar orbit', '1968-12-21', [{ body: 'Moon', date: '1968-12-24' }], 'https://www.nasa.gov/mission/apollo-8/'),
+  historicMission('apollo-10', 'Apollo 10 · Lunar orbit rehearsal', '1969-05-18', [{ body: 'Moon', date: '1969-05-21' }], 'https://www.nasa.gov/mission/apollo-10/'),
+  historicMission('apollo-11', 'Apollo 11 · First lunar landing', '1969-07-16', [{ body: 'Moon', date: '1969-07-20' }], 'https://www.nasa.gov/mission/apollo-11/'),
+  historicMission('apollo-12', 'Apollo 12 · Lunar landing', '1969-11-14', [{ body: 'Moon', date: '1969-11-19' }], 'https://www.nasa.gov/mission/apollo-12/'),
+  historicMission('apollo-13', 'Apollo 13 · Lunar free-return', '1970-04-11', [{ body: 'Moon', date: '1970-04-15' }], 'https://www.nasa.gov/mission/apollo-13/'),
+  historicMission('apollo-14', 'Apollo 14 · Lunar landing', '1971-01-31', [{ body: 'Moon', date: '1971-02-05' }], 'https://www.nasa.gov/mission/apollo-14/'),
+  historicMission('apollo-15', 'Apollo 15 · Hadley-Apennine', '1971-07-26', [{ body: 'Moon', date: '1971-07-30' }], 'https://www.nasa.gov/mission/apollo-15/'),
+  historicMission('apollo-16', 'Apollo 16 · Descartes Highlands', '1972-04-16', [{ body: 'Moon', date: '1972-04-21' }], 'https://www.nasa.gov/mission/apollo-16/'),
+  historicMission('apollo-17', 'Apollo 17 · Final Apollo landing', '1972-12-07', [{ body: 'Moon', date: '1972-12-11' }], 'https://www.nasa.gov/mission/apollo-17/'),
+  historicMission('artemis-2', 'Artemis II · Crewed lunar flyby', '2026-04-01', [{ body: 'Moon', date: '2026-04-06' }], 'https://www.nasa.gov/missions/artemis/artemis-2/'),
+  historicMission('pioneer-10', 'Pioneer 10 · Jupiter', '1972-03-02', [{ body: 'Jupiter', date: '1973-12-03' }], 'https://science.nasa.gov/mission/pioneer-10/'),
+  historicMission('pioneer-11', 'Pioneer 11 · Jupiter / Saturn', '1973-04-06', [{ body: 'Jupiter', date: '1974-12-03' }, { body: 'Saturn', date: '1979-09-01' }], 'https://science.nasa.gov/mission/pioneer-11/'),
+  historicMission('voyager-1', 'Voyager 1 · Jupiter / Saturn', '1977-09-05', [{ body: 'Jupiter', date: '1979-03-05' }, { body: 'Saturn', date: '1980-11-12' }], 'https://science.nasa.gov/mission/voyager/voyager-1/'),
+  historicMission('voyager-2', 'Voyager 2 · Grand Tour', '1977-08-20', [
+    { body: 'Jupiter', date: '1979-07-09' }, { body: 'Saturn', date: '1981-08-26' },
+    { body: 'Uranus', date: '1986-01-24' }, { body: 'Neptune', date: '1989-08-25' }
+  ], 'https://science.nasa.gov/mission/voyager/voyager-2/'),
+  historicMission('new-horizons', 'New Horizons · Jupiter / Pluto', '2006-01-19', [{ body: 'Jupiter', date: '2007-02-28' }, { body: 'Pluto', date: '2015-07-14' }], 'https://science.nasa.gov/mission/new-horizons/'),
+  historicMission('viking-1', 'Viking 1 · Mars orbiter / lander', '1975-08-20', [{ body: 'Mars', date: '1976-06-19' }, { body: 'Mars', date: '1976-07-20' }], 'https://science.nasa.gov/mission/viking-1/'),
+  historicMission('viking-2', 'Viking 2 · Mars orbiter / lander', '1975-09-09', [{ body: 'Mars', date: '1976-08-07' }, { body: 'Mars', date: '1976-09-03' }], 'https://science.nasa.gov/mission/viking-2/'),
+  historicMission('mars-pathfinder', 'Mars Pathfinder · Sojourner', '1996-12-04', [{ body: 'Mars', date: '1997-07-04' }], 'https://science.nasa.gov/mission/mars-pathfinder/'),
+  historicMission('spirit', 'Spirit rover · Mars', '2003-06-10', [{ body: 'Mars', date: '2004-01-04' }], 'https://science.nasa.gov/mission/mars-exploration-rovers-spirit-and-opportunity/'),
+  historicMission('opportunity', 'Opportunity rover · Mars', '2003-07-07', [{ body: 'Mars', date: '2004-01-25' }], 'https://science.nasa.gov/mission/mars-exploration-rovers-spirit-and-opportunity/'),
+  historicMission('mars-reconnaissance-orbiter', 'Mars Reconnaissance Orbiter', '2005-08-12', [{ body: 'Mars', date: '2006-03-10' }], 'https://science.nasa.gov/mission/mars-reconnaissance-orbiter/'),
+  historicMission('curiosity', 'Curiosity rover · Mars', '2011-11-26', [{ body: 'Mars', date: '2012-08-06' }], 'https://science.nasa.gov/mission/msl-curiosity/'),
+  historicMission('maven', 'MAVEN · Mars orbiter', '2013-11-18', [{ body: 'Mars', date: '2014-09-21' }], 'https://science.nasa.gov/mission/maven/'),
+  historicMission('insight', 'InSight · Mars lander', '2018-05-05', [{ body: 'Mars', date: '2018-11-26' }], 'https://science.nasa.gov/mission/insight/'),
+  historicMission('perseverance-ingenuity', 'Perseverance / Ingenuity · Mars', '2020-07-30', [{ body: 'Mars', date: '2021-02-18' }, { body: 'Mars', date: '2021-04-19' }], 'https://science.nasa.gov/mission/mars-2020-perseverance/'),
+  historicMission('mariner-2', 'Mariner 2 · Venus', '1962-08-27', [{ body: 'Venus', date: '1962-12-14' }], 'https://science.nasa.gov/mission/mariner-2/'),
+  historicMission('mariner-10', 'Mariner 10 · Venus / Mercury', '1973-11-03', [
+    { body: 'Venus', date: '1974-02-05' }, { body: 'Mercury', date: '1974-03-29' },
+    { body: 'Mercury', date: '1974-09-21' }, { body: 'Mercury', date: '1975-03-16' }
+  ], 'https://science.nasa.gov/mission/mariner-10/'),
+  historicMission('magellan', 'Magellan · Venus orbiter', '1989-05-04', [{ body: 'Venus', date: '1990-08-10' }], 'https://science.nasa.gov/mission/magellan/'),
+  historicMission('messenger', 'MESSENGER · Mercury orbiter', '2004-08-03', [
+    { body: 'Earth', date: '2005-08-02' }, { body: 'Venus', date: '2006-10-24' },
+    { body: 'Venus', date: '2007-06-05' }, { body: 'Mercury', date: '2008-01-14' },
+    { body: 'Mercury', date: '2008-10-06' }, { body: 'Mercury', date: '2009-09-29' },
+    { body: 'Mercury', date: '2011-03-18' }
+  ], 'https://science.nasa.gov/mission/messenger/'),
+  historicMission('galileo', 'Galileo · Jupiter orbiter / probe', '1989-10-18', [
+    { body: 'Venus', date: '1990-02-10' }, { body: 'Earth', date: '1990-12-08' },
+    { body: 'Earth', date: '1992-12-08' }, { body: 'Jupiter', date: '1995-12-07' },
+    { body: 'Jupiter', date: '2003-09-21' }
+  ], 'https://science.nasa.gov/mission/galileo/'),
+  historicMission('juno', 'Juno · Jupiter orbiter', '2011-08-05', [{ body: 'Earth', date: '2013-10-09' }, { body: 'Jupiter', date: '2016-07-04' }], 'https://science.nasa.gov/mission/juno/'),
+  historicMission('cassini', 'Cassini-Huygens · Saturn', '1997-10-15', [
+    { body: 'Venus', date: '1998-04-26' }, { body: 'Venus', date: '1999-06-24' },
+    { body: 'Earth', date: '1999-08-18' }, { body: 'Jupiter', date: '2000-12-30' },
+    { body: 'Saturn', date: '2004-07-01' }, { body: 'Saturn', date: '2017-09-15' }
+  ], 'https://science.nasa.gov/mission/cassini/')
 ];
 
 function vectorToScene(x, y, z) {
@@ -499,6 +533,50 @@ export function getSolarSystemBodyFacts(bodies, bodyId) {
 }
 
 export const SOLAR_SYSTEM_SOURCE_URLS = Object.freeze({ facts: BODY_FACTS_SOURCE, ephemeris: ROTATION_SOURCE });
+export const SOLAR_SYSTEM_DATASET_CITATIONS = Object.freeze([
+  {
+    id: 'astronomy-engine',
+    label: 'Astronomy Engine',
+    source: ROTATION_SOURCE,
+    description: 'Sun and planet state vectors, the Earth-Moon state, four Galilean moon states, IAU rotation axes and prime-meridian angles, and lunar libration.',
+    limitations: 'Approximate ephemeris engine, not a spacecraft-navigation ephemeris; sub-arcminute typical accuracy. Satellites beyond the four Galilean moons use the explicitly simplified entries below.'
+  },
+  {
+    id: 'planet-facts',
+    label: 'NASA / NSSDC planetary fact sheets',
+    source: BODY_FACTS_SOURCE,
+    description: 'Planet masses, radii, spin periods, axial tilts, magnetic-field context, and descriptive facts.',
+    limitations: 'Rounded reference facts; electric net charges are not assumed or inferred.'
+  },
+  {
+    id: 'satellite-gm',
+    label: 'JPL satellite physical parameters',
+    source: SATELLITE_MASS_SOURCE,
+    description: 'Satellite ephemeris GM values and mean radii; GM is converted to mass using the stated standard gravitational constant.',
+    limitations: 'JPL marks some satellite GM values as undetermined; those catalog masses are labeled estimates, not observations.'
+  },
+  {
+    id: 'satellite-elements',
+    label: 'JPL planetary satellite mean elements',
+    source: SATELLITE_ELEMENTS_SOURCE,
+    description: 'Reference for approximate satellite semimajor axes, periods, eccentricities, inclinations, and orbital orientations.',
+    limitations: 'JPL explicitly says mean elements describe general orbit shape/orientation and are not intended for ephemeris computation. Except for Earth’s Moon and Astronomy Engine’s four Galilean states, this catalog propagates rounded circular, planar approximations.'
+  },
+  {
+    id: 'iau-rotation',
+    label: 'IAU cartographic and rotation models',
+    source: 'https://doi.org/10.1007/s10569-017-9805-5',
+    description: 'Reference convention for body poles, axial orientation, and prime meridians used by Astronomy Engine.',
+    limitations: 'Some satellite rotational solutions are low precision or valid only near spacecraft flyby epochs.'
+  },
+  {
+    id: 'gravitational-constant',
+    label: 'NIST fundamental physical constants',
+    source: 'https://physics.nist.gov/cuu/Constants/',
+    description: 'Standard gravitational constant used to convert JPL satellite GM to mass.',
+    limitations: 'A rounded CODATA value is used in this educational simulator.'
+  }
+]);
 export const OPTIONAL_MOON_COUNTS = Object.freeze(Object.fromEntries(
   [...new Set(OPTIONAL_MOONS.map(({ parentId }) => parentId))].map((parentId) => [parentId, OPTIONAL_MOONS.filter((moon) => moon.parentId === parentId).length])
 ));
