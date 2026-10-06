@@ -3,7 +3,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html, TransformControls } from '@react-three/drei';
 import { AdditiveBlending, BufferAttribute, BufferGeometry, Camera, Color, DoubleSide, Euler, FloatType, HalfFloatType, InstancedBufferAttribute, Mesh, NearestFilter, NoBlending, PlaneGeometry, RGBAFormat, Scene, ShaderMaterial, TOUCH, Vector3, WebGLRenderTarget } from 'three';
 import { createGpuParticleField, createSimulationUvs } from './simulations/gpuParticleRuntime.js';
-import { calculateZoomCoupledFieldExtent } from './lib/simulationMechanics.js';
+import { calculateZoomCoupledFieldExtent, SIMPLE_ATTRACTOR_GRAVITY_FIELD_GLSL } from './lib/simulationMechanics.js';
 import { HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 import { CameraPerspectiveToolbar, OrbitCameraControls, OrbitCameraSettings, SimulatorBase, SimulatorExportModal, SimulatorIOJournal, SimulatorPresetControls, useSimulatorJournal } from './lib/SimulatorBase.jsx';
@@ -191,6 +191,7 @@ const MIXED_VELOCITY_SHADER = `
   uniform float uCompressibility;
   uniform float uDilatancy;
   uniform float uSpeedLimit;
+  uniform float uGravitySpeedOfLight;
   uniform float uBaseViscosity;
   uniform float uTensorGaussianWaist;
   uniform float uGrassmannianPoleWeight;
@@ -202,31 +203,7 @@ const MIXED_VELOCITY_SHADER = `
     return fract(sin(dot(point, vec2(127.1, 311.7))) * 43758.5453123);
   }
 
-  vec4 fieldResponse(float model, float radius, float speed, float magnitude, float rotation) {
-    float inverseSquare = magnitude / (radius * radius);
-    float tangent = rotation * magnitude / radius;
-    if (model < 0.5) return vec4(-inverseSquare, tangent, 0.0, 0.0);
-    if (model < 1.5) return vec4(-inverseSquare, 0.0, 0.0, 0.0);
-    float coreRatio = radius / max(uCoreRadius, 0.05);
-    float sink = inverseSquare * (1.0 + uCompressibility / (1.0 + coreRatio));
-    if (model < 2.5) return vec4(-sink, tangent, uBaseViscosity, 0.0);
-    if (model < 3.5) return vec4(-inverseSquare, tangent, uBaseViscosity, 0.0);
-    float pressure = uQuantumPressure * exp(-(coreRatio * coreRatio)) / max(uCoreRadius, 0.05);
-    if (model < 4.5) return vec4(-sink + pressure, tangent, uBaseViscosity, pressure);
-    if (model < 5.5) {
-      float beta = clamp(speed / max(uSpeedLimit, 0.1), 0.0, 0.9999);
-      float lorentzFactor = inversesqrt(1.0 - beta * beta);
-      float strainRate = speed / radius;
-      float viscosity = uBaseViscosity * (1.0 + uDilatancy * ((lorentzFactor - 1.0) + strainRate));
-      float mobility = 1.0 / (1.0 + viscosity);
-      float gaussianWeight = exp(-(radius * radius) / (2.0 * max(uTensorGaussianWaist, 0.1) * max(uTensorGaussianWaist, 0.1)));
-      float splatMobility = 1.0 - (1.0 - mobility) * gaussianWeight;
-      return vec4((-sink + pressure) * splatMobility, tangent * splatMobility, viscosity, gaussianWeight);
-    }
-    float gaussianWeight = exp(-(radius * radius) / (2.0 * max(uTensorGaussianWaist, 0.1) * max(uTensorGaussianWaist, 0.1)));
-    float geometryCorrection = clamp(uGeometryCoupling, 0.0, 0.25) * clamp(uGrassmannianPoleWeight, 0.0, 1.0) * gaussianWeight;
-    return vec4(-inverseSquare * (1.0 + geometryCorrection), tangent * (1.0 + geometryCorrection), 0.0, gaussianWeight);
-  }
+  ${SIMPLE_ATTRACTOR_GRAVITY_FIELD_GLSL}
 
   void main() {
     vec2 uv = gl_FragCoord.xy / resolution.xy;
@@ -1049,6 +1026,7 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount,
       velocityUniforms.uCompressibility = { value: configurationRef.current.fieldMechanics.compressibility };
       velocityUniforms.uDilatancy = { value: configurationRef.current.fieldMechanics.dilatancy };
       velocityUniforms.uSpeedLimit = { value: configurationRef.current.fieldMechanics.speedLimit };
+      velocityUniforms.uGravitySpeedOfLight = { value: configurationRef.current.fieldMechanics.grSpeedOfLight };
       velocityUniforms.uBaseViscosity = { value: configurationRef.current.fieldMechanics.baseViscosity };
       velocityUniforms.uTensorGaussianWaist = { value: configurationRef.current.fieldMechanics.tensorGaussianWaist };
       velocityUniforms.uGrassmannianPoleWeight = { value: configurationRef.current.fieldMechanics.grassmannianPoleWeight };
@@ -1097,6 +1075,7 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount,
     velocityUniforms.uCompressibility.value = current.fieldMechanics.compressibility;
     velocityUniforms.uDilatancy.value = current.fieldMechanics.dilatancy;
     velocityUniforms.uSpeedLimit.value = current.fieldMechanics.speedLimit;
+    velocityUniforms.uGravitySpeedOfLight.value = current.fieldMechanics.grSpeedOfLight;
     velocityUniforms.uBaseViscosity.value = current.fieldMechanics.baseViscosity;
     velocityUniforms.uTensorGaussianWaist.value = current.fieldMechanics.tensorGaussianWaist;
     velocityUniforms.uGrassmannianPoleWeight.value = current.fieldMechanics.grassmannianPoleWeight;

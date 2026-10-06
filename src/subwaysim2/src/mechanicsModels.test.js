@@ -21,8 +21,10 @@ test('field model indices stay synchronized with shader selectors', () => {
   assert.equal(fieldModelIndex('ns-compressible'), 2);
   assert.equal(fieldModelIndex('ns-incompressible'), 3);
   assert.equal(fieldModelIndex('sqg'), 4);
-  assert.equal(fieldModelIndex('ddf'), 5);
-  assert.equal(fieldModelIndex('grassmannian-amplituhedron'), 6);
+  assert.equal(fieldModelIndex('sqg-tensor-gaussian'), 5);
+  assert.equal(fieldModelIndex('ddf'), 6);
+  assert.equal(fieldModelIndex('ddf-tensor-gaussian'), 7);
+  assert.equal(fieldModelIndex('grassmannian-amplituhedron'), 8);
   assert.equal(fluidModelIndex('hbn-farnesane'), 1);
   assert.equal(quantumTransportIndex('gpe'), 1);
   assert.ok(Object.values(FIELD_MODEL_DETAILS).every(({ description, solver }) => description && solver));
@@ -33,7 +35,8 @@ test('mechanics parameter dependencies expose only inputs consumed by each activ
   assert.deepEqual(FIELD_MODEL_PARAMETER_DEPENDENCIES.newtonian, []);
   assert.deepEqual(FIELD_MODEL_PARAMETER_DEPENDENCIES['ns-incompressible'], []);
   assert.deepEqual(FIELD_MODEL_PARAMETER_DEPENDENCIES['ns-compressible'], ['coreRadius', 'compressibility']);
-  assert.ok(FIELD_MODEL_PARAMETER_DEPENDENCIES.ddf.includes('tensorGaussianWaist'));
+  assert.ok(!FIELD_MODEL_PARAMETER_DEPENDENCIES.ddf.includes('tensorGaussianWaist'));
+  assert.ok(FIELD_MODEL_PARAMETER_DEPENDENCIES['ddf-tensor-gaussian'].includes('tensorGaussianWaist'));
   assert.ok(FIELD_MODEL_PARAMETER_DEPENDENCIES['grassmannian-amplituhedron'].includes('geometryCoupling'));
   for (const fields of Object.values(FIELD_MODEL_PARAMETER_DEPENDENCIES)) {
     assert.ok(fields.every((field) => field in FIELD_MECHANICS_PARAMETER_FIELDS));
@@ -70,6 +73,17 @@ test('SQG quantum pressure regularizes the model core', () => {
   const farField = evaluateFieldModel('sqg', { radius: 10, speed: 0, magnitude: 1 });
   assert.ok(nearCore.quantumPressure > farField.quantumPressure);
   assert.ok(Number.isFinite(nearCore.radialAcceleration));
+  assert.ok(Number.isFinite(nearCore.generalRelativityAcceleration));
+  assert.equal(nearCore.radialAcceleration, nearCore.generalRelativityAcceleration + nearCore.gpeResponse);
+});
+
+test('SQG tensor-Gaussian keeps the GR baseline and localizes its GPE correction', () => {
+  const settings = { ...DEFAULT_FIELD_MECHANICS, coreRadius: 1, tensorGaussianWaist: 0.5 };
+  const near = evaluateFieldModel('sqg-tensor-gaussian', { radius: 0.2, speed: 1, magnitude: 1 }, settings);
+  const far = evaluateFieldModel('sqg-tensor-gaussian', { radius: 4, speed: 1, magnitude: 1 }, settings);
+  assert.ok(near.tensorGaussian > far.tensorGaussian);
+  assert.notEqual(near.radialAcceleration, near.generalRelativityAcceleration);
+  assert.ok(Math.abs(far.radialAcceleration - far.generalRelativityAcceleration) < Math.abs(near.radialAcceleration - near.generalRelativityAcceleration));
 });
 
 test('default particle mechanics is the enabled baseline model', () => {
@@ -113,9 +127,9 @@ test('Gr(2,4) amplituhedron field mechanics changes the Newtonian acceleration r
 
 test('DDF mechanics return toward the SQG baseline outside the tensor-Gaussian waist', () => {
   const settings = { ...DEFAULT_FIELD_MECHANICS, coreRadius: 1, tensorGaussianWaist: 1, speedLimit: 8, dilatancy: 12, baseViscosity: 0.1 };
-  const nearDdf = evaluateFieldModel('ddf', { radius: 0.2, speed: 7, magnitude: 1 }, settings);
+  const nearDdf = evaluateFieldModel('ddf-tensor-gaussian', { radius: 0.2, speed: 7, magnitude: 1 }, settings);
   const nearSqg = evaluateFieldModel('sqg', { radius: 0.2, speed: 7, magnitude: 1 }, settings);
-  const farDdf = evaluateFieldModel('ddf', { radius: 20, speed: 7, magnitude: 1 }, settings);
+  const farDdf = evaluateFieldModel('ddf-tensor-gaussian', { radius: 20, speed: 7, magnitude: 1 }, settings);
   const farSqg = evaluateFieldModel('sqg', { radius: 20, speed: 7, magnitude: 1 }, settings);
   const nearDifference = Math.abs(nearDdf.radialAcceleration - nearSqg.radialAcceleration);
   const farDifference = Math.abs(farDdf.radialAcceleration - farSqg.radialAcceleration);

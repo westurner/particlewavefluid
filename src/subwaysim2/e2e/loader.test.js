@@ -105,6 +105,9 @@ test('DDF loads as a distinct hypothesis model with comparison controls', async 
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: 1 });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
 
   await page.goto(`${baseUrl}?e2e=1`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: /05 \/ LOAD FIELD/ }).click();
@@ -133,6 +136,14 @@ test('DDF loads as a distinct hypothesis model with comparison controls', async 
   await starOpacity.focus();
   await starOpacity.press('End');
   assert.equal(await starOpacity.inputValue(), '1');
+
+  for (const label of ['SQG / GR + GPE', 'SQG / normed tensor-Gaussian splat', 'DDF hypothesis', 'DDF / normed tensor-Gaussian splat', 'GR(2,4) / amplituhedron splat']) {
+    await model.click();
+    await page.getByRole('option', { name: label }).click();
+    await page.waitForTimeout(100);
+    assert.ok((await model.textContent()).includes(label), `expected ${label} in ${await model.textContent()}`);
+  }
+  assert.deepEqual(errors, []);
 });
 
 test('amplitude gravity lab exposes positive-cell and model-difference diagnostics', async (t) => {

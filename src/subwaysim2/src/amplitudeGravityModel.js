@@ -1,11 +1,11 @@
-import { calculateDdfMobility, evaluateMechanicsResponse } from './lib/simulationMechanics.js';
+import { calculateDdfMobility, calculateTensorGaussianWeight, evaluateGeneralRelativityPair as evaluateSharedGeneralRelativityPair, evaluateMechanicsResponse, GRAVITY_MODEL_LIBRARY } from './lib/simulationMechanics.js';
 
 export const AMPLITUDE_GRAVITY_MODES = [
   { value: 'newtonian', label: 'Newtonian reference' },
   { value: 'general-relativity', label: 'GR (General Relativity)' },
-  { value: 'gr-normed-tensor-gaussian', label: 'GR (Normed Tensor Gaussian Splatter)' },
+  { value: 'gr-normed-tensor-gaussian', label: GRAVITY_MODEL_LIBRARY['gr-normed-tensor-gaussian'].label },
   { value: 'spin2-tree', label: 'Spin-2 EFT tree proxy' },
-  { value: 'gravituhedron', label: 'Gravituhedron hypothesis' },
+  { value: 'gravituhedron', label: GRAVITY_MODEL_LIBRARY.gravituhedron.label },
   { value: 'ddf-tensor-gaussian', label: 'DDF / normed tensor-Gaussian' }
 ];
 
@@ -223,7 +223,7 @@ export function evaluateAmplitudeChannels({ distance, massProduct = 1, chargePro
   const photonExchange = chargeProduct * momentumTransferSquared;
   const spin2Tree = settings.gravitationalConstant * massProduct * momentumTransferSquared;
   const gaussianWeight = settings.mode === 'ddf-tensor-gaussian'
-    ? Math.exp(-(radius * radius) / (2 * settings.tensorGaussianWaist ** 2))
+    ? calculateTensorGaussianWeight(radius, settings.tensorGaussianWaist)
     : Math.exp(-radius / settings.correctionRange);
   const ddfMobility = settings.mode === 'ddf-tensor-gaussian'
     ? calculateDdfMobility({ radiusM: radius, speedMS, coreRadiusM: settings.softening, speedLimitMS: settings.ddfSpeedLimitMS, dilatancy: settings.ddfStrength, baseViscosity: settings.ddfBaseViscosity })
@@ -333,10 +333,6 @@ export function integrateNBodyVelocityVerlet(bodies, elapsedYears, configuration
   return { substeps: stepCount, accelerations };
 }
 
-function vectorDot(first, second) {
-  return first.reduce((sum, value, axis) => sum + value * second[axis], 0);
-}
-
 function vectorMagnitude(vector) {
   return Math.hypot(...vector);
 }
@@ -349,52 +345,7 @@ export function evaluateGeneralRelativityPair({
   massFirst = 1,
   massSecond = 1
 }, configuration = DEFAULT_AMPLITUDE_GRAVITY) {
-  const settings = sanitizeAmplitudeGravity(configuration);
-  const separation = positionFirst.map((value, axis) => value - positionSecond[axis]);
-  const distance = vectorMagnitude(separation);
-  if (distance === 0) return { newtonian: [0, 0, 0], generalRelativity: [0, 0, 0], pnCorrection: [0, 0, 0], tensorGaussian: 0, normalizedTensor: [[1, 0, 0], [0, 1, 0], [0, 0, 1]] };
-  const radius = Math.sqrt(distance * distance + settings.softening * settings.softening);
-  const radial = separation.map((value) => value / distance);
-  const relativeVelocity = velocityFirst.map((value, axis) => value - velocitySecond[axis]);
-  const speedSquared = vectorDot(relativeVelocity, relativeVelocity);
-  const radialSpeed = vectorDot(radial, relativeVelocity);
-  const firstMassValue = positiveMass(massFirst, 1);
-  const secondMassValue = positiveMass(massSecond, 1);
-  const totalMass = firstMassValue + secondMassValue;
-  const symmetricMassRatio = firstMassValue * secondMassValue / totalMass ** 2;
-  const gravitationalParameter = settings.gravitationalConstant * totalMass;
-  const newtonianScale = -gravitationalParameter / radius ** 2;
-  const newtonian = radial.map((component) => component * newtonianScale);
-  const cSquared = settings.grSpeedOfLight ** 2;
-  const radialPN = (4 + 2 * symmetricMassRatio) * gravitationalParameter / radius
-    - (1 + 3 * symmetricMassRatio) * speedSquared
-    + 1.5 * symmetricMassRatio * radialSpeed ** 2;
-  const pnScale = gravitationalParameter / (cSquared * radius ** 2);
-  const pnCorrection = radial.map((component, axis) => pnScale * (
-    component * radialPN + (4 - 2 * symmetricMassRatio) * radialSpeed * relativeVelocity[axis]
-  ));
-
-  const speed = Math.sqrt(speedSquared);
-  const velocityDirection = speed > 0 ? relativeVelocity.map((component) => component / speed) : [0, 0, 0];
-  const anisotropy = clamp(speedSquared / cSquared, 0, 0.5);
-  const tensorNormalizer = 1 + anisotropy / 3;
-  const normalizedTensor = Array.from({ length: 3 }, (_, row) => Array.from({ length: 3 }, (_, column) => (
-    ((row === column ? 1 : 0) + anisotropy * velocityDirection[row] * velocityDirection[column]) / tensorNormalizer
-  )));
-  const tensorCorrection = normalizedTensor.map((row) => vectorDot(row, pnCorrection));
-  const tensorGaussian = settings.mode === 'gr-normed-tensor-gaussian'
-    ? Math.exp(-0.5 * (radius / settings.grTensorGaussianWaist) ** 2)
-    : 1;
-  const selectedCorrection = (settings.mode === 'gr-normed-tensor-gaussian' ? tensorCorrection : pnCorrection)
-    .map((component) => component * tensorGaussian);
-
-  return {
-    newtonian,
-    generalRelativity: newtonian.map((component, axis) => component + selectedCorrection[axis]),
-    pnCorrection: selectedCorrection,
-    tensorGaussian,
-    normalizedTensor
-  };
+  return evaluateSharedGeneralRelativityPair({ positionFirst, positionSecond, velocityFirst, velocitySecond, massFirst, massSecond }, sanitizeAmplitudeGravity(configuration));
 }
 
 function evaluateGeneralRelativityNBody(bodies, settings) {
