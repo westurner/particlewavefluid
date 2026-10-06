@@ -31,8 +31,9 @@ import {
 
 const MAX_ATTRACTORS = 20;
 const PARTICLE_COUNT = 2 ** 18;
-const E2E_MODE = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('e2e');
-const E2E_PARTICLE_COUNT = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('e2e') ? 2 ** 11 : null;
+const SIMULATION_QUERY = typeof window === 'undefined' ? new URLSearchParams() : new URLSearchParams(window.location.search);
+const E2E_MODE = SIMULATION_QUERY.has('e2e');
+const TEST_PARTICLE_COUNT = E2E_MODE || SIMULATION_QUERY.has('particle-path-test') ? 2 ** 11 : null;
 const PRESET_STORAGE_KEY = 'sqgsim-attractor-presets';
 const ATTRACTOR_PANEL_LAYOUT = { breakpoint: 700, width: 350, right: 28 };
 const ATTRACTOR_CAMERA_TARGET = [0, 0, 0];
@@ -203,15 +204,16 @@ const MIXED_VELOCITY_SHADER = `
 
   vec4 fieldResponse(float model, float radius, float speed, float magnitude, float rotation) {
     float inverseSquare = magnitude / (radius * radius);
-    if (model < 0.5) return vec4(-inverseSquare, 0.0, 0.0, 0.0);
+    float tangent = rotation * magnitude / radius;
+    if (model < 0.5) return vec4(-inverseSquare, tangent, 0.0, 0.0);
+    if (model < 1.5) return vec4(-inverseSquare, 0.0, 0.0, 0.0);
     float coreRatio = radius / max(uCoreRadius, 0.05);
     float sink = inverseSquare * (1.0 + uCompressibility / (1.0 + coreRatio));
-    float tangent = rotation * magnitude / radius;
-    if (model < 1.5) return vec4(-sink, tangent, uBaseViscosity, 0.0);
-    if (model < 2.5) return vec4(-inverseSquare, tangent, uBaseViscosity, 0.0);
+    if (model < 2.5) return vec4(-sink, tangent, uBaseViscosity, 0.0);
+    if (model < 3.5) return vec4(-inverseSquare, tangent, uBaseViscosity, 0.0);
     float pressure = uQuantumPressure * exp(-(coreRatio * coreRatio)) / max(uCoreRadius, 0.05);
-    if (model < 3.5) return vec4(-sink + pressure, tangent, uBaseViscosity, pressure);
-    if (model < 4.5) {
+    if (model < 4.5) return vec4(-sink + pressure, tangent, uBaseViscosity, pressure);
+    if (model < 5.5) {
       float beta = clamp(speed / max(uSpeedLimit, 0.1), 0.0, 0.9999);
       float lorentzFactor = inversesqrt(1.0 - beta * beta);
       float strainRate = speed / radius;
@@ -265,6 +267,13 @@ const MIXED_VELOCITY_SHADER = `
           force += direction * gravityStrength;
           vec3 spinningForce = uAttractorRotationAxes[index] * gravityStrength * rotation;
           force += cross(spinningForce, toAttractor);
+          if (uComparisonEnabled) {
+            vec4 baseline = fieldResponse(0.0, distanceToAttractor, length(particleVelocity), attractorMagnitude, rotation);
+            vec4 comparison = fieldResponse(uComparisonModel, distanceToAttractor, length(particleVelocity), attractorMagnitude, rotation);
+            float absoluteDifference = length(baseline.xy - comparison.xy);
+            float referenceAcceleration = max(length(comparison.xy), 0.000001);
+            modelDifference = max(modelDifference, clamp(absoluteDifference / referenceAcceleration * uDifferenceScale, 0.0, 1.0));
+          }
         }
       } else {
         vec3 fromCenter = particlePosition - uAttractorPositions[index];
@@ -287,7 +296,8 @@ const MIXED_VELOCITY_SHADER = `
         float thermalStress = hash21(uv + vec2(uTime * 0.03, uTime * 0.017)) * uBlackHoleThermalNoise[index];
         float localStress = shear / radius + wakeStress + thermalStress;
         blackHoleStress = max(blackHoleStress, localStress / threshold * uBlackHoleFractureIntensity[index]);
-        float selectedModel = uMechanicsEnabled ? uFieldModel : 0.0;
+        float selectedModel = uMechanicsEnabled ? uFieldModel : 1.0;
+        if (selectedModel < 0.5) selectedModel = 1.0;
         vec4 response = fieldResponse(
           selectedModel,
           radius,
@@ -299,8 +309,9 @@ const MIXED_VELOCITY_SHADER = `
         force += tangent * response.y * 0.12;
         ddfViscosity = max(ddfViscosity, selectedModel > 0.5 ? response.z : 0.0);
         if (uComparisonEnabled) {
+          float comparisonModel = uComparisonModel < 0.5 ? 1.0 : uComparisonModel;
           vec4 comparison = fieldResponse(
-            uComparisonModel,
+            comparisonModel,
             radius,
             length(particleVelocity),
             shear * uAttractorMagnitudes[index],
@@ -645,6 +656,7 @@ function createConfiguration(variant = 'simple') {
     controlsMode: 'rotate',
     showTransformControls: true,
     particleFacing: 'world',
+    particleFieldOrientation: 'xz',
     helperVisible: true,
     helperShowName: false,
     helperNamePlacement: 'above',
@@ -672,8 +684,8 @@ function createConfiguration(variant = 'simple') {
     particleAppearance: { ...DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION },
     fieldMechanics: {
       ...DEFAULT_FIELD_MECHANICS,
-      enabled: hypothesisVariant,
-      model: variant === 'ddf' ? 'ddf' : variant === 'blackhole' ? 'sqg' : 'newtonian',
+      enabled: true,
+      model: variant === 'ddf' ? 'ddf' : variant === 'blackhole' ? 'sqg' : 'default',
       comparisonModel: variant === 'ddf' ? 'sqg' : 'ddf'
     },
     attractors: clone(INITIAL_ATTRACTORS).map((attractor) => ({
@@ -706,7 +718,6 @@ function createPresetLibrary(variant) {
     Galaxy: { ...clone(base), spinningStrength: 2, maxSpeed: 5, scale: 0.06 },
     Ring2: { ...clone(base), spinningStrength: 3.51, scale: 0.07 },
     Ring3: { ...clone(base), spinningStrength: 3.51, scale: 0.07, attractors: clone(base.attractors).map((item, index) => ({ ...item, position: index === 0 ? [-1, 2, 0] : item.position })) },
-    'Nine Fixed Attractors and equal magnitude': makeBodyPreset(base, NINE_BODY_POSITIONS.map(() => 1), true),
     'Nine Fixed Attractors with equal magnitude': makeBodyPreset(base, NINE_BODY_POSITIONS.map(() => 1), true),
     'Nine Fixed Attractors': makeBodyPreset(base),
     'blackhole with orbiting body at zero radius': { ...clone(base),
@@ -816,6 +827,9 @@ function sanitizeConfiguration(data, variant) {
   const placement = data.helperNamePlacement ?? (data.helperShowNamesBelow ? 'below' : base.helperNamePlacement);
   next.helperNamePlacement = ['above', 'center', 'below'].includes(placement) ? placement : base.helperNamePlacement;
   next.particleFacing = data.particleFacing === 'camera' ? 'camera' : base.particleFacing;
+  next.particleFieldOrientation = ['xz', 'xy', 'yz'].includes(data.particleFieldOrientation)
+    ? data.particleFieldOrientation
+    : base.particleFieldOrientation;
   next.cameraZoomEnabled = Boolean(data.cameraZoomEnabled);
   next.cameraZoomAffectsField = Boolean(data.cameraZoomAffectsField);
   next.cameraWheelMode = data.cameraWheelMode === 'dolly' ? 'dolly' : 'zoom';
@@ -867,6 +881,13 @@ function sanitizeConfiguration(data, variant) {
     }))
     : clone(base.attractors);
   return next;
+}
+
+function orientSeedVector(vector, orientation) {
+  const [x, y, z] = vector;
+  if (orientation === 'xy') return [x, -z, y];
+  if (orientation === 'yz') return [-y, x, z];
+  return [x, y, z];
 }
 
 function AttractorParticles({ configuration, onGpuError, variant, particleCount, blackHoleStarStateRef, simulationPlaying }) {
@@ -954,25 +975,38 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount,
         velocityShader: useMixedShader ? MIXED_VELOCITY_SHADER : ATTRACTOR_VELOCITY_SHADER,
         initialize: ({ positionData, velocityData, offset }) => {
           const particleIndex = offset / 4;
+          const orientation = configurationRef.current.particleFieldOrientation;
           if (useBlackHoleSeed) {
             const seed = createBlackHoleParticleSeed(particleIndex, particleCount);
-            positionData[offset] = seed.position[0];
-            positionData[offset + 1] = seed.position[1];
-            positionData[offset + 2] = seed.position[2];
+            const position = orientSeedVector(seed.position, orientation);
+            const velocity = orientSeedVector(seed.velocity, orientation);
+            positionData[offset] = position[0];
+            positionData[offset + 1] = position[1];
+            positionData[offset + 2] = position[2];
             positionData[offset + 3] = seed.massFraction;
-            velocityData[offset] = seed.velocity[0];
-            velocityData[offset + 1] = seed.velocity[1];
-            velocityData[offset + 2] = seed.velocity[2];
+            velocityData[offset] = velocity[0];
+            velocityData[offset + 1] = velocity[1];
+            velocityData[offset + 2] = velocity[2];
           } else {
-            positionData[offset] = (Math.random() - 0.5) * 5;
-            positionData[offset + 1] = (Math.random() - 0.5) * 0.2;
-            positionData[offset + 2] = (Math.random() - 0.5) * 5;
-            positionData[offset + 3] = 0.25 + Math.random() * 0.75;
+            const position = orientSeedVector([
+              (Math.random() - 0.5) * 5,
+              (Math.random() - 0.5) * 0.2,
+              (Math.random() - 0.5) * 5
+            ], orientation);
             const phi = Math.random() * Math.PI * 2;
             const theta = Math.random() * Math.PI;
-            velocityData[offset] = Math.sin(theta) * Math.sin(phi) * 0.05;
-            velocityData[offset + 1] = Math.cos(theta) * 0.05;
-            velocityData[offset + 2] = Math.sin(theta) * Math.cos(phi) * 0.05;
+            const velocity = orientSeedVector([
+              Math.sin(theta) * Math.sin(phi) * 0.05,
+              Math.cos(theta) * 0.05,
+              Math.sin(theta) * Math.cos(phi) * 0.05
+            ], orientation);
+            positionData[offset] = position[0];
+            positionData[offset + 1] = position[1];
+            positionData[offset + 2] = position[2];
+            positionData[offset + 3] = 0.25 + Math.random() * 0.75;
+            velocityData[offset] = velocity[0];
+            velocityData[offset + 1] = velocity[1];
+            velocityData[offset + 2] = velocity[2];
           }
           velocityData[offset + 3] = 0;
         }
@@ -1034,6 +1068,7 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount,
   }, [geometry, gl, onGpuError, material, resolution, useBlackHoleSeed, useMixedShader, blackHoleStarStateRef]);
 
   useFrame((state, delta) => {
+    material.uniforms.uScale.value = configurationRef.current.scale;
     if (!simulationPlaying) return;
     const compute = computeRef.current;
     const positionVariable = positionVariableRef.current;
@@ -1248,8 +1283,11 @@ function AttractorCamera({ configuration, onCameraChange, playing, paramsVisible
   onManualChangeRef.current = onManualChange;
   onCameraChangeRef.current = onCameraChange;
   const cameraPoseKey = [configuration.cameraPosX, configuration.cameraPosY, configuration.cameraPosZ, configuration.cameraTargetX, configuration.cameraTargetY, configuration.cameraTargetZ].join(':');
+  const lastCameraPoseKeyRef = useRef(cameraPoseKey);
   const cameraProjectionKey = [configuration.cameraZoomEnabled, configuration.cameraZoom, configuration.cameraFov, configuration.cameraNear, configuration.cameraFar].join(':');
   useEffect(() => {
+    if (viewMode === null && manualInteractionRef.current && lastCameraPoseKeyRef.current === cameraPoseKey) return;
+    lastCameraPoseKeyRef.current = cameraPoseKey;
     const view = ATTRACTOR_CAMERA_VIEWS.find((candidate) => candidate.id === viewMode);
     manualInteractionRef.current = false;
     const basePosition = new Vector3(...(view?.position ?? [configuration.cameraPosX, configuration.cameraPosY, configuration.cameraPosZ]));
@@ -1346,8 +1384,6 @@ function AttractorCamera({ configuration, onCameraChange, playing, paramsVisible
         if (isPlainWheel && currentConfiguration.cameraWheelMode === 'zoom') {
           if (!currentConfiguration.cameraZoomEnabled) return;
           zoomWheelActiveRef.current = true;
-          manualInteractionRef.current = true;
-          onManualChangeRef.current();
           event.preventDefault();
           event.stopImmediatePropagation();
           const deltaPixels = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaMode === 2 ? event.deltaY * gl.domElement.clientHeight : event.deltaY;
@@ -1575,11 +1611,11 @@ function AttractorPaths({ configuration, simulationPlaying }) {
   );
 }
 
-function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing, simulationPlaying, onCameraChange, paramsVisible, viewMode, orbitalPlaying, onManualChange, variant }) {
+function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing, simulationPlaying, particleResetVersion, onCameraChange, paramsVisible, viewMode, orbitalPlaying, onManualChange, variant }) {
   const blackHoleStarStateRef = useRef(null);
   if (!blackHoleStarStateRef.current) blackHoleStarStateRef.current = createBlackHoleStarRuntimeState();
   const axesRef = useRef(null);
-  const particleCount = E2E_PARTICLE_COUNT ?? configuration.particleCount;
+  const particleCount = TEST_PARTICLE_COUNT ?? configuration.particleCount;
   const fieldHalfExtent = calculateZoomCoupledFieldExtent(configuration.boundHalfExtent, configuration.cameraZoom, configuration.cameraZoomAffectsField);
   useEffect(() => {
     axesRef.current?.setColors(configuration.axesColorX, configuration.axesColorY, configuration.axesColorZ);
@@ -1587,13 +1623,13 @@ function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing,
   return (
     <>
       <color attach="background" args={['#050810']} />
-      <fog attach="fog" args={['#050810', 14, 55]} />
+      {/* <fog attach="fog" args={['#050810', 14, 55]} />
       <ambientLight color="#9bb4ff" intensity={0.55} />
       <directionalLight color="#fff2d4" intensity={1.5} position={[4, 5, 2]} />
-      <pointLight color="#ff885e" intensity={2.2} distance={18} position={[0, 0, 0]} />
+      <pointLight color="#ff885e" intensity={2.2} distance={18} position={[0, 0, 0]} /> */}
       <gridHelper args={[fieldHalfExtent * 2, 16, '#31515b', '#172830']} position={[0, -fieldHalfExtent - 2, 0]} />
       <axesHelper ref={axesRef} args={[3]} visible={configuration.axesVisible} />
-      {!E2E_MODE && <AttractorParticles key={particleCount} configuration={configuration} onGpuError={onGpuError} variant={variant} particleCount={particleCount} blackHoleStarStateRef={blackHoleStarStateRef} simulationPlaying={simulationPlaying} />}
+      {!E2E_MODE && <AttractorParticles key={`${particleCount}:${configuration.particleFieldOrientation}:${particleResetVersion}`} configuration={configuration} onGpuError={onGpuError} variant={variant} particleCount={particleCount} blackHoleStarStateRef={blackHoleStarStateRef} simulationPlaying={simulationPlaying} />}
       <BlackHoleEffects configuration={configuration} starStateRef={blackHoleStarStateRef} simulationPlaying={simulationPlaying} />
       <AttractorPaths configuration={configuration} simulationPlaying={simulationPlaying} />
       {configuration.attractors.map((attractor, index) => (
@@ -1626,7 +1662,7 @@ function SelectControl({ label, value, options, onChange }) {
   return <ParamSelect className="attractor-select" label={label} value={value} options={options} onChange={onChange} />;
 }
 
-function AttractorPanel({ variant, particleCount, configuration, presets, currentPreset, presetName, onPresetName, jsonText, setJsonText, showParamEditLog, onShowParamEditLog, paramEditLogYaml, onChange, onApplyPreset, onSavePreset, onReset, onExport, onLoad, onDeletePresets, onReplayLog, replayMessage, replaying, journal, playing, playbackTime, onPlaybackTime, onTogglePlayback, onStop, recording, onRecording, onAddAttractor, onRemoveAttractor, onSetOrigin, onResetOrigin, paramsVisible, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {} }) {
+function AttractorPanel({ variant, particleCount, configuration, presets, currentPreset, presetName, onPresetName, jsonText, setJsonText, showParamEditLog, onShowParamEditLog, paramEditLogYaml, onChange, onApplyPreset, onSavePreset, onReset, onResetParticles, onExport, onLoad, onDeletePresets, onReplayLog, replayMessage, replaying, journal, playing, playbackTime, onPlaybackTime, onTogglePlayback, onStop, recording, onRecording, onAddAttractor, onRemoveAttractor, onSetOrigin, onResetOrigin, paramsVisible, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {} }) {
   const hasBlackHoles = configuration.attractors.some((attractor) => attractor.type === 'blackhole');
   const mechanics = configuration.fieldMechanics;
   const modelDetails = FIELD_MODEL_DETAILS[mechanics.model];
@@ -1648,12 +1684,16 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
       <SimulatorPresetControls className="attractor-section" selectClassName="attractor-preset" name={presetName} onNameChange={onPresetName} presets={presets} currentPreset={currentPreset} onApply={onApplyPreset} onSave={onSavePreset} onReset={onReset} />
       <details className="attractor-details" open>
         <summary>Particle field</summary>
+        <button type="button" className="attractor-reset-particles" onClick={onResetParticles}>Reset particles</button>
+        <SelectControl label="Particle orientation" value={configuration.particleFieldOrientation} options={[{ value: 'xz', label: 'XZ plane' }, { value: 'xy', label: 'XY plane' }, { value: 'yz', label: 'YZ plane' }]} onChange={(value) => onChange({ particleFieldOrientation: value }, 'particleFieldOrientation')} />
+        <p className="attractor-model-note">Sets the initial particle position and velocity plane. Changing it reseeds the field; it does not rotate particle sprites.</p>
         <RangeControl label="Attractor mass exponent" value={configuration.attractorMassExponent} min={1} max={10} step={1} onChange={(value) => onChange({ attractorMassExponent: value }, 'attractorMassExponent')} />
         <RangeControl label="Particle mass exponent" value={configuration.particleGlobalMassExponent} min={1} max={10} step={1} onChange={(value) => onChange({ particleGlobalMassExponent: value }, 'particleGlobalMassExponent')} />
         <RangeControl label="Particle count" value={configuration.particleCount} min={1024} max={PARTICLE_COUNT} step={1024} onChange={(value) => onChange({ particleCount: value }, 'particleCount')} />
         <RangeControl label="Maximum speed" value={configuration.maxSpeed} min={0} max={10} step={0.01} onChange={(value) => onChange({ maxSpeed: value }, 'maxSpeed')} />
         <RangeControl label="Velocity damping" value={configuration.velocityDamping} min={0} max={0.1} step={0.001} onChange={(value) => onChange({ velocityDamping: value }, 'velocityDamping')} />
         <RangeControl label="Spinning strength" value={configuration.spinningStrength} min={0} max={10} step={0.01} onChange={(value) => onChange({ spinningStrength: value }, 'spinningStrength')} />
+        <p className="attractor-model-note">Mass, count, speed, and damping settings apply across models. Spin is used by the default response and models with tangential response; the Newtonian response has no spin term.</p>
       </details>
 
       <details className="attractor-details" open>
@@ -1662,21 +1702,29 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
         <RangeControl label="Bound half extent" value={configuration.boundHalfExtent} min={0.5} max={20} step={0.01} onChange={(value) => onChange({ boundHalfExtent: value }, 'boundHalfExtent')} />
         <BooleanControl label="Scale field boundary with camera zoom" value={configuration.cameraZoomAffectsField} onChange={(value) => onChange({ cameraZoomAffectsField: value }, 'cameraZoomAffectsField')} />
         <p className="attractor-model-note">Camera zoom changes only the view by default. Enable this to scale the particle boundary with zoom.</p>
+        <p className="attractor-model-difference">Effective field half extent: <strong>{(configuration.boundHalfExtent * (configuration.cameraZoomAffectsField ? configuration.cameraZoom : 1)).toFixed(2)}</strong></p>
       </details>
 
       <details className="attractor-details" open>
         <summary>Particle display</summary>
         <RangeControl label="Displayed particle size" value={configuration.scale} min={0} max={0.1} step={0.001} onChange={(value) => onChange({ scale: value }, 'scale')} />
         <p className="attractor-model-note">Render-only control: changing size changes apparent splat area, not particle state. With normalized tensor-Gaussian mechanics enabled, the displayed area is not energy-renormalized.</p>
-        <SelectControl label="Particle orientation" value={configuration.particleFacing} options={['world', 'camera']} onChange={(value) => onChange({ particleFacing: value }, 'particleFacing')} />
+        <SelectControl label="Particle display orientation" value={configuration.particleFacing} options={['world', 'camera']} onChange={(value) => onChange({ particleFacing: value }, 'particleFacing')} />
+        <p className="attractor-model-note">Controls only whether particle sprites face the world or camera; it does not change simulated positions or forces.</p>
         <ColorControl label="Particle color A" value={configuration.colorA} onChange={(value) => onChange({ colorA: value }, 'colorA')} />
         <ColorControl label="Particle color B" value={configuration.colorB} onChange={(value) => onChange({ colorB: value }, 'colorB')} />
         <BooleanControl label="Show particle paths" value={configuration.particlePathsVisible} onChange={(value) => onChange({ particlePathsVisible: value }, 'particlePathsVisible')} />
-        <RangeControl label="Path duration" value={configuration.particlePathDuration} min={1} max={12} step={0.1} onChange={(value) => onChange({ particlePathDuration: value }, 'particlePathDuration')} />
+        <RangeControl label="Particle path duration" value={configuration.particlePathDuration} min={1} max={12} step={0.1} onChange={(value) => onChange({ particlePathDuration: value }, 'particlePathDuration')} />
         <ColorControl label="Particle path color" value={configuration.particlePathColor} onChange={(value) => onChange({ particlePathColor: value }, 'particlePathColor')} />
         <RangeControl label="Particle path opacity" value={configuration.particlePathOpacity} min={0} max={1} step={0.01} onChange={(value) => onChange({ particlePathOpacity: value }, 'particlePathOpacity')} />
+        {hasBlackHoles && <>
+          <BooleanControl label="Show stress streamlines" value={configuration.blackHoleStreamlines} onChange={(value) => onChange({ blackHoleStreamlines: value }, 'blackHoleStreamlines')} />
+          <BooleanControl label="Show black-hole star splats" value={configuration.blackHoleStarsVisible} onChange={(value) => onChange({ blackHoleStarsVisible: value }, 'blackHoleStarsVisible')} />
+          <ColorControl label="Black-hole star color" value={configuration.blackHoleStarColor} onChange={(value) => onChange({ blackHoleStarColor: value }, 'blackHoleStarColor')} />
+          <RangeControl label="Black-hole star opacity" value={configuration.blackHoleStarOpacity} min={0} max={1} step={0.01} onChange={(value) => onChange({ blackHoleStarOpacity: value }, 'blackHoleStarOpacity')} />
+        </>}
         <BooleanControl label="Show attractor paths" value={configuration.attractorPathsVisible} onChange={(value) => onChange({ attractorPathsVisible: value }, 'attractorPathsVisible')} />
-        <RangeControl label="Path duration" value={configuration.attractorPathLength} min={1} max={12} step={0.1} onChange={(value) => onChange({ attractorPathLength: value }, 'attractorPathLength')} />
+        <RangeControl label="Attractor path duration" value={configuration.attractorPathLength} min={1} max={12} step={0.1} onChange={(value) => onChange({ attractorPathLength: value }, 'attractorPathLength')} />
         <ColorControl label="Path color" value={configuration.attractorPathColor} onChange={(value) => onChange({ attractorPathColor: value }, 'attractorPathColor')} />
         <RangeControl label="Path opacity" value={configuration.attractorPathOpacity} min={0} max={1} step={0.01} onChange={(value) => onChange({ attractorPathOpacity: value }, 'attractorPathOpacity')} />
       </details>
@@ -1684,8 +1732,9 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
       <details className="attractor-details" open>
         <summary>Active model mechanics</summary>
         <BooleanControl label="Enable model mechanics" value={mechanics.enabled} onChange={(value) => updateMechanics('enabled', value)} />
+        <p className="attractor-model-note">When disabled, the selected model is ignored and the default particle mechanics run. Enabled by default.</p>
         <SelectControl label="Active model" value={mechanics.model} options={FIELD_MODEL_OPTIONS} onChange={(value) => updateMechanics('model', value)} />
-        <p className="attractor-model-note"><strong>{modelDetails.status}</strong><br />{modelDetails.equation}</p>
+        <p className="attractor-model-note"><strong>{modelDetails.status}</strong><br />{modelDetails.description}<br /><strong>Response:</strong> {modelDetails.equation}<br /><strong>Solver:</strong> {modelDetails.solver}</p>
         {mechanicsParameterKeys.map((key) => {
           const field = FIELD_MECHANICS_PARAMETER_FIELDS[key];
           return <RangeControl key={key} label={field.label} value={mechanics[key]} min={field.min} max={field.max} step={field.step} onChange={(value) => updateMechanics(key, value)} />;
@@ -1696,23 +1745,13 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
 
       <details className="attractor-details" open>
         <summary>Compare mechanics</summary>
-        <BooleanControl label="Show mechanics difference" value={mechanics.comparisonEnabled} onChange={(value) => updateMechanics('comparisonEnabled', value)} />
+        <BooleanControl label="Show model difference" value={mechanics.comparisonEnabled} onChange={(value) => updateMechanics('comparisonEnabled', value)} />
         {mechanics.comparisonEnabled && <>
           <SelectControl label="Compare against" value={mechanics.comparisonModel} options={FIELD_MODEL_OPTIONS} onChange={(value) => updateMechanics('comparisonModel', value)} />
           <RangeControl label="Difference gain" value={mechanics.differenceScale} min={0} max={10} step={0.1} onChange={(value) => updateMechanics('differenceScale', value)} />
           <p className="attractor-model-difference">Reference delta at 2 core radii: <strong>{(comparison.relativeDifference * 100).toFixed(1)}%</strong></p>
         </>}
       </details>
-      {hasBlackHoles && <>
-      <details className="attractor-details" open>
-        <summary>Black hole attractors</summary>
-          <BooleanControl label="Show stress streamlines" value={configuration.blackHoleStreamlines} onChange={(value) => onChange({ blackHoleStreamlines: value }, 'blackHoleStreamlines')} />
-          <BooleanControl label="Show black-hole star splats" value={configuration.blackHoleStarsVisible} onChange={(value) => onChange({ blackHoleStarsVisible: value }, 'blackHoleStarsVisible')} />
-          <ColorControl label="Black-hole star color" value={configuration.blackHoleStarColor} onChange={(value) => onChange({ blackHoleStarColor: value }, 'blackHoleStarColor')} />
-          <RangeControl label="Black-hole star opacity" value={configuration.blackHoleStarOpacity} min={0} max={1} step={0.01} onChange={(value) => onChange({ blackHoleStarOpacity: value }, 'blackHoleStarOpacity')} />
-      </details>
-      </>}
-
       <details className="attractor-details" open>
         <summary>Attractor rig</summary>
         {configuration.showTransformControls && <SelectControl label="Transform mode" value={configuration.controlsMode} options={TRANSFORM_MODE_OPTIONS} onChange={(value) => onChange({ controlsMode: value }, 'controlsMode')} />}
@@ -1736,9 +1775,6 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
       <SimulatorIOJournal currentValue={configuration} presets={presets} jsonText={jsonText} onJsonText={setJsonText} onLoad={onLoad} onExport={onExport} onDeletePresets={onDeletePresets} showEditLog={showParamEditLog} onShowEditLog={onShowParamEditLog} editLogYaml={paramEditLogYaml} onReplayLog={onReplayLog} replayMessage={replayMessage} replaying={replaying} journal={journal} recording={recording} onRecording={onRecording} playing={playing} onTogglePlayback={onTogglePlayback} onStop={onStop} playbackTime={playbackTime} onPlaybackTime={onPlaybackTime} playbackSpeed={configuration.playbackSpeed} onPlaybackSpeed={(value) => onChange({ playbackSpeed: value }, 'playbackSpeed')} />
 
       <OrbitCameraSettings configuration={configuration} onChange={onChange} />
-      <BooleanControl label="Scale particle field with zoom" value={configuration.cameraZoomAffectsField} onChange={(value) => onChange({ cameraZoomAffectsField: value }, 'cameraZoomAffectsField')} />
-      <p className="attractor-model-note">Off by default: camera zoom changes only the view. When enabled, the particle simulation boundary expands or contracts with camera zoom.</p>
-      <p className="attractor-model-difference">Effective field half extent: <strong>{(configuration.boundHalfExtent * (configuration.cameraZoomAffectsField ? configuration.cameraZoom : 1)).toFixed(2)}</strong></p>
       </ParamEditingProvider>
     </aside>
   );
@@ -1781,7 +1817,7 @@ function AttractorEditor({ attractor, index, onChange, onSetOrigin }) {
 function SimpleAttractorSim({ variant = 'simple', onBack }) {
   const editor = useSimulationEditor(createConfiguration(variant), { recordParameterEdits: true });
   const { value: configuration, commit, load, record, log, replace, canUndo, canRedo, undo, redo } = editor;
-  const particleCount = E2E_PARTICLE_COUNT ?? configuration.particleCount;
+  const particleCount = TEST_PARTICLE_COUNT ?? configuration.particleCount;
   const configurationRef = useRef(configuration);
   const [editing, setEditing] = useState(false);
   const [showParamEditLog, setShowParamEditLog] = useState(false);
@@ -1796,6 +1832,7 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
   const [modal, setModal] = useState(null);
   const [paramsVisible, setParamsVisible] = useState(true);
   const [simulationPlaying, setSimulationPlaying] = useState(true);
+  const [particleResetVersion, setParticleResetVersion] = useState(0);
   const [viewMode, setViewMode] = useState('ortho1');
   const [orbitalPlaying, setOrbitalPlaying] = useState(true);
   const initialSnapshot = useMemo(() => clone(configuration), []);
@@ -1979,9 +2016,9 @@ function SimpleAttractorSim({ variant = 'simple', onBack }) {
   const reportTitle = variant === 'ddf' ? 'DDF particles' : variant === 'blackhole' ? 'SQG particles' : 'Attractor particles';
   return (
     <SimulatorBase className={`attractor-app ${isHypothesisVariant ? 'blackhole-app' : ''}`} headerClassName="attractor-topbar" brandClassName="attractor-base-brand" markClassName="sqg-mark" title={variant === 'ddf' ? 'DILATANT DARK FLUID SANDBOX' : variant === 'blackhole' ? 'SQG BLACK-HOLE SANDBOX' : 'PARTICLE DYNAMICS LAB'} subtitle="N-body / presets / journal" meta={reportTitle.toUpperCase()} metaClassName="attractor-top-actions" metaContentClassName="attractor-top-meta" homeUrl="/" onHome={onBack} homeClassName="attractor-back" parameterValue={configuration} presetValue={editor.baseline} onParameterChange={(next) => onChange(next, 'parameter-group-reset')} actions={<><button type="button" className="attractor-sim-play-toggle" aria-label={simulationPlaying ? 'Pause simulation' : 'Play simulation'} aria-pressed={simulationPlaying} onClick={() => setSimulationPlaying((playing) => !playing)}>{simulationPlaying ? 'Pause' : 'Play'}</button><button type="button" className="attractor-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button></>}>
-      <div className="attractor-scene"><Canvas frameloop={E2E_MODE ? 'demand' : 'always'} camera={{ position: [3, 5, 8], fov: 25, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AttractorWorld configuration={configuration} onAttractorChange={onAttractorChange} onGpuError={setGpuError} playing={journal.playing} simulationPlaying={simulationPlaying} onCameraChange={onCameraChange} paramsVisible={paramsVisible} viewMode={viewMode} orbitalPlaying={orbitalPlaying} onManualChange={() => setViewMode(null)} variant={variant} /></Canvas></div>
+      <div className="attractor-scene"><Canvas frameloop={E2E_MODE ? 'demand' : 'always'} camera={{ position: [3, 5, 8], fov: 25, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><AttractorWorld configuration={configuration} onAttractorChange={onAttractorChange} onGpuError={setGpuError} playing={journal.playing} simulationPlaying={simulationPlaying} particleResetVersion={particleResetVersion} onCameraChange={onCameraChange} paramsVisible={paramsVisible} viewMode={viewMode} orbitalPlaying={orbitalPlaying} onManualChange={() => setViewMode(null)} variant={variant} /></Canvas></div>
       <CameraPerspectiveToolbar className="attractor-view-toolbar" modesClassName="attractor-view-modes" views={ATTRACTOR_CAMERA_VIEWS} viewMode={viewMode} onViewChange={setViewMode} orbitPlaying={orbitalPlaying} onToggleOrbit={() => setOrbitalPlaying((value) => !value)} />
-      <AttractorPanel variant={variant} particleCount={particleCount} configuration={configuration} presets={presets} currentPreset={currentPreset} presetName={presetName} onPresetName={setPresetName} jsonText={jsonText} setJsonText={setJsonText} showParamEditLog={showParamEditLog} onShowParamEditLog={setShowParamEditLog} paramEditLogYaml={paramEditLogYaml} onChange={onChange} onApplyPreset={onApplyPreset} onSavePreset={onSavePreset} onReset={onReset} onExport={(type, value) => setModal({ title: type === 'all' ? 'All presets' : type === 'saved' ? 'Saved presets' : 'Current parameters', value: type === 'current' ? configuration : value })} onLoad={onLoad} onDeletePresets={onDeletePresets} onReplayLog={onReplayParameterLog} replayMessage={replayMessage} replaying={journal.playing} journal={journal.journal} playing={journal.playing} playbackTime={journal.playbackTime} onPlaybackTime={journal.seek} onTogglePlayback={() => journal.setPlaying((value) => !value)} onStop={journal.stop} recording={journal.recording} onRecording={journal.setRecording} onAddAttractor={onAddAttractor} onRemoveAttractor={onRemoveAttractor} onSetOrigin={onSetOrigin} onResetOrigin={onResetOrigin} paramsVisible={paramsVisible} editing={editing} onEditing={setEditing} canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} />
+      <AttractorPanel variant={variant} particleCount={particleCount} configuration={configuration} presets={presets} currentPreset={currentPreset} presetName={presetName} onPresetName={setPresetName} jsonText={jsonText} setJsonText={setJsonText} showParamEditLog={showParamEditLog} onShowParamEditLog={setShowParamEditLog} paramEditLogYaml={paramEditLogYaml} onChange={onChange} onApplyPreset={onApplyPreset} onSavePreset={onSavePreset} onReset={onReset} onResetParticles={() => setParticleResetVersion((version) => version + 1)} onExport={(type, value) => setModal({ title: type === 'all' ? 'All presets' : type === 'saved' ? 'Saved presets' : 'Current parameters', value: type === 'current' ? configuration : value })} onLoad={onLoad} onDeletePresets={onDeletePresets} onReplayLog={onReplayParameterLog} replayMessage={replayMessage} replaying={journal.playing} journal={journal.journal} playing={journal.playing} playbackTime={journal.playbackTime} onPlaybackTime={journal.seek} onTogglePlayback={() => journal.setPlaying((value) => !value)} onStop={journal.stop} recording={journal.recording} onRecording={journal.setRecording} onAddAttractor={onAddAttractor} onRemoveAttractor={onRemoveAttractor} onSetOrigin={onSetOrigin} onResetOrigin={onResetOrigin} paramsVisible={paramsVisible} editing={editing} onEditing={setEditing} canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} />
       <div className="attractor-title"><span>ACTIVE FIELD / {variant === 'ddf' ? 'DDFSIM' : variant === 'blackhole' ? 'SQGBLACKHOLESIM' : 'SIMPLEATTRACTORSIM'}</span><h1>{variant === 'ddf' ? 'Dilatant Dark Fluid System' : variant === 'blackhole' ? 'Superfluid Quantum Gravity System' : 'Simple Particle Attractor System'}</h1><p>{variant === 'ddf' ? 'Phenomenological compressible sink flow with speed-limited shear thickening.' : variant === 'blackhole' ? 'Phenomenological SQG sink flow with a finite quantum-pressure core.' : 'Tune attractor mass, spin, and geometry within a field of particles.'}</p>{gpuError && <strong className="attractor-error">GPU offline: {gpuError}</strong>}</div>
       {modal && <SimulatorExportModal title={modal.title} value={modal.value} onClose={() => setModal(null)} />}
     </SimulatorBase>

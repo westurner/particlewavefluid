@@ -1,7 +1,8 @@
 import { calculateDdfMobility, evaluateMechanicsResponse } from './lib/simulationMechanics.js';
 
 export const FIELD_MODEL_OPTIONS = [
-  { value: 'newtonian', label: 'Newtonian' },
+  { value: 'default', label: 'Default particle mechanics' },
+  { value: 'newtonian', label: 'Newtonian response' },
   { value: 'ns-compressible', label: 'NS compressible fluid' },
   { value: 'ns-incompressible', label: 'NS incompressible fluid' },
   { value: 'sqg', label: 'SQG hypothesis' },
@@ -9,13 +10,51 @@ export const FIELD_MODEL_OPTIONS = [
   { value: 'grassmannian-amplituhedron', label: 'Gr(2,4) / amplituhedron splat' }
 ];
 
+const SHARED_FIELD_SOLVER_DESCRIPTION = 'All choices use the same per-particle GPU compute passes: explicit Euler position and velocity updates, a speed cap, and configured damping. Particles do not exchange pressure or density with neighbors, so these are response-field experiments, not full fluid solvers.';
+
 export const FIELD_MODEL_DETAILS = Object.freeze({
-  newtonian: { status: 'Established reference', equation: 'a = -GM r / |r|^3' },
-  'ns-compressible': { status: 'Reduced NS experiment', equation: 'd rho/dt + div(rho u) = 0' },
-  'ns-incompressible': { status: 'Reduced NS experiment', equation: 'div(u) = 0' },
-  sqg: { status: 'Speculative SQG hypothesis', equation: 'compressible sink + bounded quantum pressure' },
-  ddf: { status: 'Speculative DDF hypothesis', equation: 'SQG response / (1 + strain-dependent viscosity)' },
-  'grassmannian-amplituhedron': { status: 'Exploratory geometric hypothesis', equation: 'Newtonian baseline × [1 + bounded Gr(2,4) tensor-Gaussian splat]' }
+  default: {
+    status: 'Default particle mechanics',
+    description: 'Simple inverse-square attraction with the configured spin force and per-particle mass weighting.',
+    equation: 'inverse-square attraction + configured spin force',
+    solver: SHARED_FIELD_SOLVER_DESCRIPTION
+  },
+  newtonian: {
+    status: 'Newtonian response reference',
+    description: 'A central inverse-square response without fluid pressure, compressibility, or viscosity. Selecting it replaces the legacy simple-attractor spin response.',
+    equation: 'a = -GM r / |r|^3',
+    solver: SHARED_FIELD_SOLVER_DESCRIPTION
+  },
+  'ns-compressible': {
+    status: 'Reduced Navier-Stokes experiment',
+    description: 'Adds a compressible radial sink and a nonzero divergence/volume-change diagnostic; it does not evolve a density field or capture shocks.',
+    equation: 'd rho/dt + div(rho u) = 0',
+    solver: SHARED_FIELD_SOLVER_DESCRIPTION
+  },
+  'ns-incompressible': {
+    status: 'Reduced Navier-Stokes experiment',
+    description: 'Uses a zero-divergence response field. It does not perform a global pressure projection to enforce incompressibility.',
+    equation: 'div(u) = 0',
+    solver: SHARED_FIELD_SOLVER_DESCRIPTION
+  },
+  sqg: {
+    status: 'Speculative SQG hypothesis',
+    description: 'Combines a compressible sink with a bounded, core-localized quantum-pressure term; this is a phenomenological hypothesis, not an established gravity model.',
+    equation: 'compressible sink + bounded quantum pressure',
+    solver: SHARED_FIELD_SOLVER_DESCRIPTION
+  },
+  ddf: {
+    status: 'Speculative DDF hypothesis',
+    description: 'Modulates the SQG response with speed-dependent dilatant mobility localized by a tensor-Gaussian weight; this is exploratory rather than experimentally validated.',
+    equation: 'SQG response / (1 + strain-dependent viscosity)',
+    solver: SHARED_FIELD_SOLVER_DESCRIPTION
+  },
+  'grassmannian-amplituhedron': {
+    status: 'Exploratory geometric hypothesis',
+    description: 'Applies a bounded Gr(2,4)-motivated correction near a tensor-Gaussian splat; it is a visualization experiment, not a derivation from amplituhedron theory.',
+    equation: 'Newtonian baseline × [1 + bounded Gr(2,4) tensor-Gaussian splat]',
+    solver: SHARED_FIELD_SOLVER_DESCRIPTION
+  }
 });
 
 export const FIELD_MECHANICS_PARAMETER_FIELDS = Object.freeze({
@@ -31,6 +70,7 @@ export const FIELD_MECHANICS_PARAMETER_FIELDS = Object.freeze({
 });
 
 export const FIELD_MODEL_PARAMETER_DEPENDENCIES = Object.freeze({
+  default: [],
   newtonian: [],
   'ns-compressible': ['coreRadius', 'compressibility'],
   'ns-incompressible': [],
@@ -57,8 +97,8 @@ export const WAVE_EVOLUTION_OPTIONS = [
 ];
 
 export const DEFAULT_FIELD_MECHANICS = Object.freeze({
-  enabled: false,
-  model: 'newtonian',
+  enabled: true,
+  model: 'default',
   comparisonEnabled: false,
   comparisonModel: 'sqg',
   differenceScale: 1,
@@ -116,10 +156,10 @@ export function evaluateFieldModel(model, state = {}, mechanics = DEFAULT_FIELD_
   const coreRatio = radius / settings.coreRadius;
   const tangentialAcceleration = rotation * magnitude / radius;
 
-  if (model === 'newtonian') {
+  if (model === 'default' || model === 'newtonian') {
     return {
       radialAcceleration: -inverseSquare,
-      tangentialAcceleration: 0,
+      tangentialAcceleration: model === 'default' ? tangentialAcceleration : 0,
       quantumPressure: 0,
       effectiveViscosity: 0,
       mobility: 1,

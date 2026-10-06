@@ -68,6 +68,39 @@ test('ParamSelect supports ArrowUp and ArrowDown option navigation and selection
   assert.deepEqual(await page.locator('.param-select-menu').count(), 0);
 });
 
+test('attractor defaults to its baseline model and separates field from display orientation', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: 1 });
+
+  await page.goto(`${baseUrl}?e2e=1`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /02 \/ LOAD FIELD/ }).evaluate((button) => button.click());
+  await page.locator('.attractor-panel').waitFor();
+
+  const activeModel = page.getByRole('combobox', { name: 'Active model' });
+  const mechanicsEnabled = page.getByRole('checkbox', { name: 'Enable model mechanics' });
+  assert.match(await activeModel.innerText(), /Default particle mechanics/);
+  assert.equal(await mechanicsEnabled.isChecked(), true);
+  await page.getByText(/All choices use the same per-particle GPU compute passes/).waitFor();
+  assert.equal(await page.getByRole('checkbox', { name: 'Scale field boundary with camera zoom' }).count(), 1);
+
+  await mechanicsEnabled.click();
+  await activeModel.click();
+  await page.getByRole('option', { name: 'NS compressible fluid' }).click();
+  assert.equal(await mechanicsEnabled.isChecked(), false);
+  assert.match(await activeModel.innerText(), /NS compressible fluid/);
+  await page.getByText(/When disabled, the selected model is ignored/).waitFor();
+
+  const fieldOrientation = page.getByRole('combobox', { name: 'Particle orientation' });
+  await fieldOrientation.click();
+  await page.getByRole('option', { name: 'XY plane' }).click();
+  const displayOrientation = page.getByRole('combobox', { name: 'Particle display orientation' });
+  await displayOrientation.click();
+  await page.getByRole('option', { name: 'camera' }).click();
+  assert.match(await fieldOrientation.innerText(), /XY plane/);
+  assert.match(await displayOrientation.innerText(), /camera/);
+});
+
 test('DDF loads as a distinct hypothesis model with comparison controls', async (t) => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
@@ -115,7 +148,44 @@ test('amplitude gravity lab exposes positive-cell and model-difference diagnosti
   await page.locator('.amplitude-panel').waitFor();
   await page.locator('canvas').waitFor();
 
-  assert.match(await page.getByRole('combobox', { name: 'Gravity model' }).textContent(), /Spin-2 EFT tree proxy/);
+  const attractorModel = page.getByRole('combobox', { name: 'Attractor model' });
+  assert.match(await attractorModel.textContent(), /Solar System/);
+  await attractorModel.click();
+  await page.getByRole('option', { name: 'Solar System + major moons' }).click();
+  const inspectedBody = page.getByRole('combobox', { name: 'Inspect body' });
+  await inspectedBody.click();
+  await page.getByRole('option', { name: 'Io / Jupiter' }).click();
+  assert.match(await page.locator('.amplitude-body-facts summary').textContent(), /Io/);
+  assert.match(await page.getByText('JPL GM').locator('..').textContent(), /5959\.915 km³\/s²/);
+  assert.equal(await page.getByRole('link', { name: 'JPL satellite GM table' }).getAttribute('href'), 'https://ssd.jpl.nasa.gov/sats/phys_par/');
+
+  const diameterScale = page.getByRole('combobox', { name: 'Planet diameter scale' });
+  await diameterScale.click();
+  await page.getByRole('option', { name: 'Actual diameters' }).click();
+  assert.equal(await page.getByRole('slider', { name: 'Illustrative planet size' }).count(), 0);
+  await diameterScale.click();
+  await page.getByRole('option', { name: 'Illustrative diameters' }).click();
+  assert.equal(await page.getByRole('slider', { name: 'Illustrative planet size' }).count(), 1);
+
+  const gravityModel = page.getByRole('combobox', { name: 'Gravity model' });
+  await gravityModel.click();
+  await page.getByRole('option', { name: 'GR (General Relativity)' }).click();
+  assert.match(await page.locator('.amplitude-warning').textContent(), /pairwise two-body 1PN/);
+  await gravityModel.click();
+  await page.getByRole('option', { name: 'GR (Normed Tensor Gaussian Splatter)' }).click();
+  assert.equal(await page.getByRole('slider', { name: 'GR splatter Gaussian waist' }).count(), 1);
+
+  await page.getByRole('combobox', { name: 'Study mode' }).click();
+  await page.getByRole('option', { name: 'Model an orbital path through the Solar System' }).click();
+  await page.getByRole('button', { name: 'Launch' }).click();
+  await inspectedBody.click();
+  await page.getByRole('option', { name: 'Spacecraft / Earth' }).waitFor();
+  await page.keyboard.press('Escape');
+  await page.getByRole('combobox', { name: 'Historic mission path' }).click();
+  await page.getByRole('option', { name: 'Voyager 2 · Grand Tour' }).click();
+  assert.match(await page.locator('.amplitude-mission-note').textContent(), /schematic/);
+
+  assert.match(await gravityModel.textContent(), /GR \(Normed Tensor Gaussian Splatter\)/);
   const pluckerResidual = Number(await page.getByText('Plücker residual').locator('..').locator('strong').textContent());
   assert.ok(Math.abs(pluckerResidual) < 1e-12, `expected a negligible Plücker residual, received ${pluckerResidual}`);
   const difference = page.getByRole('checkbox', { name: 'Show acceleration difference from Newtonian' });

@@ -13,6 +13,7 @@ import {
   calculateSpaceEnergyBudget,
   calculateSailRadiationPressure,
   calculateVortexBeamIntensity,
+  calculateRotatingTracerAngle,
   createHelixNodes,
   evaluateSpaceTieOperator,
   sanitizeSpaceTieSettings,
@@ -62,6 +63,8 @@ test('workspace parameter sanitization bounds logistics and enum inputs', () => 
   assert.equal(defaults.logisticsCartridgeMassKg, 500);
   assert.equal(defaults.batteryCapacityMWh, 16.25);
   assert.equal(defaults.halbachActiveAreaM2, 0.25);
+  assert.equal(defaults.particleCount, 4096);
+  assert.equal(defaults.particleAppearance.sizeScale, 1.5);
 });
 
 test('helix geometry preserves strand count and spacing controls rendered node population', () => {
@@ -90,6 +93,13 @@ test('radiation pressure, vortex beam, and sail annulus remain bounded', () => {
   assert.equal(calculateVortexBeamIntensity({ radiusM: 0, beamWaistM: 10, topologicalCharge: 0 }), 1);
   const annulus = calculateVortexBeamIntensity({ radiusM: 10, beamWaistM: 10, topologicalCharge: 1 });
   assert.ok(annulus > 0 && annulus <= 1);
+});
+
+test('rotating field tracers follow speed-scaled time and operator acceleration response', () => {
+  assert.equal(calculateRotatingTracerAngle({ baseAngle: 0.4, simulationTime: 2, swirlRate: 0.5, accelerationScale: 0.5 }), 0.9);
+  assert.equal(calculateRotatingTracerAngle({ baseAngle: 0.4, simulationTime: 2, swirlRate: 0.5, splatWeight: 0 }), 0.4);
+  assert.equal(calculateRotatingTracerAngle({ baseAngle: 0.4, simulationTime: 2, swirlRate: 0.5, splatWeight: 0.5 }), 0.9);
+  assert.equal(calculateRotatingTracerAngle({ baseAngle: 0.4, simulationTime: 0, swirlRate: 0.5, accelerationScale: 1 }), 0.4);
 });
 
 test('coilgun pulse cannot transfer more energy than its battery input', () => {
@@ -160,9 +170,10 @@ test('space energy budget does not include speculative fracture gain', () => {
   assert.ok(payload.inputEnergyJ > payload.kineticEnergyJ);
 });
 
-test('space-tie settings clamp unsupported operator, coupling, and count inputs', () => {
-  const settings = sanitizeSpaceTieSettings({ operator: 'not-a-model', geometryAccelerationCoupling: 5, particleCount: 99999 });
+test('space-tie settings clamp unsupported operator, coupling, particle count, and size inputs', () => {
+  const settings = sanitizeSpaceTieSettings({ operator: 'not-a-model', geometryAccelerationCoupling: 5, particleCount: 99999, particleAppearance: { sizeScale: 20 } });
   assert.equal(settings.operator, 'classical');
   assert.equal(settings.geometryAccelerationCoupling, 0.25);
-  assert.equal(settings.particleCount, 8192);
+  assert.equal(settings.particleCount, 16384);
+  assert.equal(settings.particleAppearance.sizeScale, 8);
 });

@@ -10,7 +10,9 @@ import {
   compareSystemInvariants,
   createPositiveGrassmannianCell,
   evaluateAmplitudeChannels,
+  evaluateGeneralRelativityPair,
   evaluateNBodyAmplitudeGravity,
+  integrateNBodyVelocityVerlet,
   sanitizeAmplitudeGravity,
   writeAmplitudeGravityPathSegments,
   updateAmplitudeGravityStreamlines
@@ -88,6 +90,111 @@ test('Newtonian mode matches the spin-2 reference kernel', () => {
   );
   assert.equal(channels.selectedKernel, channels.spin2Tree);
   assert.ok(channels.photonExchange < 0);
+});
+
+test('GR pair acceleration has the Newtonian limit and the standard 1PN circular correction', () => {
+  const input = { positionFirst: [2, 0, 0], positionSecond: [0, 0, 0], velocityFirst: [0, 1, 0], velocitySecond: [0, 0, 0], massFirst: 1, massSecond: 0 };
+  const newtonianLimit = evaluateGeneralRelativityPair(input, { mode: 'general-relativity', gravitationalConstant: 1, grSpeedOfLight: 1e9, softening: 1e-9 });
+  const expectedNewtonian = evaluateGeneralRelativityPair(input, { mode: 'general-relativity', gravitationalConstant: 1, grSpeedOfLight: 1e9, softening: 1e-9 }).newtonian;
+  assert.ok(Math.hypot(...newtonianLimit.generalRelativity.map((value, axis) => value - expectedNewtonian[axis])) < 1e-15);
+
+  const circularSpeed = Math.sqrt(1 / 2);
+  const circular = evaluateGeneralRelativityPair({ ...input, velocityFirst: [0, circularSpeed, 0] }, {
+    mode: 'general-relativity', gravitationalConstant: 1, grSpeedOfLight: 1000, softening: 0
+  });
+  const expectedRadialCorrection = -circular.newtonian[0] * 3 / (2 * 1000 ** 2);
+  assert.ok(Math.abs(circular.pnCorrection[0] - expectedRadialCorrection) < 1e-12);
+  assert.equal(circular.pnCorrection[1], 0);
+});
+
+test('GR normed tensor-Gaussian splatter is trace-normalized, bounded, and tends to 1PN GR at the core', () => {
+  const input = { positionFirst: [0.5, 0, 0], positionSecond: [0, 0, 0], velocityFirst: [0.2, 0.4, 0], velocitySecond: [0, 0, 0], massFirst: 1, massSecond: 0 };
+  const gr = evaluateGeneralRelativityPair(input, { mode: 'general-relativity', gravitationalConstant: 1, grSpeedOfLight: 100, softening: 0.001 });
+  const splatter = evaluateGeneralRelativityPair(input, { mode: 'gr-normed-tensor-gaussian', gravitationalConstant: 1, grSpeedOfLight: 100, grTensorGaussianWaist: 2, softening: 0.001 });
+  assert.ok(Math.abs(splatter.normalizedTensor.flat().filter((_, index) => index % 4 === 0).reduce((sum, value) => sum + value, 0) - 3) < 1e-12);
+  assert.ok(splatter.tensorGaussian > 0 && splatter.tensorGaussian <= 1);
+  assert.ok(Math.hypot(...splatter.pnCorrection) <= Math.hypot(...gr.pnCorrection) * 1.01);
+  const far = evaluateGeneralRelativityPair({ ...input, positionFirst: [20, 0, 0] }, { mode: 'gr-normed-tensor-gaussian', gravitationalConstant: 1, grSpeedOfLight: 100, grTensorGaussianWaist: 0.1, softening: 0.001 });
+  assert.ok(Math.hypot(...far.pnCorrection) < 1e-12);
+});
+
+test('pairwise GR corrections preserve total momentum in the N-body model', () => {
+  const result = evaluateNBodyAmplitudeGravity([
+    { position: [-1, 0, 0], velocity: [0, -0.2, 0], mass: 1 },
+    { position: [1, 0, 0], velocity: [0, 0.2, 0], mass: 1e-6 }
+  ], { mode: 'general-relativity', gravitationalConstant: 1, grSpeedOfLight: 100 });
+  result.forceResidual.forEach((component) => assert.ok(Math.abs(component) < 1e-12));
+  assert.ok(result.maximumDifference > 0);
+});
+
+test('substepped velocity-Verlet keeps a Newtonian circular orbit energy-bounded', () => {
+  const gravitationalConstant = 4 * Math.PI ** 2;
+  const bodies = [
+    { position: [0, 0, 0], velocity: [0, 0, 0], mass: 1 },
+    { position: [1, 0, 0], velocity: [0, 2 * Math.PI, 0], mass: 1e-6 }
+  ];
+  const configuration = { mode: 'newtonian', gravitationalConstant, softening: 1e-6 };
+  const initialPotential = evaluateNBodyAmplitudeGravity(bodies, configuration).potential;
+  const initialInvariants = calculateSystemInvariants(bodies, initialPotential);
+  let callbacks = 0;
+  const integration = integrateNBodyVelocityVerlet(bodies, 1, configuration, { afterDrift: () => { callbacks += 1; } });
+  const finalPotential = evaluateNBodyAmplitudeGravity(bodies, configuration).potential;
+  const finalInvariants = calculateSystemInvariants(bodies, finalPotential);
+  assert.equal(integration.substeps, 1000);
+  assert.equal(callbacks, integration.substeps);
+  assert.ok(Math.abs((finalInvariants.totalEnergy - initialInvariants.totalEnergy) / initialInvariants.totalEnergy) < 1e-5);
+});
+
+test('the 1PN two-body orbit advances periapsis in the direction predicted by GR', () => {
+  const gravitationalConstant = 4 * Math.PI ** 2;
+  const semiMajorAxis = 0.4;
+  const eccentricity = 0.2;
+  const speedOfLight = 800;
+  const orbitalPeriod = 2 * Math.PI * Math.sqrt(semiMajorAxis ** 3 / gravitationalConstant);
+  const stepCountPerOrbit = 1000;
+  const step = orbitalPeriod / stepCountPerOrbit;
+  const bodies = [
+    { position: [0, 0, 0], velocity: [0, 0, 0], mass: 1 },
+    {
+      position: [semiMajorAxis * (1 - eccentricity), 0, 0],
+      velocity: [0, Math.sqrt(gravitationalConstant * (1 + eccentricity) / (semiMajorAxis * (1 - eccentricity))), 0],
+      mass: 1e-12
+    }
+  ];
+  const configuration = { mode: 'general-relativity', gravitationalConstant, grSpeedOfLight: speedOfLight, softening: 1e-12 };
+  let acceleration = evaluateNBodyAmplitudeGravity(bodies, configuration).accelerations[1];
+  let previousRadialVelocity = 0;
+  let periapsisAngles = [];
+  const orbitCount = 4;
+  for (let index = 0; index < stepCountPerOrbit * orbitCount; index += 1) {
+    const position = bodies[1].position;
+    const velocity = bodies[1].velocity;
+    const positionBefore = [...position];
+    const velocityBefore = [...velocity];
+    for (let axis = 0; axis < 3; axis += 1) {
+      position[axis] += velocity[axis] * step + 0.5 * acceleration[axis] * step ** 2;
+      velocity[axis] += 0.5 * acceleration[axis] * step;
+    }
+    const nextAcceleration = evaluateNBodyAmplitudeGravity(bodies, configuration).accelerations[1];
+    for (let axis = 0; axis < 3; axis += 1) velocity[axis] += 0.5 * nextAcceleration[axis] * step;
+    const radiusNow = Math.hypot(...position);
+    const radialVelocity = position.reduce((sum, component, axis) => sum + component * velocity[axis], 0) / radiusNow;
+    if (previousRadialVelocity < 0 && radialVelocity >= 0) {
+      const fraction = previousRadialVelocity / (previousRadialVelocity - radialVelocity);
+      const periapsis = positionBefore.map((component, axis) => component + (position[axis] - component) * fraction);
+      let angle = Math.atan2(periapsis[1], periapsis[0]);
+      const previousAngle = periapsisAngles.at(-1) ?? 0;
+      while (angle <= previousAngle + Math.PI) angle += 2 * Math.PI;
+      periapsisAngles.push(angle);
+    }
+    previousRadialVelocity = radialVelocity;
+    acceleration = nextAcceleration;
+  }
+  assert.equal(periapsisAngles.length, orbitCount - 1);
+  const measuredAdvance = periapsisAngles.at(-1) / (orbitCount - 1) - 2 * Math.PI;
+  const expectedAdvance = 6 * Math.PI * gravitationalConstant / (semiMajorAxis * (1 - eccentricity ** 2) * speedOfLight ** 2);
+  assert.ok(measuredAdvance > 0, `expected prograde periapsis advance, received ${measuredAdvance}`);
+  assert.ok(Math.abs(measuredAdvance - expectedAdvance) / expectedAdvance < 0.08, `expected ${expectedAdvance}, received ${measuredAdvance}`);
 });
 
 test('gravituhedron hypothesis approaches the reference at long range', () => {

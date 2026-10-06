@@ -2,6 +2,8 @@ import { calculateDdfMobility, evaluateMechanicsResponse } from './lib/simulatio
 
 export const AMPLITUDE_GRAVITY_MODES = [
   { value: 'newtonian', label: 'Newtonian reference' },
+  { value: 'general-relativity', label: 'GR (General Relativity)' },
+  { value: 'gr-normed-tensor-gaussian', label: 'GR (Normed Tensor Gaussian Splatter)' },
   { value: 'spin2-tree', label: 'Spin-2 EFT tree proxy' },
   { value: 'gravituhedron', label: 'Gravituhedron hypothesis' },
   { value: 'ddf-tensor-gaussian', label: 'DDF / normed tensor-Gaussian' }
@@ -20,6 +22,8 @@ export const DEFAULT_AMPLITUDE_GRAVITY = Object.freeze({
   softening: 0.18,
   gravitationalConstant: 1,
   speedOfLight: 20,
+  grSpeedOfLight: 63241.077,
+  grTensorGaussianWaist: 0.75,
   showDifference: false,
   showStreamlines: false,
   streamlineLength: 9,
@@ -33,6 +37,7 @@ export const AMPLITUDE_GRAVITY_STREAMLINES_PER_BODY = 8;
 export const AMPLITUDE_GRAVITY_STREAMLINE_SEGMENTS = 40;
 export const AMPLITUDE_GRAVITY_PATH_SAMPLE_RATE = 24;
 export const AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY = AMPLITUDE_GRAVITY_PATH_SAMPLE_RATE * 12 + 1;
+export const AMPLITUDE_GRAVITY_MAX_INTEGRATION_STEP_YEARS = 0.001;
 
 const MODE_IDS = new Set(AMPLITUDE_GRAVITY_MODES.map(({ value }) => value));
 
@@ -46,6 +51,10 @@ function clamp(value, minimum, maximum) {
 
 function positive(value, fallback) {
   return Math.max(1e-6, finiteOr(value, fallback));
+}
+
+function positiveMass(value, fallback = 1) {
+  return Math.max(Number.MIN_VALUE, finiteOr(value, fallback));
 }
 
 export function sanitizeAmplitudeGravity(value = {}) {
@@ -63,6 +72,8 @@ export function sanitizeAmplitudeGravity(value = {}) {
     softening: clamp(finiteOr(value.softening, DEFAULT_AMPLITUDE_GRAVITY.softening), 0.001, 10),
     gravitationalConstant: clamp(finiteOr(value.gravitationalConstant, DEFAULT_AMPLITUDE_GRAVITY.gravitationalConstant), 0, 100),
     speedOfLight: clamp(finiteOr(value.speedOfLight, DEFAULT_AMPLITUDE_GRAVITY.speedOfLight), 1, 1e6),
+    grSpeedOfLight: clamp(finiteOr(value.grSpeedOfLight, DEFAULT_AMPLITUDE_GRAVITY.grSpeedOfLight), 1, 1e9),
+    grTensorGaussianWaist: positive(value.grTensorGaussianWaist, DEFAULT_AMPLITUDE_GRAVITY.grTensorGaussianWaist),
     showDifference: Boolean(value.showDifference),
     showStreamlines: Boolean(value.showStreamlines),
     streamlineLength: clamp(finiteOr(value.streamlineLength, DEFAULT_AMPLITUDE_GRAVITY.streamlineLength), 1, 24),
@@ -77,7 +88,7 @@ export function sanitizeAmplitudeGravity(value = {}) {
 
 export function updateAmplitudeGravityStreamlines(target, bodies, configuration = DEFAULT_AMPLITUDE_GRAVITY) {
   const settings = sanitizeAmplitudeGravity(configuration);
-  const sourceMasses = bodies.map((body) => positive(body.mass, 1));
+  const sourceMasses = bodies.map((body) => positiveMass(body.mass, 1));
   const field = new Float64Array(3);
   const segmentLength = settings.streamlineLength / AMPLITUDE_GRAVITY_STREAMLINE_SEGMENTS;
   const softeningSquared = settings.softening * settings.softening;
@@ -247,6 +258,9 @@ export function evaluateAmplitudeChannels({ distance, massProduct = 1, chargePro
 
 export function evaluateNBodyAmplitudeGravity(bodies, configuration = DEFAULT_AMPLITUDE_GRAVITY) {
   const settings = sanitizeAmplitudeGravity(configuration);
+  if (settings.mode === 'general-relativity' || settings.mode === 'gr-normed-tensor-gaussian') {
+    return evaluateGeneralRelativityNBody(bodies, settings);
+  }
   const accelerations = bodies.map(() => [0, 0, 0]);
   let potential = 0;
   let photonDiagnostic = 0;
@@ -257,8 +271,8 @@ export function evaluateNBodyAmplitudeGravity(bodies, configuration = DEFAULT_AM
       const offset = [0, 1, 2].map((axis) => bodies[second].position[axis] - bodies[first].position[axis]);
       const distance = Math.hypot(...offset);
       if (distance === 0) continue;
-      const firstMass = positive(bodies[first].mass, 1);
-      const secondMass = positive(bodies[second].mass, 1);
+      const firstMass = positiveMass(bodies[first].mass, 1);
+      const secondMass = positiveMass(bodies[second].mass, 1);
       const firstVelocity = bodies[first].velocity ?? [0, 0, 0];
       const secondVelocity = bodies[second].velocity ?? [0, 0, 0];
       const channels = evaluateAmplitudeChannels({
@@ -281,10 +295,140 @@ export function evaluateNBodyAmplitudeGravity(bodies, configuration = DEFAULT_AM
   }
 
   const forceResidual = [0, 1, 2].map((axis) => bodies.reduce(
-    (sum, body, index) => sum + positive(body.mass, 1) * accelerations[index][axis],
+    (sum, body, index) => sum + positiveMass(body.mass, 1) * accelerations[index][axis],
     0
   ));
   return { accelerations, potential, photonDiagnostic, maximumDifference, forceResidual };
+}
+
+export function integrateNBodyVelocityVerlet(bodies, elapsedYears, configuration = DEFAULT_AMPLITUDE_GRAVITY, {
+  fixedBodyIndices = new Set(),
+  initialAccelerations = null,
+  afterDrift = () => {},
+  maximumStepYears = AMPLITUDE_GRAVITY_MAX_INTEGRATION_STEP_YEARS
+} = {}) {
+  if (!Number.isFinite(elapsedYears) || elapsedYears === 0 || bodies.length === 0) return { substeps: 0 };
+  const stepCount = Math.max(1, Math.ceil(Math.abs(elapsedYears) / positive(maximumStepYears, AMPLITUDE_GRAVITY_MAX_INTEGRATION_STEP_YEARS)));
+  const step = elapsedYears / stepCount;
+  let accelerations = initialAccelerations?.length === bodies.length
+    ? initialAccelerations
+    : evaluateNBodyAmplitudeGravity(bodies, configuration).accelerations;
+
+  for (let stepIndex = 0; stepIndex < stepCount; stepIndex += 1) {
+    bodies.forEach((body, bodyIndex) => {
+      if (fixedBodyIndices.has(bodyIndex)) return;
+      for (let axis = 0; axis < 3; axis += 1) {
+        body.velocity[axis] += 0.5 * accelerations[bodyIndex][axis] * step;
+        body.position[axis] += body.velocity[axis] * step;
+      }
+    });
+    afterDrift(step * (stepIndex + 1), stepIndex);
+    const nextAccelerations = evaluateNBodyAmplitudeGravity(bodies, configuration).accelerations;
+    bodies.forEach((body, bodyIndex) => {
+      if (fixedBodyIndices.has(bodyIndex)) return;
+      for (let axis = 0; axis < 3; axis += 1) body.velocity[axis] += 0.5 * nextAccelerations[bodyIndex][axis] * step;
+    });
+    accelerations = nextAccelerations;
+  }
+  return { substeps: stepCount, accelerations };
+}
+
+function vectorDot(first, second) {
+  return first.reduce((sum, value, axis) => sum + value * second[axis], 0);
+}
+
+function vectorMagnitude(vector) {
+  return Math.hypot(...vector);
+}
+
+export function evaluateGeneralRelativityPair({
+  positionFirst,
+  positionSecond,
+  velocityFirst = [0, 0, 0],
+  velocitySecond = [0, 0, 0],
+  massFirst = 1,
+  massSecond = 1
+}, configuration = DEFAULT_AMPLITUDE_GRAVITY) {
+  const settings = sanitizeAmplitudeGravity(configuration);
+  const separation = positionFirst.map((value, axis) => value - positionSecond[axis]);
+  const distance = vectorMagnitude(separation);
+  if (distance === 0) return { newtonian: [0, 0, 0], generalRelativity: [0, 0, 0], pnCorrection: [0, 0, 0], tensorGaussian: 0, normalizedTensor: [[1, 0, 0], [0, 1, 0], [0, 0, 1]] };
+  const radius = Math.sqrt(distance * distance + settings.softening * settings.softening);
+  const radial = separation.map((value) => value / distance);
+  const relativeVelocity = velocityFirst.map((value, axis) => value - velocitySecond[axis]);
+  const speedSquared = vectorDot(relativeVelocity, relativeVelocity);
+  const radialSpeed = vectorDot(radial, relativeVelocity);
+  const firstMassValue = positiveMass(massFirst, 1);
+  const secondMassValue = positiveMass(massSecond, 1);
+  const totalMass = firstMassValue + secondMassValue;
+  const symmetricMassRatio = firstMassValue * secondMassValue / totalMass ** 2;
+  const gravitationalParameter = settings.gravitationalConstant * totalMass;
+  const newtonianScale = -gravitationalParameter / radius ** 2;
+  const newtonian = radial.map((component) => component * newtonianScale);
+  const cSquared = settings.grSpeedOfLight ** 2;
+  const radialPN = (4 + 2 * symmetricMassRatio) * gravitationalParameter / radius
+    - (1 + 3 * symmetricMassRatio) * speedSquared
+    + 1.5 * symmetricMassRatio * radialSpeed ** 2;
+  const pnScale = gravitationalParameter / (cSquared * radius ** 2);
+  const pnCorrection = radial.map((component, axis) => pnScale * (
+    component * radialPN + (4 - 2 * symmetricMassRatio) * radialSpeed * relativeVelocity[axis]
+  ));
+
+  const speed = Math.sqrt(speedSquared);
+  const velocityDirection = speed > 0 ? relativeVelocity.map((component) => component / speed) : [0, 0, 0];
+  const anisotropy = clamp(speedSquared / cSquared, 0, 0.5);
+  const tensorNormalizer = 1 + anisotropy / 3;
+  const normalizedTensor = Array.from({ length: 3 }, (_, row) => Array.from({ length: 3 }, (_, column) => (
+    ((row === column ? 1 : 0) + anisotropy * velocityDirection[row] * velocityDirection[column]) / tensorNormalizer
+  )));
+  const tensorCorrection = normalizedTensor.map((row) => vectorDot(row, pnCorrection));
+  const tensorGaussian = settings.mode === 'gr-normed-tensor-gaussian'
+    ? Math.exp(-0.5 * (radius / settings.grTensorGaussianWaist) ** 2)
+    : 1;
+  const selectedCorrection = (settings.mode === 'gr-normed-tensor-gaussian' ? tensorCorrection : pnCorrection)
+    .map((component) => component * tensorGaussian);
+
+  return {
+    newtonian,
+    generalRelativity: newtonian.map((component, axis) => component + selectedCorrection[axis]),
+    pnCorrection: selectedCorrection,
+    tensorGaussian,
+    normalizedTensor
+  };
+}
+
+function evaluateGeneralRelativityNBody(bodies, settings) {
+  const accelerations = bodies.map(() => [0, 0, 0]);
+  let potential = 0;
+  let maximumDifference = 0;
+  for (let first = 0; first < bodies.length; first += 1) {
+    for (let second = first + 1; second < bodies.length; second += 1) {
+      const firstMass = positiveMass(bodies[first].mass, 1);
+      const secondMass = positiveMass(bodies[second].mass, 1);
+      const pair = evaluateGeneralRelativityPair({
+        positionFirst: bodies[first].position,
+        positionSecond: bodies[second].position,
+        velocityFirst: bodies[first].velocity,
+        velocitySecond: bodies[second].velocity,
+        massFirst: firstMass,
+        massSecond: secondMass
+      }, settings);
+      const totalMass = firstMass + secondMass;
+      for (let axis = 0; axis < 3; axis += 1) {
+        accelerations[first][axis] += pair.generalRelativity[axis] * secondMass / totalMass;
+        accelerations[second][axis] -= pair.generalRelativity[axis] * firstMass / totalMass;
+      }
+      const newtonianMagnitude = Math.max(vectorMagnitude(pair.newtonian), 1e-30);
+      maximumDifference = Math.max(maximumDifference, vectorMagnitude(pair.pnCorrection) / newtonianMagnitude);
+      const distance = vectorMagnitude(bodies[first].position.map((value, axis) => value - bodies[second].position[axis]));
+      potential -= settings.gravitationalConstant * firstMass * secondMass / Math.sqrt(distance ** 2 + settings.softening ** 2);
+    }
+  }
+  const forceResidual = [0, 1, 2].map((axis) => bodies.reduce(
+    (sum, body, index) => sum + positiveMass(body.mass, 1) * accelerations[index][axis],
+    0
+  ));
+  return { accelerations, potential, photonDiagnostic: 0, maximumDifference, forceResidual };
 }
 
 export function calculateSystemInvariants(bodies, potential = 0) {
@@ -292,7 +436,7 @@ export function calculateSystemInvariants(bodies, potential = 0) {
   const angularMomentum = [0, 0, 0];
   let kinetic = 0;
   bodies.forEach((body) => {
-    const mass = positive(body.mass, 1);
+    const mass = positiveMass(body.mass, 1);
     const velocity = body.velocity ?? [0, 0, 0];
     const position = body.position ?? [0, 0, 0];
     kinetic += 0.5 * mass * velocity.reduce((sum, component) => sum + component * component, 0);

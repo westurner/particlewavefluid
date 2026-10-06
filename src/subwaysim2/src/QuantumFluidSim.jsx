@@ -196,7 +196,7 @@ function QuantumEvolution({ settings, running, resetToken, onTelemetry, particle
 function QuantumScene({ viewMode, orbitPlaying, orbitSettings, particleAppearance, onUserInteraction, ...props }) {
   return <>
     <color attach="background" args={['#071117']} />
-    <fog attach="fog" args={['#071117', 16, 34]} />
+    {/* <fog attach="fog" args={['#071117', 16, 34]} /> */}
     <ambientLight intensity={0.65} color="#b8dcd5" />
     <directionalLight intensity={1.3} position={[5, 10, 5]} color="#ffe8b5" />
     <gridHelper args={[20, 40, '#244d55', '#112b31']} position={[0, -0.08, 0]} />

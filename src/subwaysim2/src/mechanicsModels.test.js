@@ -4,6 +4,7 @@ import {
   compareFieldModels,
   DEFAULT_FIELD_MECHANICS,
   FIELD_MECHANICS_PARAMETER_FIELDS,
+  FIELD_MODEL_DETAILS,
   FIELD_MODEL_PARAMETER_DEPENDENCIES,
   evaluateEffectiveViscosity,
   evaluateFieldModel,
@@ -15,17 +16,20 @@ import {
 } from './mechanicsModels.js';
 
 test('field model indices stay synchronized with shader selectors', () => {
-  assert.equal(fieldModelIndex('newtonian'), 0);
-  assert.equal(fieldModelIndex('ns-compressible'), 1);
-  assert.equal(fieldModelIndex('ns-incompressible'), 2);
-  assert.equal(fieldModelIndex('sqg'), 3);
-  assert.equal(fieldModelIndex('ddf'), 4);
-  assert.equal(fieldModelIndex('grassmannian-amplituhedron'), 5);
+  assert.equal(fieldModelIndex('default'), 0);
+  assert.equal(fieldModelIndex('newtonian'), 1);
+  assert.equal(fieldModelIndex('ns-compressible'), 2);
+  assert.equal(fieldModelIndex('ns-incompressible'), 3);
+  assert.equal(fieldModelIndex('sqg'), 4);
+  assert.equal(fieldModelIndex('ddf'), 5);
+  assert.equal(fieldModelIndex('grassmannian-amplituhedron'), 6);
   assert.equal(fluidModelIndex('hbn-farnesane'), 1);
   assert.equal(quantumTransportIndex('gpe'), 1);
+  assert.ok(Object.values(FIELD_MODEL_DETAILS).every(({ description, solver }) => description && solver));
 });
 
 test('mechanics parameter dependencies expose only inputs consumed by each active model', () => {
+  assert.deepEqual(FIELD_MODEL_PARAMETER_DEPENDENCIES.default, []);
   assert.deepEqual(FIELD_MODEL_PARAMETER_DEPENDENCIES.newtonian, []);
   assert.deepEqual(FIELD_MODEL_PARAMETER_DEPENDENCIES['ns-incompressible'], []);
   assert.deepEqual(FIELD_MODEL_PARAMETER_DEPENDENCIES['ns-compressible'], ['coreRadius', 'compressibility']);
@@ -66,6 +70,14 @@ test('SQG quantum pressure regularizes the model core', () => {
   const farField = evaluateFieldModel('sqg', { radius: 10, speed: 0, magnitude: 1 });
   assert.ok(nearCore.quantumPressure > farField.quantumPressure);
   assert.ok(Number.isFinite(nearCore.radialAcceleration));
+});
+
+test('default particle mechanics is the enabled baseline model', () => {
+  assert.equal(DEFAULT_FIELD_MECHANICS.enabled, true);
+  assert.equal(DEFAULT_FIELD_MECHANICS.model, 'default');
+  const state = { radius: 2, speed: 1, magnitude: 1, rotation: 1 };
+  assert.equal(evaluateFieldModel('default', state).radialAcceleration, evaluateFieldModel('newtonian', state).radialAcceleration);
+  assert.notEqual(evaluateFieldModel('default', state).tangentialAcceleration, evaluateFieldModel('newtonian', state).tangentialAcceleration);
 });
 
 test('DDF dilatancy increases viscosity and lowers mobility near the speed limit', () => {
@@ -126,7 +138,7 @@ test('field mechanics sanitization clamps unsafe imported values', () => {
     baseViscosity: 8
   }), {
     ...DEFAULT_FIELD_MECHANICS,
-    model: 'newtonian',
+    model: 'default',
     comparisonModel: 'ddf',
     coreRadius: 0.05,
     speedLimit: 0.1,

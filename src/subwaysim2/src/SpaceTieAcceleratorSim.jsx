@@ -16,6 +16,7 @@ import {
   calculateRecoilHarvest,
   calculateSpaceEnergyBudget,
   calculateVortexBeamIntensity,
+  calculateRotatingTracerAngle,
   createHelixNodes,
   evaluateSpaceTieOperator,
   routeLengthKm,
@@ -36,8 +37,16 @@ const INITIAL_SETTINGS = sanitizeSpaceTieSettings({
   ...SPACE_TIE_DEFAULTS,
   pulseSequenceSeconds: 18,
   meshPulsesPerHour: 1,
-  particleAppearance: { ...DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, sizeScale: 0.95, opacity: 0.84 }
+  particleAppearance: { ...DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, sizeScale: 1.5, opacity: 0.84 }
 });
+
+function useSimulationTime(simulationSpeed) {
+  const elapsed = useRef(0);
+  useFrame((_, delta) => {
+    elapsed.current += Math.min(0.05, delta) * simulationSpeed;
+  });
+  return elapsed;
+}
 
 function readPresets() {
   const library = readPresetLibrary(typeof window === 'undefined' ? null : window.localStorage, PRESET_KEY, { Default: INITIAL_SETTINGS });
@@ -95,10 +104,11 @@ function TieLattice({ settings, layout, activeStage }) {
   const dummy = useMemo(() => new Object3D(), []);
   const colors = useMemo(() => STRAND_COLORS.map((hex) => new Color(hex)), []);
   const activeColor = useMemo(() => new Color('#fff0a6'), []);
+  const simulationTime = useSimulationTime(settings.simulationSpeed);
   const count = layout.nodes.length;
   const radius = Math.max(1.1, Math.min(8, settings.helixRadiusM / 8));
 
-  useFrame(({ clock }) => {
+  useFrame(() => {
     const rings = ringsRef.current;
     const cores = coresRef.current;
     if (!rings || !cores) return;
@@ -106,8 +116,8 @@ function TieLattice({ settings, layout, activeStage }) {
       const node = layout.nodes[index];
       const strandPhase = Math.PI * 2 * node.strand / settings.strandCount;
       const turns = Math.max(2, layout.renderCountPerStrand / 2);
-      const angle = node.progress * Math.PI * 2 * turns + strandPhase + clock.elapsedTime * settings.swirlRate + Math.sin(clock.elapsedTime * 0.35 + index * 0.22) * settings.nodeMotion * 0.3;
-      const radial = radius * (1 + settings.nodeMotion * 0.06 * Math.sin(clock.elapsedTime * 0.6 + index * 0.51));
+      const angle = node.progress * Math.PI * 2 * turns + strandPhase + simulationTime.current * settings.swirlRate + Math.sin(simulationTime.current * 0.35 + index * 0.22) * settings.nodeMotion * 0.3;
+      const radial = radius * (1 + settings.nodeMotion * 0.06 * Math.sin(simulationTime.current * 0.6 + index * 0.51));
       dummy.position.set(Math.cos(angle) * radial, Math.sin(angle) * radial, (node.progress - 0.5) * 24);
       dummy.rotation.set(0, 0, angle + Math.PI / 2);
       const active = activeStage >= 0 && node.strandIndex === activeStage;
@@ -132,11 +142,12 @@ function TieLattice({ settings, layout, activeStage }) {
 }
 
 function FieldSplats({ settings, telemetry }) {
-  const count = Math.min(1536, settings.particleCount);
+  const count = settings.particleCount;
   const geometry = useMemo(() => {
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
     const seeds = new Float32Array(count);
+    const radii = new Float32Array(count);
     const white = new Color('#ffffff');
     for (let index = 0; index < count; index += 1) {
       const progress = index / count;
@@ -145,35 +156,43 @@ function FieldSplats({ settings, telemetry }) {
       positions[index * 3] = Math.cos(angle) * radial;
       positions[index * 3 + 1] = Math.sin(angle) * radial;
       positions[index * 3 + 2] = (progress - 0.5) * 24;
+      radii[index] = radial;
       colors.set([white.r, white.g, white.b], index * 3);
       seeds[index] = angle;
     }
     const result = new BufferGeometry();
-    result.setAttribute('position', new BufferAttribute(positions, 3));
+    result.setAttribute('position', new BufferAttribute(positions, 3).setUsage(DynamicDrawUsage));
     result.setAttribute('color', new BufferAttribute(colors, 3).setUsage(DynamicDrawUsage));
     result.userData.seeds = seeds;
+    result.userData.radii = radii;
     return result;
   }, [count, settings.helixRadiusM]);
   const color = useMemo(() => new Color(), []);
   const accumulator = useRef(0);
+  const simulationTime = useSimulationTime(settings.simulationSpeed);
   useEffect(() => () => geometry.dispose(), [geometry]);
-  useFrame(({ clock }, delta) => {
+  useFrame((_, delta) => {
     accumulator.current += delta;
     if (!settings.showFieldSplats || accumulator.current < 0.08) return;
     accumulator.current = 0;
     const positions = geometry.attributes.position.array;
     const colors = geometry.attributes.color.array;
     const seeds = geometry.userData.seeds;
+    const radii = geometry.userData.radii;
     for (let index = 0; index < count; index += 1) {
-      const radiusM = Math.hypot(positions[index * 3], positions[index * 3 + 1]) * 8;
-      const response = evaluateSpaceTieOperator({ operator: settings.operator, radiusM, speedMS: telemetry.velocityMS, axialPosition: positions[index * 3 + 2], time: clock.elapsedTime, settings });
+      const radiusM = radii[index] * 8;
+      const response = evaluateSpaceTieOperator({ operator: settings.operator, radiusM, speedMS: telemetry.velocityMS, axialPosition: positions[index * 3 + 2], time: simulationTime.current, settings });
+      const angle = calculateRotatingTracerAngle({ baseAngle: seeds[index], simulationTime: simulationTime.current, swirlRate: settings.swirlRate, accelerationScale: response.accelerationScale, splatWeight: response.splatWeight });
+      positions[index * 3] = Math.cos(angle) * radii[index];
+      positions[index * 3 + 1] = Math.sin(angle) * radii[index];
       const vortex = settings.widget === 'vortex-sail' ? calculateVortexBeamIntensity({ radiusM, beamWaistM: settings.tensorGaussianWaistM, topologicalCharge: settings.vortexCharge }) : 1;
-      const strength = Math.min(1, response.splatWeight * vortex * (0.55 + 0.45 * Math.sin(clock.elapsedTime * 1.3 + seeds[index]) ** 2));
+      const strength = Math.min(1, response.splatWeight * vortex * (0.55 + 0.45 * Math.sin(simulationTime.current * 1.3 + seeds[index]) ** 2));
       color.setHSL(0.54 - strength * 0.42, 0.84, 0.26 + strength * 0.36);
       colors[index * 3] = color.r;
       colors[index * 3 + 1] = color.g;
       colors[index * 3 + 2] = color.b;
     }
+    geometry.attributes.position.needsUpdate = true;
     geometry.attributes.color.needsUpdate = true;
   });
   return <points geometry={geometry} visible={settings.showFieldSplats}><pointsMaterial size={0.045 * settings.particleAppearance.sizeScale} sizeAttenuation transparent opacity={settings.particleAppearance.opacity} vertexColors blending={AdditiveBlending} depthWrite={false} /></points>;
@@ -218,7 +237,9 @@ function CoilStageVisual({ settings, activeStage, stageCount }) {
   </mesh>)}</group>;
 }
 
-function HelixRailVisual({ layout }) {
+function HelixRailVisual({ layout, settings }) {
+  const groupRef = useRef(null);
+  const simulationTime = useSimulationTime(settings.simulationSpeed);
   const tracks = useMemo(() => Array.from({ length: layout.nodes.length / layout.renderCountPerStrand }, (_, strand) => {
     const start = strand * layout.renderCountPerStrand;
     const nodes = layout.nodes.slice(start, start + layout.renderCountPerStrand);
@@ -226,7 +247,10 @@ function HelixRailVisual({ layout }) {
     return new TubeGeometry(curve, Math.max(48, nodes.length * 2), 0.035, 6, false);
   }), [layout]);
   useEffect(() => () => tracks.forEach((geometry) => geometry.dispose()), [tracks]);
-  return <group>{tracks.map((geometry, index) => <mesh key={index} geometry={geometry}><meshBasicMaterial color={STRAND_COLORS[index % STRAND_COLORS.length]} transparent opacity={0.82} /></mesh>)}</group>;
+  useFrame(() => {
+    if (groupRef.current) groupRef.current.rotation.z = simulationTime.current * settings.swirlRate;
+  });
+  return <group ref={groupRef}>{tracks.map((geometry, index) => <mesh key={index} geometry={geometry}><meshBasicMaterial color={STRAND_COLORS[index % STRAND_COLORS.length]} transparent opacity={0.82} /></mesh>)}</group>;
 }
 
 function TieSpacingVisual({ settings, layout }) {
@@ -240,6 +264,7 @@ function TieSpacingVisual({ settings, layout }) {
 
 function DynamicMeshVisual({ settings, layout }) {
   const groupRef = useRef(null);
+  const simulationTime = useSimulationTime(settings.simulationSpeed);
   const geometry = useMemo(() => {
     const positions = new Float32Array(layout.renderCountPerStrand * settings.strandCount * 6);
     let offset = 0;
@@ -257,10 +282,10 @@ function DynamicMeshVisual({ settings, layout }) {
     return result;
   }, [layout, settings.strandCount]);
   useEffect(() => () => geometry.dispose(), [geometry]);
-  useFrame(({ clock }) => {
+  useFrame(() => {
     if (!groupRef.current) return;
-    groupRef.current.rotation.z = Math.sin(clock.elapsedTime * 0.35) * settings.swirlRate * 0.12;
-    const pulse = 1 + Math.sin(clock.elapsedTime * 1.7) * settings.nodeMotion * 0.035;
+    groupRef.current.rotation.z = Math.sin(simulationTime.current * 0.35) * settings.swirlRate * 0.12;
+    const pulse = 1 + Math.sin(simulationTime.current * 1.7) * settings.nodeMotion * 0.035;
     groupRef.current.scale.set(pulse, pulse, 1);
   });
   return <group ref={groupRef}><lineSegments geometry={geometry}><lineBasicMaterial color="#72b9e8" transparent opacity={0.72} /></lineSegments></group>;
@@ -348,7 +373,7 @@ function SpaceTieScene({ settings, massDriver, cameraViews, viewMode, orbitPlayi
     {!isTug && <>
       {settings.widget === 'mass-driver' && <CoilStageVisual settings={settings} activeStage={flightTelemetry.activeStage} stageCount={layout.renderCountPerStrand} />}
       {settings.widget === 'tunnel-envelope' && <TunnelEnvelopeVisual settings={settings} />}
-      {settings.widget === 'helical-formation' && <HelixRailVisual layout={layout} />}
+      {settings.widget === 'helical-formation' && <HelixRailVisual layout={layout} settings={settings} />}
       {settings.widget === 'tie-spacing' && <TieSpacingVisual settings={settings} layout={layout} />}
       {settings.widget === 'dynamic-mesh' && <DynamicMeshVisual settings={settings} layout={layout} />}
       {settings.widget === 'vacuum-channel' && <VacuumChannelVisual settings={settings} />}
@@ -507,8 +532,8 @@ function SpaceTieAcceleratorSim({ onBack }) {
       <ParamSelect className="space-tie-select" label="Halbach multipole" value={settings.multipoleOrder} options={HALBACH_OPTIONS} onChange={(multipoleOrder) => update({ multipoleOrder })} />
       <NumericParamControl className="space-tie-range" label="Halbach edge flux" value={settings.edgeFluxT} min={0} max={1000} step={1} suffix="T" onChange={(edgeFluxT) => update({ edgeFluxT })} />
       <label className="amplitude-toggle"><input type="checkbox" checked={settings.showFieldSplats} onChange={(event) => update({ showFieldSplats: event.target.checked })} /><span>Show normalized field splats</span></label>
-      <SimulatorParameterControls title="Scene particle count" configuration={settings} onChange={updateAll} fields={[{ type: 'range', path: 'particleCount', label: 'Particle samples', value: settings.particleCount, min: 512, max: 8192, step: 256 }]} />
-      <SimulatorViewParameters configuration={settings} onChange={updateAll} cameraClassName="space-tie-camera-settings" particleClassName="space-tie-particle-settings" appearanceCapabilities={{ shape: false, derivativeOrder: false, colorMode: false, color: false }} />
+      <SimulatorParameterControls title="Scene particle count" configuration={settings} onChange={updateAll} fields={[{ type: 'range', path: 'particleCount', label: 'Particle samples', value: settings.particleCount, min: 512, max: 16384, step: 512 }]} />
+      <SimulatorViewParameters configuration={settings} onChange={updateAll} cameraClassName="space-tie-camera-settings" particleClassName="space-tie-particle-settings" appearanceCapabilities={{ shape: false, derivativeOrder: false, colorMode: false, color: false }} appearanceFields={[{ key: 'sizeScale', type: 'range', label: 'Particle size', min: 0.25, max: 8, step: 0.05, suffix: 'x' }, { key: 'opacity', type: 'range', label: 'Particle opacity', min: 0, max: 1, step: 0.01 }]} />
     </details>
     <p className="space-tie-caveat">Normal coilgun mode conserves pulse energy. DDF, Grassmannian/twistor, amplituhedron-style coupling, and vacuum-fracture concepts are bounded visualization hypotheses, not established propulsion or energy-transfer physics.</p>
   </aside>;

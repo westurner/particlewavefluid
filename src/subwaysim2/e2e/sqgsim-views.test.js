@@ -148,6 +148,32 @@ test('SQGSIM zoom slider changes magnification without rotating the camera', asy
   assert.deepEqual(await cameraPosition(), beforeZoom, 'zoom slider should not alter camera orientation or position');
 });
 
+test('SQGSIM wheel zoom preserves the Left camera perspective', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
+
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /02 \/ LOAD FIELD/ }).click();
+  await page.waitForFunction(() => Boolean(document.querySelector('canvas')));
+  await page.getByRole('button', { name: 'Pause simulation' }).click();
+  const cameraPanel = page.locator('details.attractor-details').filter({ has: page.locator('summary').filter({ hasText: /^Camera$/ }) });
+  await cameraPanel.locator('summary').evaluate((summary) => summary.click());
+  const toolbar = page.locator('.attractor-view-toolbar');
+  await toolbar.getByRole('button', { name: 'Left' }).evaluate((button) => button.click());
+  await page.waitForTimeout(300);
+  const canvas = page.locator('canvas');
+  const box = await canvas.boundingBox();
+  assert.ok(box);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const zoom = page.getByRole('slider', { name: /^Zoom/ });
+  const beforeZoom = Number(await zoom.inputValue());
+  await page.mouse.wheel(0, -120);
+  await page.waitForTimeout(200);
+  assert.ok(Number(await zoom.inputValue()) > beforeZoom, 'wheel input should increase zoom');
+  assert.equal(await toolbar.getByRole('button', { name: 'Left' }).getAttribute('aria-pressed'), 'true');
+});
+
 test('SQGSIM transform controls move an attractor without stealing camera drag', async (t) => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());

@@ -3,6 +3,7 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { ContactShadows } from '@react-three/drei';
 import { AdditiveBlending, BufferAttribute, BufferGeometry } from 'three';
 import { NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
+import { TelemetryHud } from './lib/TelemetryHud.jsx';
 import { CameraPerspectiveToolbar, PerspectiveOrbitControls, SimulatorBase, SimulatorPresetControls, SimulatorViewParameters } from './lib/SimulatorBase.jsx';
 import { createCameraViews, DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, DEFAULT_SIMULATOR_3D_PARAMETERS, readPresetLibrary, writePresetLibrary } from './lib/simulator-base.js';
 import { calculateRailHarvestYield, calculateRailTieEconomics, estimateRailTieResponse, getRailTieFormulation, RAIL_HARVEST_MODES, RAIL_TIE_FORMULATIONS, RAIL_TIE_SCREENING_LIMITS } from './railTieModel.js';
@@ -404,7 +405,11 @@ export default function RailTieMaterialSim({ onBack }) {
     {activeView === 'scene' && <>
       <CameraPerspectiveToolbar className="simulator-perspective-toolbar rail-tie-perspectives" modesClassName="simulator-perspective-modes" views={cameraViews} viewMode={cameraView} orbitPlaying={orbitPlaying} onViewChange={(view) => { setCameraView(view); if (view === 'orbital') setOrbitPlaying(true); }} onToggleOrbit={() => setOrbitPlaying((value) => !value)} />
       <section className="thermal-title rail-tie-title"><span>MATERIAL STUDY / ACTIVE TIE CONCEPT</span><h1>Build the next sleeper.</h1><p>Compare candidate materials while axle response, sensor telemetry, and isolation assumptions remain visible.</p></section>
-      <div className="rail-tie-hud" aria-label="Live rail tie metrics"><div><span>ACTIVE LOAD</span><strong>{telemetry.rows?.[telemetry.activeTieIndex]?.loadKN.toFixed(1) ?? '0.0'} kN</strong></div><div><span>HARVESTED</span><strong>{((telemetry.harvestedJoules ?? 0) / 3600).toFixed(4)} Wh</strong></div><div><span>RAIL-TO-RAIL SCREEN</span><strong className={response.isolationScreenPasses ? 'is-safe' : 'is-warning'}>{response.isolationScreenPasses ? 'CLEAR INPUT' : 'CHECK INPUT'}</strong></div></div>
+      <TelemetryHud className="rail-tie-hud" label="Live rail tie metrics" items={[
+        { label: 'ACTIVE LOAD', value: `${telemetry.rows?.[telemetry.activeTieIndex]?.loadKN.toFixed(1) ?? '0.0'} kN` },
+        { label: 'HARVESTED', value: `${((telemetry.harvestedJoules ?? 0) / 3600).toFixed(4)} Wh` },
+        { label: 'RAIL-TO-RAIL SCREEN', value: response.isolationScreenPasses ? 'CLEAR INPUT' : 'CHECK INPUT', tone: response.isolationScreenPasses ? 'safe' : 'warning' }
+      ]} />
       {configuration.showTelemetryTable && <div className={`rail-tie-scene-table${telemetryDockPosition === 'bottom' ? ' is-bottom' : ''}`} style={{ '--rail-tie-telemetry-opacity': configuration.telemetryOpacity, '--rail-tie-telemetry-height': `${configuration.telemetryHeight}px` }}><div className="rail-tie-section-title"><span>LIVE SENSOR MESH / ESTIMATED VALUES</span><strong>{telemetry.impactCount ?? 0} contacts</strong></div><div className="rail-tie-comparison-wrap"><table className="rail-tie-comparison"><thead><tr><th>Tie ID</th><th>Hits</th><th>Load</th><th>Stress</th><th>Deflection</th><th>Temp</th></tr></thead><tbody>{telemetry.rows?.map((row) => <tr key={row.id}><th>{row.id}</th><td>{row.impacts}</td><td>{row.loadKN.toFixed(1)} kN</td><td>{row.stressMPa.toFixed(2)} MPa</td><td>{row.deflectionMm.toFixed(3)} mm</td><td>{row.temperatureC.toFixed(1)} °C</td></tr>)}</tbody></table></div></div>}
     </>}
     {activeView === 'performance' && <RailTiePerformancePanel configuration={configuration} response={response} telemetry={telemetry} />}

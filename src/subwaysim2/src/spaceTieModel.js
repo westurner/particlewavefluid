@@ -1,6 +1,7 @@
 import { createPositiveGrassmannianCell, DEFAULT_AMPLITUDE_GRAVITY } from './amplitudeGravityModel.js';
 import { DEFAULT_FIELD_MECHANICS, evaluateFieldModel } from './mechanicsModels.js';
 import { evaluateMechanicsResponse } from './lib/simulationMechanics.js';
+import { DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION } from './lib/simulator-base.js';
 import { calculateWaveTensorGaussian } from './waveModel.js';
 
 const rangeParameter = (key, label, min, max, step, suffix) => ({ key, label, min, max, step, suffix });
@@ -163,7 +164,7 @@ export const SPACE_TIE_DEFAULTS = Object.freeze({
   vacuumChannelContrast: 0,
   showFieldSplats: true,
   launchSequence: false,
-  particleCount: 2048,
+  particleCount: 4096,
   cameraViewMode: 'ortho1',
   cameraControlsEnabled: true,
   replayCameraTrack: 'easing',
@@ -174,7 +175,7 @@ export const SPACE_TIE_DEFAULTS = Object.freeze({
   replayCameraOrbitX: 0,
   replayCameraOrbitY: 1,
   replayCameraOrbitZ: 0,
-  particleAppearance: { sizeScale: 1, shape: 'native', derivativeOrder: 1, colorMode: 'native', color: '#ffffff', opacity: 0.85 }
+  particleAppearance: { ...DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, sizeScale: 1.5, opacity: 0.85 }
 });
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, Number.isFinite(value) ? value : min));
@@ -218,9 +219,17 @@ export function sanitizeSpaceTieSettings(value = {}) {
       const selected = options.find((option) => option.value === value[key])?.value;
       return [key, selected ?? SPACE_TIE_DEFAULTS[key]];
     })),
-    particleCount: Math.round(clamp(finite(value.particleCount, SPACE_TIE_DEFAULTS.particleCount), 512, 8192) / 256) * 256,
-    particleAppearance: { ...SPACE_TIE_DEFAULTS.particleAppearance, ...(value.particleAppearance ?? {}) }
+    particleCount: Math.round(clamp(finite(value.particleCount, SPACE_TIE_DEFAULTS.particleCount), 512, 16384) / 512) * 512,
+    particleAppearance: {
+      ...SPACE_TIE_DEFAULTS.particleAppearance,
+      ...(value.particleAppearance ?? {}),
+      sizeScale: clamp(finite(value.particleAppearance?.sizeScale, SPACE_TIE_DEFAULTS.particleAppearance.sizeScale), 0.25, 8)
+    }
   };
+}
+
+export function calculateRotatingTracerAngle({ baseAngle = 0, simulationTime = 0, swirlRate = 0, accelerationScale = 1, splatWeight = 1 } = {}) {
+  return baseAngle + simulationTime * swirlRate * accelerationScale * splatWeight;
 }
 
 export function routeLengthKm(destination) {
