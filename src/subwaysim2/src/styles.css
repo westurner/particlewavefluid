@@ -1188,6 +1188,8 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
 .frc-flow-swatch { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; box-shadow: 0 0 8px var(--color-current); }
 .frc-input-label { z-index: 3; pointer-events: none; }
 .frc-device-label { z-index: 3; pointer-events: none; }
+.frc-annotation-target { pointer-events: auto; cursor: pointer; }
+.frc-annotation-target:focus-visible { outline: 1px solid rgb(var(--color-rgb-f1c27e)); outline-offset: 3px; }
 .frc-input-label > div, .frc-device-label > div { display: grid; width: 240px; gap: 6px; padding: 9px 11px; border-left: 2px solid var(--frc-input-color); background: rgba(var(--color-rgb-07191d), 0.82); box-shadow: 0 5px 18px rgba(var(--color-rgb-000000), 0.22); text-align: left; font-size: 1em; }
 .frc-input-label strong, .frc-device-label strong { color: var(--frc-input-color); font: 1.5em 'DM Mono', monospace; font-weight: 500; }
 .frc-input-label span, .frc-device-label span { color: rgb(var(--color-rgb-b8d0ca)); font-size: 1.25em; line-height: 1.35; }
@@ -1407,11 +1409,12 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
 .laser-top-meta button, .laser-panel-toggle, .laser-hide, .laser-actions button { border: 1px solid rgba(121, 204, 204, 0.38); color: #b9e1d6; background: rgba(19, 42, 42, 0.85); font: 9px 'DM Mono', monospace; cursor: pointer; }
 .laser-top-meta button { padding: 8px 10px; }
 .laser-top-meta button:hover, .laser-panel-toggle:hover, .laser-actions button:hover { border-color: #e4a458; color: #f4d5a2; }
+.laser-perspectives { max-width: min(650px, calc(100vw - 420px)); }
 .laser-title { bottom: 54px; left: 30px; width: min(430px, calc(100vw - 430px)); pointer-events: none; text-shadow: 0 2px 20px #101718; }
 .laser-title p { margin: 0 0 12px; color: #f0b36a; font: 9px 'DM Mono', monospace; }
 .laser-title h1 { margin: 0; color: #edf1e8; font-size: 43px; font-weight: 500; line-height: 1.02; }
 .laser-title span { display: block; max-width: 360px; margin-top: 13px; color: #b1c3b9; font-size: 11px; line-height: 1.5; }
-.laser-scene-status { top: 82px; left: 28px; display: flex; align-items: center; gap: 20px; padding: 9px 11px; border: 1px solid rgba(173, 208, 189, 0.18); color: #b5c6bd; background: rgba(15, 27, 27, 0.76); font: 9px 'DM Mono', monospace; }
+.laser-scene-status { top: 128px; left: 28px; display: flex; align-items: center; gap: 20px; padding: 9px 11px; border: 1px solid rgba(173, 208, 189, 0.18); color: #b5c6bd; background: rgba(15, 27, 27, 0.76); font: 9px 'DM Mono', monospace; }
 .laser-scene-status span { display: flex; align-items: center; gap: 8px; }
 .laser-scene-status i, .laser-readout i { width: 6px; height: 6px; border-radius: 50%; background: #708078; }
 .laser-scene-status i.is-running, .laser-readout i { background: #81dfbf; box-shadow: 0 0 10px rgba(129, 223, 191, 0.7); }
@@ -1486,6 +1489,7 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
   .laser-brand em, .laser-top-meta > span { display: none; }
   .laser-mark { width: 32px; height: 32px; }
   .laser-top-meta button { padding: 7px 8px; }
+  .laser-perspectives { top: 72px; right: 12px; left: 12px; max-width: none; overflow-x: auto; }
   .laser-panel { top: 72px; right: 10px; bottom: 10px; left: 10px; width: auto; padding: 14px; }
   .laser-title { display: none; }
   .laser-scene-status { display: none; }

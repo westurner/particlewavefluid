@@ -250,6 +250,16 @@ test('Longitudinal laser array uses the shared 3D base and orbit controls', asyn
   assert.equal(await page.locator('.laser-topbar .simulator-base-brand b').textContent(), 'LONGITUDINAL ARRAY');
   assert.equal(await page.getByRole('link', { name: 'Lab menu' }).getAttribute('href'), '/');
   assert.equal(await page.locator('.laser-scene canvas').count(), 1);
+  const laserModules = page.locator('.laser-panel details.laser-module');
+  assert.equal(await laserModules.count(), 6);
+  const firstLaser = laserModules.first();
+  assert.notEqual(await firstLaser.getAttribute('open'), null, 'the first laser module should start expanded');
+  await firstLaser.locator('summary').click();
+  await page.waitForFunction(() => !document.querySelector('.laser-panel details.laser-module')?.open);
+  assert.equal(await firstLaser.getAttribute('open'), null);
+  await firstLaser.locator('summary').click();
+  await page.waitForFunction(() => document.querySelector('.laser-panel details.laser-module')?.open);
+  assert.notEqual(await firstLaser.getAttribute('open'), null);
   assert.deepEqual(errors, []);
 });
 
