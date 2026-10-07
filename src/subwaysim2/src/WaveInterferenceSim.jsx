@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Html } from '@react-three/drei';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DataTexture, DoubleSide, FloatType, FrontSide, Mesh, NearestFilter, NoBlending, OrthographicCamera, RGBAFormat, Scene, ShaderMaterial, UnsignedByteType, Vector3, WebGLRenderTarget } from 'three';
 import { advanceDetectorResponse, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacementAndTensorGaussian, calculateWaveFrame, calculateWaveOrbitalPhase, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_APERTURE_SETTINGS, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, DOUBLE_SLIT_SCREEN_THICKNESS, DOUBLE_SLIT_SCREEN_X, DOUBLE_SLIT_WIDTH, APERTURE_SCREEN_DEPTH, APERTURE_SCREEN_HEIGHT, DETECTOR_TRANSVERSE_SPAN, detectorDistanceForSlitScreenPosition, getOrbitalAngularMomentum, getSlitGeometry, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, GRATING_SLIT_WIDTH, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, OAM_CHARGE_MAX, OAM_CHARGE_MIN, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, readSavedWaveStates, sampleApertureField, SIGNAL_SOURCE_PRESETS, SINGLE_SLIT_WIDTH, TWO_SOURCE_CENTERS, writeSavedWaveStates } from './waveModel.js';
@@ -25,6 +26,7 @@ const DETECTOR_UPDATE_INTERVAL = 1 / 12;
 const CLASSIC_DETECTOR_BINS_PER_AXIS = 48;
 const DETECTOR_MAX_EMITTERS = 1400;
 const DetectorVisibilityContext = createContext(true);
+const DetectorOamReadoutContext = createContext({ enabled: false, states: [] });
 const PerspectiveCameraContext = createContext({ viewMode: null, orbitPlaying: true, orbitControlsVisible: true, orbitSettings: DEFAULT_SIMULATOR_3D_PARAMETERS, particleAppearance: DEFAULT_SIMULATOR_3D_PARAMETERS.particleAppearance, onManualInteraction: () => {} });
 const DETECTOR_IMPLEMENTATION_OPTIONS = [
   { value: 'classic', label: 'Classic pixels' },
@@ -335,12 +337,12 @@ function createClassicDetectorGeometry(resolution) {
       const right = left + binWidth;
       const bin = yBin * resolution + zBin;
       positions.set([
-        -0.075, bottom, left,
-        -0.075, top, right,
-        -0.075, top, left,
-        -0.075, bottom, left,
-        -0.075, bottom, right,
-        -0.075, top, right
+        0.075, bottom, left,
+        0.075, top, right,
+        0.075, top, left,
+        0.075, bottom, left,
+        0.075, bottom, right,
+        0.075, top, right
       ], bin * 18);
       for (let vertex = 0; vertex < 6; vertex += 1) {
         const colorOffset = (bin * 6 + vertex) * 3;
@@ -614,10 +616,6 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
   });
 
   return <group position={[DOUBLE_SLIT_DETECTOR_X, 0, 0]}>
-    <mesh position={[-0.05, 0, 0]} rotation={[0, -Math.PI / 2, 0]}>
-      <planeGeometry args={[DETECTOR_TRANSVERSE_SPAN, DETECTOR_TRANSVERSE_SPAN]} />
-      <meshBasicMaterial color="#10242d" transparent opacity={0.88} side={DoubleSide} depthWrite={false} />
-    </mesh>
     <mesh geometry={geometry}>
       <meshBasicMaterial vertexColors transparent opacity={0.98} side={DoubleSide} toneMapped={false} />
     </mesh>
@@ -628,6 +626,15 @@ function ExperimentDetector({ implementation, experimentMode, ...props }) {
   return implementation === 'native' && experimentMode !== 'field'
     ? <NativeResolutionDetector {...props} />
     : <ClassicExperimentDetector {...props} experimentMode={experimentMode} />;
+}
+
+function DetectorOamReadout({ states }) {
+  return <Html position={[DOUBLE_SLIT_DETECTOR_X + 0.03, DETECTOR_TRANSVERSE_SPAN / 2 - 0.45, -DETECTOR_TRANSVERSE_SPAN / 2 + 0.45]}>
+    <div className="wave-detector-oam-label" aria-label="OAM states on detector">
+      <span className="wave-oam-kicker">OAM</span>
+      {states.map(({ index, charge }) => <span className="wave-oam-state" key={index}>W{index + 1} ℓ={charge > 0 ? `+${charge}` : charge}</span>)}
+    </div>
+  </Html>;
 }
 
 function WaveField({ waves, waveCount, interferenceModes, running, timeRef, experimentMode, apertureField, apertureSettings, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, particleAppearance, occlusionPreset, waveMechanics, showWaveRepresentation, showTensorGaussianSplatters, classicalWavePalette, superpositionPalette, oamSplatterPalette }) {
@@ -794,6 +801,7 @@ function SignalSourceArrows({ waves, waveCount, visible, palette }) {
 function WaveScene({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, occlusionPreset, orbitControlsVisible, sourceVectorsVisible, waveMechanics, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation, onDetectorResolutionChange, showWaveRepresentation, showTensorGaussianSplatters, classicalWavePalette, superpositionPalette, oamSplatterPalette }) {
   const { viewMode, orbitPlaying, orbitSettings, particleAppearance, onManualInteraction } = useContext(PerspectiveCameraContext);
   const contextDetectorVisible = useContext(DetectorVisibilityContext);
+  const detectorOamReadout = useContext(DetectorOamReadoutContext);
   const showDetector = detectorVisible ?? contextDetectorVisible;
   const timeRef = useRef(0);
   const apertureField = useMemo(() => APERTURE_EXPERIMENT_MODES.includes(experimentMode)
@@ -802,7 +810,7 @@ function WaveScene({ waves, waveCount, interferenceModes, running, particleCount
   return (
     <>
       <color attach="background" args={['#080d17']} />
-      <fog attach="fog" args={['#080d17', 17, 34]} />
+      {/* <fog attach="fog" args={['#080d17', 17, 34]} /> */}
       <ambientLight intensity={0.7} color="#b5d8d1" />
       <gridHelper args={[FIELD_SIZE, 18, '#294555', '#142631']} position={[0, -1.35, 0]} />
       <SignalSourceArrows waves={waves} waveCount={waveCount} visible={sourceVectorsVisible} palette={classicalWavePalette} />
@@ -811,6 +819,7 @@ function WaveScene({ waves, waveCount, interferenceModes, running, particleCount
       {experimentMode === 'two-source' && <TwoSourceMarkers />}
       <WaveField waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} timeRef={timeRef} experimentMode={experimentMode} apertureField={apertureField} apertureSettings={apertureSettings} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} particleAppearance={particleAppearance} occlusionPreset={occlusionPreset} waveMechanics={waveMechanics} showWaveRepresentation={showWaveRepresentation} showTensorGaussianSplatters={showTensorGaussianSplatters} classicalWavePalette={classicalWavePalette} superpositionPalette={superpositionPalette} oamSplatterPalette={oamSplatterPalette} />
       {showDetector && (experimentMode === 'field' || APERTURE_EXPERIMENT_MODES.includes(experimentMode)) && <ExperimentDetector key={`${experimentMode}:${detectorImplementation}`} implementation={detectorImplementation} experimentMode={experimentMode} waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} apertureField={apertureField} running={running} timeRef={timeRef} detectionTime={detectionTime} glowTime={glowTime} detectorBrightness={detectorBrightness} detectorPalette={detectorPalette} maskEnabled={detectorMaskEnabled} pixelDensity={detectorPixelDensity} onResolutionChange={onDetectorResolutionChange} />}
+      {showDetector && (experimentMode === 'field' || APERTURE_EXPERIMENT_MODES.includes(experimentMode)) && detectorOamReadout.enabled && detectorOamReadout.states.length > 0 && <DetectorOamReadout states={detectorOamReadout.states} />}
       <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={orbitSettings} cameraParams={{ minDistance: 7, maxDistance: 32, enabled: orbitControlsVisible }} onUserInteraction={onManualInteraction} />
     </>
   );
@@ -1096,6 +1105,7 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
         </>}
         <span className="wave-section-label">DETECTOR SCREEN</span>
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={detectorVisible} onChange={(event) => onDetectorVisible(event.target.checked)} /><span>Show detection screen</span></label>
+        <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={currentValue.showOamStatesOnDetector ?? false} onChange={(event) => onVisualizationChange('showOamStatesOnDetector', event.target.checked)} /><span>Show OAM states on detector</span></label>
         <RangeControl label="Detection time" value={detectionTime} min={0.1} max={5} step={0.1} suffix=" s" editing={editing} isDefault={isDefault('detectionTime')} onReset={() => onResetPath('detectionTime')} onChange={onDetectionTime} />
         <RangeControl label="Glow time" value={glowTime} min={0.2} max={10} step={0.1} suffix=" s" editing={editing} isDefault={isDefault('glowTime')} onReset={() => onResetPath('glowTime')} onChange={onGlowTime} />
         <ParamSelect className="wave-select" label="Detector implementation" value={experimentMode === 'field' ? 'classic' : detectorImplementation} options={experimentMode === 'field' ? [DETECTOR_IMPLEMENTATION_OPTIONS[0]] : DETECTOR_IMPLEMENTATION_OPTIONS} onChange={onDetectorImplementation} />
@@ -1189,6 +1199,7 @@ export default function WaveInterferenceSim({ onBack }) {
     glowTime: 3,
     apertureSettings: { ...DEFAULT_APERTURE_SETTINGS },
     detectorVisible: true,
+    showOamStatesOnDetector: false,
     detectorBrightness: 1,
     detectorPalette: 'thermal',
     detectorMaskEnabled: false,
@@ -1500,6 +1511,7 @@ export default function WaveInterferenceSim({ onBack }) {
   return (
     <DetectorVisibilityContext.Provider value={detectorVisible}>
     <PerspectiveCameraContext.Provider value={{ viewMode, orbitPlaying, orbitControlsVisible, orbitSettings: waveEditor.value, particleAppearance: waveEditor.value.particleAppearance, onManualInteraction: () => setViewMode(null) }}>
+    <DetectorOamReadoutContext.Provider value={{ enabled: waveEditor.value.showOamStatesOnDetector, states: orbitalStates }}>
     <SimulatorBase className="wave-app" headerClassName="wave-topbar" brandClassName="wave-brand" markClassName="wave-mark" mark="WAV" title="WAVE FIELD LAB" subtitle="Phase geometry / interference study" meta="WEBGL / FIELD SYNTHESIS" metaClassName="wave-top-meta" homeUrl="/" onHome={onBack} homeClassName="wave-hide-button" parameterValue={waveEditor.value} presetValue={waveEditor.baseline} onParameterChange={(next) => waveEditor.commit(next)} actions={<><button type="button" className="wave-params-toggle" aria-pressed={paramsVisible} onClick={() => setParamsVisible((value) => !value)}>{paramsVisible ? 'Hide params' : 'Show params'}</button><button type="button" className="wave-run-toggle" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></>}>
       <div className="wave-scene" data-particle-count={particleCount} data-occlusion-preset={occlusionPreset} data-experiment-mode={experimentMode} data-detection-time={detectionTime} data-glow-time={glowTime} data-slit-position={apertureSettings.slitPosition} data-slit-width-a={apertureSettings.slitWidthA} data-slit-width-b={apertureSettings.slitWidthB} data-slit-widths-linked={apertureSettings.slitWidthsLinked} data-detector-brightness={detectorBrightness} data-detector-palette={detectorPalette} data-detector-mask={detectorMaskEnabled} data-detector-pixel-density={detectorPixelDensity} data-detector-implementation={detectorImplementation} data-detector-resolution={detectorResolution} data-orbit-controls={orbitControlsVisible} data-source-vectors={sourceVectorsVisible} data-source-frame={JSON.stringify({ origin: sourceFrame.origin, direction: sourceFrame.direction })}><Canvas camera={{ position: [11, 8, 12], fov: 42, near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><WaveScene waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} occlusionPreset={occlusionPreset} orbitControlsVisible={orbitControlsVisible} sourceVectorsVisible={sourceVectorsVisible} waveMechanics={waveMechanics} experimentMode={experimentMode} detectionTime={detectionTime} glowTime={glowTime} apertureSettings={apertureSettings} detectorBrightness={detectorBrightness} detectorPalette={detectorPalette} detectorMaskEnabled={detectorMaskEnabled} detectorPixelDensity={detectorPixelDensity} detectorImplementation={detectorImplementation} onDetectorResolutionChange={setDetectorResolution} showWaveRepresentation={waveEditor.value.showWaveRepresentation} showTensorGaussianSplatters={waveEditor.value.showTensorGaussianSplatters} classicalWavePalette={waveEditor.value.classicalWavePalette} superpositionPalette={waveEditor.value.superpositionPalette} oamSplatterPalette={waveEditor.value.oamSplatterPalette} /></Canvas></div>
       <CameraPerspectiveToolbar className="simulator-perspective-toolbar" modesClassName="simulator-perspective-modes" viewMode={viewMode} orbitPlaying={orbitPlaying} onViewChange={setViewMode} onToggleOrbit={() => setOrbitPlaying((value) => !value)} />
@@ -1619,6 +1631,7 @@ export default function WaveInterferenceSim({ onBack }) {
       <footer className="wave-footer"><span>n WAVES / {Object.entries(INTERFERENCE_MODES).filter(([mode]) => interferenceModes[mode]).map(([, details]) => details.label.toUpperCase()).join(' + ') || 'NO INTERFERENCE'}</span><span>DRAG TO ORBIT / SCROLL TO ZOOM</span></footer>
       {exportModal && <SimulatorExportModal title={exportModal.title} value={exportModal.value} onClose={() => setExportModal(null)} />}
     </SimulatorBase>
+    </DetectorOamReadoutContext.Provider>
     </PerspectiveCameraContext.Provider>
     </DetectorVisibilityContext.Provider>
   );
