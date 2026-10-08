@@ -25,6 +25,7 @@ import { FIELD_MODEL_DETAILS } from './mechanicsModels.js';
 import { TelemetryHud } from './lib/TelemetryHud.jsx';
 import { CameraPerspectiveToolbar, OrbitalTrackingParameters, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
 import { DEFAULT_CAMERA_VIEWS, DEFAULT_ORBITAL_TRACKING_CONFIGURATION, DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION } from './lib/simulator-base.js';
+import { compareModelVectors } from './lib/model-comparison.js';
 import {
   ORBIT_VALIDATION_DATASET_CITATIONS,
   JPL_DE441_ORBIT_INTERVAL,
@@ -263,10 +264,8 @@ function NBodyField({ configuration, running, resetToken, initialBodies, onTelem
     if (!invariantBaselineRef.current) invariantBaselineRef.current = invariants;
     const invariantResiduals = compareSystemInvariants(invariants, invariantBaselineRef.current);
     const reference = evaluateNBodyAmplitudeGravity(bodies, { ...configuration, mode: 'newtonian' });
-    const differences = selected.accelerations.map((acceleration, index) => {
-      const absolute = Math.hypot(...acceleration.map((value, axis) => value - reference.accelerations[index][axis]));
-      return absolute / Math.max(1e-9, Math.hypot(...reference.accelerations[index]));
-    });
+    const differences = compareModelVectors(reference.accelerations, selected.accelerations)
+      .map(({ relativeDifference }) => relativeDifference);
 
     if (running && frameDelta > 0) {
       const startYears = simulationYearsRef.current;

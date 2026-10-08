@@ -117,6 +117,7 @@ const DETECTOR_RESPONSE_FRAGMENT_SHADER = `
   uniform float uIntensityScale;
   uniform float uPilotWave;
   uniform float uPilotReferenceWaveNumber;
+  uniform bool uComparisonEnabled;
   uniform float uClassicalDetectionTime;
   uniform float uClassicalGlowTime;
   uniform float uPilotDetectionTime;
@@ -159,15 +160,17 @@ const DETECTOR_RESPONSE_FRAGMENT_SHADER = `
       float phase = phaseData.w * distanceToEmitter + amplitudeData.x - amplitudeData.y * uTime;
       float fieldAmplitude = amplitudeData.z * sin(phase) / distanceToEmitter;
       electric += polarization * fieldAmplitude;
-      float scalarAmplitude = amplitudeData.z * length(polarization) / distanceToEmitter;
-      float amplitudeDerivative = -scalarAmplitude * propagation.x / distanceToEmitter;
-      float phaseDerivative = phaseData.w * propagation.x;
-      float cosine = cos(phase);
-      float sine = sin(phase);
-      waveReal += scalarAmplitude * cosine;
-      waveImaginary += scalarAmplitude * sine;
-      derivativeReal += amplitudeDerivative * cosine - scalarAmplitude * sine * phaseDerivative;
-      derivativeImaginary += amplitudeDerivative * sine + scalarAmplitude * cosine * phaseDerivative;
+      if (uPilotWave > 0.5 || uComparisonEnabled) {
+        float scalarAmplitude = amplitudeData.z * length(polarization) / distanceToEmitter;
+        float amplitudeDerivative = -scalarAmplitude * propagation.x / distanceToEmitter;
+        float phaseDerivative = phaseData.w * propagation.x;
+        float cosine = cos(phase);
+        float sine = cos(phase - 1.57079632679);
+        waveReal += scalarAmplitude * cosine;
+        waveImaginary += scalarAmplitude * sine;
+        derivativeReal += amplitudeDerivative * cosine - scalarAmplitude * sine * phaseDerivative;
+        derivativeImaginary += amplitudeDerivative * sine + scalarAmplitude * cosine * phaseDerivative;
+      }
     }
     float classicalIntensity = dot(electric, electric);
     float pilotCurrent = max(0.0, waveReal * derivativeImaginary - waveImaginary * derivativeReal) / max(uPilotReferenceWaveNumber, 0.000001);
@@ -356,6 +359,7 @@ function createDetectorRenderResources(width, height) {
       uIntensityScale: { value: 1 },
       uPilotWave: { value: 0 },
       uPilotReferenceWaveNumber: { value: 1 },
+      uComparisonEnabled: { value: false },
       uClassicalDetectionTime: { value: 1 },
       uClassicalGlowTime: { value: 3 },
       uPilotDetectionTime: { value: 1 },
@@ -604,14 +608,37 @@ function NativeResolutionDetector({ apertureField, waves, waveCount, interferenc
   const updateTime = useRef(0);
   const needsRefresh = useRef(true);
   const comparisonScoreTimer = useRef(0);
+  const previousDifferenceView = useRef(false);
   const scoreResponses = useRef(Array.from({ length: DETECTOR_SCORE_GRID_RESOLUTION ** 2 }, () => ({
     classical: { average: 0, glow: 0 },
     pilotWave: { average: 0, glow: 0 }
   })));
   useEffect(() => {
     needsRefresh.current = true;
-    if (!detectorModelComparison.enabled) onComparisonScores(null);
-  }, [apertureField, detectionTime, detectorMechanicsMode, detectorModelComparison, glowTime, onComparisonScores, resources]);
+  }, [apertureField, detectionTime, detectorMechanicsMode, glowTime, resources]);
+
+  useEffect(() => {
+    const differenceView = detectorModelComparison.enabled && detectorModelComparison.showDifference;
+    if (differenceView || previousDifferenceView.current) needsRefresh.current = true;
+    previousDifferenceView.current = differenceView;
+    if (!detectorModelComparison.enabled) {
+      onComparisonScores(null);
+    } else if (!detectorModelComparison.showDifference) {
+      updateDetectorComparisonScores({
+        scoreResponses: scoreResponses.current,
+        waves,
+        waveCount,
+        interferenceModes,
+        experimentMode,
+        apertureField,
+        time: timeRef.current,
+        elapsed: Math.max(detectorModelComparison.classical.detectionTime, detectorModelComparison.pilotWave.detectionTime) * 8,
+        comparison: detectorModelComparison,
+        onScores: onComparisonScores
+      });
+      comparisonScoreTimer.current = 0;
+    }
+  }, [apertureField, detectorModelComparison, experimentMode, interferenceModes, onComparisonScores, waveCount, waves]);
 
   useEffect(() => {
     onResolutionChange(`${resolutionWidth}x${resolutionHeight}`);
@@ -678,16 +705,18 @@ function NativeResolutionDetector({ apertureField, waves, waveCount, interferenc
 
   useEffect(() => {
     resources.responseMaterial.uniforms.uPilotWave.value = detectorMechanicsMode === 'pilot-wave' ? 1 : 0;
+    resources.responseMaterial.uniforms.uComparisonEnabled.value = detectorModelComparison.enabled && detectorModelComparison.showDifference;
     needsRefresh.current = true;
-  }, [detectorMechanicsMode, resources]);
+  }, [detectorMechanicsMode, detectorModelComparison.enabled, resources]);
 
   useEffect(() => {
     const uniforms = resources.displayMaterial.uniforms;
+    const comparisonValuesActive = detectorModelComparison.enabled && detectorModelComparison.showDifference;
     uniforms.uPaletteStops.value = DETECTOR_PALETTE_COLORS[detectorPalette] ?? DETECTOR_PALETTE_COLORS.thermal;
     uniforms.uMaskEnabled.value = maskEnabled;
     uniforms.uDetectorBrightness.value = detectorBrightness;
-    uniforms.uClassicalBrightness.value = detectorModelComparison.enabled ? detectorModelComparison.classical.brightness : detectorBrightness;
-    uniforms.uPilotBrightness.value = detectorModelComparison.enabled ? detectorModelComparison.pilotWave.brightness : detectorBrightness;
+    uniforms.uClassicalBrightness.value = comparisonValuesActive ? detectorModelComparison.classical.brightness : detectorBrightness;
+    uniforms.uPilotBrightness.value = comparisonValuesActive ? detectorModelComparison.pilotWave.brightness : detectorBrightness;
     uniforms.uPilotWave.value = detectorMechanicsMode === 'pilot-wave';
     uniforms.uComparisonEnabled.value = detectorModelComparison.enabled;
     uniforms.uDifferenceView.value = detectorModelComparison.enabled && detectorModelComparison.showDifference;
@@ -704,7 +733,7 @@ function NativeResolutionDetector({ apertureField, waves, waveCount, interferenc
       elapsed = updateTime.current * simulationSpeed;
       updateTime.current = 0;
     } else if (!needsRefresh.current) return;
-    else elapsed = Math.max(0.01, detectorModelComparison.enabled
+    else elapsed = Math.max(0.01, detectorModelComparison.enabled && detectorModelComparison.showDifference
       ? Math.max(detectorModelComparison.classical.detectionTime, detectorModelComparison.pilotWave.detectionTime)
       : detectionTime) * 8;
     needsRefresh.current = false;
@@ -716,10 +745,11 @@ function NativeResolutionDetector({ apertureField, waves, waveCount, interferenc
     uniforms.uElapsed.value = elapsed;
     uniforms.uDetectionTime.value = Math.max(0.01, detectionTime);
     uniforms.uGlowTime.value = Math.max(0.01, glowTime);
-    uniforms.uClassicalDetectionTime.value = detectorModelComparison.enabled ? detectorModelComparison.classical.detectionTime : detectionTime;
-    uniforms.uClassicalGlowTime.value = detectorModelComparison.enabled ? detectorModelComparison.classical.glowTime : glowTime;
-    uniforms.uPilotDetectionTime.value = detectorModelComparison.enabled ? detectorModelComparison.pilotWave.detectionTime : detectionTime;
-    uniforms.uPilotGlowTime.value = detectorModelComparison.enabled ? detectorModelComparison.pilotWave.glowTime : glowTime;
+    const comparisonValuesActive = detectorModelComparison.enabled && detectorModelComparison.showDifference;
+    uniforms.uClassicalDetectionTime.value = comparisonValuesActive ? detectorModelComparison.classical.detectionTime : detectionTime;
+    uniforms.uClassicalGlowTime.value = comparisonValuesActive ? detectorModelComparison.classical.glowTime : glowTime;
+    uniforms.uPilotDetectionTime.value = comparisonValuesActive ? detectorModelComparison.pilotWave.detectionTime : detectionTime;
+    uniforms.uPilotGlowTime.value = comparisonValuesActive ? detectorModelComparison.pilotWave.glowTime : glowTime;
     const destinationIndex = 1 - resources.historyIndex;
     const currentTarget = gl.getRenderTarget();
     const previousClearColor = gl.getClearColor(new Color());
@@ -755,6 +785,7 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
   const updateTime = useRef(0);
   const needsRefresh = useRef(true);
   const comparisonScoreTimer = useRef(0);
+  const previousDifferenceView = useRef(false);
   const comparisonScoreResponses = useRef(Array.from({ length: DETECTOR_SCORE_GRID_RESOLUTION ** 2 }, () => ({
     classical: { average: 0, glow: 0 },
     pilotWave: { average: 0, glow: 0 }
@@ -767,8 +798,30 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
   }, [geometry, onResolutionChange, resolution]);
   useEffect(() => {
     needsRefresh.current = true;
-    if (!detectorModelComparison.enabled) onComparisonScores(null);
-  }, [apertureField, detectorBrightness, detectorMechanicsMode, detectorModelComparison, detectorPalette, detectionTime, experimentMode, glowTime, interferenceModes, maskEnabled, onComparisonScores, waveCount, waves]);
+  }, [apertureField, detectorBrightness, detectorMechanicsMode, detectorPalette, detectionTime, experimentMode, glowTime, interferenceModes, maskEnabled, waveCount, waves]);
+
+  useEffect(() => {
+    const differenceView = detectorModelComparison.enabled && detectorModelComparison.showDifference;
+    if (differenceView || previousDifferenceView.current) needsRefresh.current = true;
+    previousDifferenceView.current = differenceView;
+    if (!detectorModelComparison.enabled) {
+      onComparisonScores(null);
+    } else if (!detectorModelComparison.showDifference) {
+      updateDetectorComparisonScores({
+        scoreResponses: comparisonScoreResponses.current,
+        waves,
+        waveCount,
+        interferenceModes,
+        experimentMode,
+        apertureField,
+        time: timeRef.current,
+        elapsed: Math.max(detectorModelComparison.classical.detectionTime, detectorModelComparison.pilotWave.detectionTime) * 8,
+        comparison: detectorModelComparison,
+        onScores: onComparisonScores
+      });
+      comparisonScoreTimer.current = 0;
+    }
+  }, [apertureField, detectorModelComparison, experimentMode, geometry, interferenceModes, onComparisonScores, waveCount, waves]);
 
   useEffect(() => {
     if (clearToken === 0) return;
@@ -806,10 +859,9 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
       elapsed = updateTime.current * simulationSpeed;
       updateTime.current = 0;
     } else if (!needsRefresh.current) return;
-    else elapsed = Math.max(0.01, detectorModelComparison.enabled
+    else elapsed = Math.max(0.01, detectorModelComparison.enabled && detectorModelComparison.showDifference
       ? Math.max(detectorModelComparison.classical.detectionTime, detectorModelComparison.pilotWave.detectionTime)
       : detectionTime) * 8;
-    const configurationRefresh = needsRefresh.current;
     needsRefresh.current = false;
     const comparisonReference = detectorModelComparison.referenceModel;
     const comparisonCandidate = comparisonReference === 'classical' ? 'pilotWave' : 'classical';
@@ -827,12 +879,13 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
         const z = ((zBin + 0.5) / resolution - 0.5) * DETECTOR_TRANSVERSE_SPAN;
         const bin = yBin * resolution + zBin;
         const response = responses[bin];
-        if (detectorModelComparison.enabled) {
+        if (detectorModelComparison.enabled && detectorModelComparison.showDifference) {
           const intensities = sampleDetectorModelIntensities({ waves, waveCount, interferenceModes, experimentMode, apertureField, x: DOUBLE_SLIT_DETECTOR_X, y, z, time: timeRef.current });
           response.classical = advanceDetectorResponse(response.classical, intensities.classical, elapsed, detectorModelComparison.classical.detectionTime, detectorModelComparison.classical.glowTime);
           response.pilotWave = advanceDetectorResponse(response.pilotWave, intensities.pilotWave, elapsed, detectorModelComparison.pilotWave.detectionTime, detectorModelComparison.pilotWave.glowTime);
-          const classicalValue = scaleDetectorBrightness(response.classical.glow, detectorModelComparison.classical.brightness);
-          const pilotValue = scaleDetectorBrightness(response.pilotWave.glow, detectorModelComparison.pilotWave.brightness);
+          const selectedResponse = detectorMechanicsMode === 'pilot-wave' ? response.pilotWave : response.classical;
+          response.average = selectedResponse.average;
+          response.glow = selectedResponse.glow;
         } else {
           const intensity = detectorMechanicsMode === 'pilot-wave'
             ? samplePilotWaveCurrent(waves.slice(0, waveCount), DOUBLE_SLIT_DETECTOR_X, y, z, timeRef.current, apertureField).forwardFlux
@@ -858,12 +911,7 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
           const difference = candidateValue - referenceValue;
           color.set(difference >= 0 ? '#e95042' : '#38b8c0').lerp(stops[0], 1 - Math.min(1, Math.abs(difference)));
         } else {
-          const glow = detectorModelComparison.enabled
-            ? detectorMechanicsMode === 'pilot-wave' ? response.pilotWave.glow : response.classical.glow
-            : response.glow;
-          const brightness = scaleDetectorBrightness(glow, detectorModelComparison.enabled
-            ? detectorMechanicsMode === 'pilot-wave' ? detectorModelComparison.pilotWave.brightness : detectorModelComparison.classical.brightness
-            : detectorBrightness);
+          const brightness = scaleDetectorBrightness(response.glow, detectorBrightness);
           const palettePosition = brightness * (stops.length - 1);
           const lowerStop = Math.floor(palettePosition);
           color.copy(stops[lowerStop]).lerp(stops[Math.min(lowerStop + 1, stops.length - 1)], palettePosition - lowerStop);
@@ -877,7 +925,7 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
       }
     }
     geometry.attributes.color.needsUpdate = true;
-    if (detectorModelComparison.enabled && (configurationRefresh || comparisonScoreTimer.current >= 0.5)) {
+    if (detectorModelComparison.enabled && detectorModelComparison.showDifference && comparisonScoreTimer.current >= 0.5) {
       updateDetectorComparisonScores({ scoreResponses: comparisonScoreResponses.current, waves, waveCount, interferenceModes, experimentMode, apertureField, time: timeRef.current, elapsed, comparison: detectorModelComparison, onScores: onComparisonScores });
       comparisonScoreTimer.current = 0;
     }
@@ -1084,15 +1132,19 @@ function WaveScene({ waves, waveCount, interferenceModes, running, particleCount
   const detectorClear = useContext(DetectorClearContext);
   const showDetector = detectorVisible ?? contextDetectorVisible;
   const timeRef = useRef(0);
-  const detectorWaves = useMemo(() => filterWavesByPhase(waves.slice(0, waveCount), detectorPhaseFilter.mode, detectorPhaseFilter.value), [detectorPhaseFilter.mode, detectorPhaseFilter.value, waveCount, waves]);
+  const activeWaveSignature = JSON.stringify(waves.slice(0, waveCount));
+  const apertureSettingsSignature = JSON.stringify(apertureSettings);
+  const interferenceModesSignature = JSON.stringify(interferenceModes);
+  const detectorInterferenceModes = useMemo(() => interferenceModes, [interferenceModesSignature]);
+  const detectorWaves = useMemo(() => filterWavesByPhase(waves.slice(0, waveCount), detectorPhaseFilter.mode, detectorPhaseFilter.value), [activeWaveSignature, detectorPhaseFilter.mode, detectorPhaseFilter.value, waveCount]);
   const apertureField = useMemo(() => APERTURE_EXPERIMENT_MODES.includes(experimentMode)
     ? prepareApertureField(waves.slice(0, waveCount), experimentMode, apertureSettings)
-    : null, [apertureSettings, experimentMode, waveCount, waves]);
+    : null, [activeWaveSignature, apertureSettingsSignature, experimentMode, waveCount]);
   const detectorApertureField = useMemo(() => !APERTURE_EXPERIMENT_MODES.includes(experimentMode)
     ? null
     : detectorPhaseFilter.mode === 'all'
       ? apertureField
-      : prepareApertureField(detectorWaves, experimentMode, apertureSettings), [apertureField, apertureSettings, detectorPhaseFilter.mode, detectorWaves, experimentMode]);
+      : prepareApertureField(detectorWaves, experimentMode, apertureSettings), [apertureField, apertureSettingsSignature, detectorPhaseFilter.mode, detectorWaves, experimentMode]);
   return (
     <>
       <color attach="background" args={['#080d17']} />
@@ -1104,7 +1156,7 @@ function WaveScene({ waves, waveCount, interferenceModes, running, particleCount
       {experimentMode === 'pinhole' && <PinholeScreen />}
       {experimentMode === 'two-source' && <TwoSourceMarkers />}
       <WaveField waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} timeRef={timeRef} experimentMode={experimentMode} apertureField={apertureField} apertureSettings={apertureSettings} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} particleAppearance={particleAppearance} occlusionPreset={occlusionPreset} waveMechanics={waveMechanics} showWaveRepresentation={showWaveRepresentation} showTensorGaussianSplatters={showTensorGaussianSplatters} classicalWavePalette={classicalWavePalette} superpositionPalette={superpositionPalette} oamSplatterPalette={oamSplatterPalette} />
-      {showDetector && (experimentMode === 'field' || APERTURE_EXPERIMENT_MODES.includes(experimentMode)) && <ExperimentDetector key={`${experimentMode}:${detectorImplementation}`} implementation={detectorImplementation} experimentMode={experimentMode} waves={detectorWaves} waveCount={detectorWaves.length} interferenceModes={interferenceModes} apertureField={detectorApertureField} running={running} timeRef={timeRef} detectionTime={detectionTime} glowTime={glowTime} detectorBrightness={detectorBrightness} detectorPalette={detectorPalette} detectorMechanicsMode={detectorMechanicsMode} clearToken={detectorClear.token} maskEnabled={detectorMaskEnabled} pixelDensity={detectorPixelDensity} onResolutionChange={onDetectorResolutionChange} />}
+      {showDetector && (experimentMode === 'field' || APERTURE_EXPERIMENT_MODES.includes(experimentMode)) && <ExperimentDetector key={`${experimentMode}:${detectorImplementation}`} implementation={detectorImplementation} experimentMode={experimentMode} waves={detectorWaves} waveCount={detectorWaves.length} interferenceModes={detectorInterferenceModes} apertureField={detectorApertureField} running={running} timeRef={timeRef} detectionTime={detectionTime} glowTime={glowTime} detectorBrightness={detectorBrightness} detectorPalette={detectorPalette} detectorMechanicsMode={detectorMechanicsMode} clearToken={detectorClear.token} maskEnabled={detectorMaskEnabled} pixelDensity={detectorPixelDensity} onResolutionChange={onDetectorResolutionChange} />}
       {showDetector && (experimentMode === 'field' || APERTURE_EXPERIMENT_MODES.includes(experimentMode)) && detectorOamReadout.enabled && detectorOamReadout.states.length > 0 && <DetectorOamReadout states={detectorOamReadout.states} />}
       <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={orbitSettings} cameraParams={{ minDistance: 7, maxDistance: 32, enabled: orbitControlsVisible }} onUserInteraction={onManualInteraction} />
     </>

@@ -6,6 +6,7 @@ import {
   sanitizeAmplitudeGravity
 } from './amplitudeGravityModel.js';
 import { createSolarSystemBodies, SOLAR_SYSTEM_SCENE_SCALE } from './solarSystemModel.js';
+import { rootMeanSquare, scoreWeightedNormalizedMetrics } from './lib/model-comparison.js';
 import jplIntermediateStates from './jplDe441IntermediateStates.json' with { type: 'json' };
 
 export const JPL_DE441_ORBIT_INTERVAL = Object.freeze({
@@ -275,9 +276,9 @@ export function scoreObservedOrbits({ modes = AMPLITUDE_GRAVITY_MODES, configura
     const pairDistanceSquaredErrors = distanceTimeline.flatMap(({ observed, predicted: simulated }) => observed.map(
       (distance, index) => ((simulated[index].distanceAU - distance.distanceAU) * AU_KM) ** 2
     ));
-    const positionRmsKm = Math.sqrt(positionSquaredErrors.reduce((sum, value) => sum + value, 0) / positionSquaredErrors.length);
-    const velocityRmsMetersPerSecond = Math.sqrt(velocitySquaredErrors.reduce((sum, value) => sum + value, 0) / velocitySquaredErrors.length);
-    const pairDistanceRmsKm = Math.sqrt(pairDistanceSquaredErrors.reduce((sum, value) => sum + value, 0) / pairDistanceSquaredErrors.length);
+    const positionRmsKm = rootMeanSquare(positionSquaredErrors.map(Math.sqrt));
+    const velocityRmsMetersPerSecond = rootMeanSquare(velocitySquaredErrors.map(Math.sqrt));
+    const pairDistanceRmsKm = rootMeanSquare(pairDistanceSquaredErrors.map(Math.sqrt));
     const rawMercuryPerihelionArcsecondsPerCentury = periapsisRateForMode(mode, configuration);
     const mercuryPerihelionArcsecondsPerCentury = rawMercuryPerihelionArcsecondsPerCentury == null
       ? null
@@ -285,13 +286,12 @@ export function scoreObservedOrbits({ modes = AMPLITUDE_GRAVITY_MODES, configura
     const mercuryPerihelionError = mercuryPerihelionArcsecondsPerCentury == null
       ? null
       : Math.abs(mercuryPerihelionArcsecondsPerCentury - MERCURY_PERIHELION_REFERENCE.valueArcsecondsPerCentury);
-    const availableWeight = mercuryPerihelionError == null ? 1 - DEFAULT_SCORE_WEIGHTS.mercuryPerihelion : 1;
-    const scorePoints = 100 * (
-      DEFAULT_SCORE_WEIGHTS.position * positionRmsKm / ORBIT_SCORE_TOLERANCES.positionRmsKm
-      + DEFAULT_SCORE_WEIGHTS.velocity * velocityRmsMetersPerSecond / ORBIT_SCORE_TOLERANCES.velocityRmsMetersPerSecond
-      + DEFAULT_SCORE_WEIGHTS.pairDistance * pairDistanceRmsKm / ORBIT_SCORE_TOLERANCES.pairDistanceRmsKm
-      + (mercuryPerihelionError == null ? 0 : DEFAULT_SCORE_WEIGHTS.mercuryPerihelion * mercuryPerihelionError / ORBIT_SCORE_TOLERANCES.mercuryPerihelionArcsecondsPerCentury)
-    ) / availableWeight;
+    const { scorePoints } = scoreWeightedNormalizedMetrics([
+      { value: positionRmsKm, tolerance: ORBIT_SCORE_TOLERANCES.positionRmsKm, weight: DEFAULT_SCORE_WEIGHTS.position },
+      { value: velocityRmsMetersPerSecond, tolerance: ORBIT_SCORE_TOLERANCES.velocityRmsMetersPerSecond, weight: DEFAULT_SCORE_WEIGHTS.velocity },
+      { value: pairDistanceRmsKm, tolerance: ORBIT_SCORE_TOLERANCES.pairDistanceRmsKm, weight: DEFAULT_SCORE_WEIGHTS.pairDistance },
+      { value: mercuryPerihelionError, tolerance: ORBIT_SCORE_TOLERANCES.mercuryPerihelionArcsecondsPerCentury, weight: DEFAULT_SCORE_WEIGHTS.mercuryPerihelion }
+    ]);
     const pairDistances = distanceTimeline.at(-1).observed.map((distance, pairIndex) => {
       const samples = distanceTimeline.map(({ observed, predicted: simulated }, sampleIndex) => ({
         day: (sampleIndex + 1) * JPL_DE441_ORBIT_INTERVAL.sampleStepDays,
@@ -306,7 +306,7 @@ export function scoreObservedOrbits({ modes = AMPLITUDE_GRAVITY_MODES, configura
         observedEndAU: distance.distanceAU,
         predictedEndAU: distanceTimeline.at(-1).predicted[pairIndex].distanceAU,
         residualKm: samples.at(-1).residualKm,
-        residualRmsKm: Math.sqrt(samples.reduce((sum, sample) => sum + sample.residualKm ** 2, 0) / samples.length),
+        residualRmsKm: rootMeanSquare(samples.map((sample) => sample.residualKm)),
         samples
       };
     });
