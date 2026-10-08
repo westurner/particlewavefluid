@@ -1005,6 +1005,55 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
 .signal-event.fracture { stroke: rgb(var(--color-rgb-e99a4b)); }
 .signal-trace text { fill: rgb(var(--color-rgb-dcebe4)); font: 9px 'DM Mono', monospace; }
 .signal-event-list { margin-top: 6px; }
+.quantum-circuit-app { background: radial-gradient(ellipse at 32% 24%, rgba(var(--color-rgb-0e232f), 0.72), var(--color-transparent) 48%), linear-gradient(132deg, rgb(var(--color-rgb-071316)), rgb(var(--color-rgb-101b2c)) 58%, rgb(var(--color-rgb-131618))); }
+.quantum-circuit-app .signal-mark { border-color: rgb(var(--color-rgb-f0a23a)); color: rgb(var(--color-rgb-f0a23a)); }
+.qc-workbench { display: flex; flex-direction: column; gap: 15px; }
+.qc-heading { margin-bottom: 0; }
+.qc-heading h1 { max-width: 720px; line-height: 1.08; }
+.qc-heading p { max-width: 720px; line-height: 1.55; }
+.qc-circuit-section { min-width: 0; padding: 12px 0 0; border-top: 1px solid rgba(var(--color-rgb-92d4cc), 0.2); }
+.qc-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: rgb(var(--color-rgb-71d3c5)); font: 9px 'DM Mono', monospace; }
+.qc-section-heading strong { color: rgb(var(--color-rgb-f1d4a0)); font-weight: 400; }
+.qc-circuit-scroll { max-width: 100%; overflow-x: auto; padding-bottom: 5px; scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track); scrollbar-width: thin; }
+.qc-circuit-grid { position: relative; display: grid; grid-template-rows: 34px repeat(2, 62px); width: max-content; min-width: 100%; border: 1px solid rgba(var(--color-rgb-72c7c0), 0.2); background-color: rgba(var(--color-rgb-071316), 0.74); background-image: linear-gradient(rgba(var(--color-rgb-72c7c0), 0.055) 1px, transparent 1px); background-size: 100% 62px; }
+.qc-grid-corner, .qc-empty-heading { display: grid; place-items: center; color: rgb(var(--color-rgb-8da9a0)); font: 8px 'DM Mono', monospace; }
+.qc-gate-heading { display: flex; align-items: center; justify-content: center; gap: 4px; color: rgb(var(--color-rgb-f1d4a0)); font: 9px 'DM Mono', monospace; }
+.qc-gate-heading button { width: 18px; height: 20px; padding: 0; border: 0; color: rgb(var(--color-rgb-8da9a0)); background: transparent; font-size: 14px; cursor: pointer; }
+.qc-gate-heading button:hover { color: rgb(var(--color-rgb-e98567)); }
+.qc-wire-label { display: flex; align-items: center; padding-left: 13px; color: rgb(var(--color-rgb-dcebe4)); font: 10px 'DM Mono', monospace; font-weight: 400; }
+.qc-gate-cell { position: relative; display: grid; height: 62px; place-items: center; }
+.qc-wire-line { position: absolute; right: 0; left: 0; height: 1px; background: rgba(var(--color-rgb-92d4cc), 0.42); }
+.qc-single-node { z-index: 1; display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid rgba(var(--color-rgb-f0a23a), 0.75); color: rgb(var(--color-rgb-fff0ce)); background: rgb(var(--color-rgb-101b2c)); font: 10px 'DM Mono', monospace; }
+.qc-control-dot { z-index: 2; width: 10px; height: 10px; border-radius: 50%; background: rgb(var(--color-rgb-72c7c0)); }
+.qc-target-node { z-index: 2; display: grid; width: 27px; height: 27px; place-items: center; border: 1px solid rgb(var(--color-rgb-72c7c0)); border-radius: 50%; color: rgb(var(--color-rgb-72c7c0)); background: rgb(var(--color-rgb-071316)); font: 18px 'DM Mono', monospace; line-height: 1; }
+.qc-cnot-connector { position: absolute; z-index: 1; width: 2px; transform: translateX(-50%); background: rgb(var(--color-rgb-72c7c0)); box-shadow: 0 0 5px rgba(var(--color-rgb-72c7c0), 0.5); pointer-events: none; }
+.qc-output-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(190px, 0.8fr); gap: 22px; }
+.qc-intensity-section, .qc-measurement-section { min-width: 0; padding-top: 12px; border-top: 1px solid rgba(var(--color-rgb-92d4cc), 0.2); }
+.qc-intensity-list { display: grid; gap: 9px; }
+.qc-intensity-row { display: grid; grid-template-columns: 42px minmax(50px, 1fr) 50px minmax(100px, auto); align-items: center; gap: 8px; min-width: 0; }
+.qc-ket { color: rgb(var(--color-rgb-f1d4a0)); font: 11px 'DM Mono', monospace; font-weight: 400; }
+.qc-intensity-track { height: 8px; overflow: hidden; background: rgba(var(--color-rgb-72c7c0), 0.14); }
+.qc-intensity-track span { display: block; height: 100%; background: linear-gradient(90deg, rgb(var(--color-rgb-72c7c0)), rgb(var(--color-rgb-f0a23a))); transition: width 180ms ease-out; }
+.qc-probability { color: rgb(var(--color-rgb-e8f0eb)); font: 10px 'DM Mono', monospace; font-weight: 400; text-align: right; }
+.qc-intensity-row code { overflow: hidden; color: rgb(var(--color-rgb-8da9a0)); font: 8px 'DM Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
+.qc-intensity-row small { grid-column: 2 / -1; color: rgb(var(--color-rgb-8da9a0)); font: 8px 'DM Mono', monospace; }
+.qc-measurement-section p { margin: 0 0 10px; color: rgb(var(--color-rgb-9bb9b2)); font-size: 10px; line-height: 1.45; }
+.qc-measurement-actions, .qc-preset-row { display: flex; flex-wrap: wrap; gap: 7px; }
+.qc-workbench .qc-measurement-actions button { flex: 1 1 auto; min-height: 34px; padding: 7px 9px; border: 1px solid rgba(var(--color-rgb-72c7c0), 0.42); color: rgb(var(--color-rgb-e8f0eb)); background: rgba(var(--color-rgb-08181b), 0.72); font: 9px 'DM Mono', monospace; cursor: pointer; }
+.qc-workbench .qc-measurement-actions button:first-child, .signal-panel .qc-append-gate { color: rgb(var(--color-rgb-071b23)); background: rgb(var(--color-rgb-72c7c0)); }
+.qc-workbench .qc-measurement-actions button:hover, .signal-panel .qc-preset-row button:hover { border-color: rgb(var(--color-rgb-f0a23a)); color: rgb(var(--color-rgb-fff0ce)); }
+.signal-panel .qc-preset-row button { flex: 1 1 auto; min-height: 34px; border-color: rgba(var(--color-rgb-72c7c0), 0.42); }
+.qc-last-shot { display: flex; justify-content: space-between; margin-top: 10px; padding: 9px 0; border-bottom: 1px solid rgba(var(--color-rgb-92d4cc), 0.16); color: rgb(var(--color-rgb-8da9a0)); font: 9px 'DM Mono', monospace; }
+.qc-last-shot strong { color: rgb(var(--color-rgb-f1d4a0)); font-size: 13px; font-weight: 400; }
+.signal-panel .qc-clear-shots { width: 100%; margin-top: 8px; }
+.qc-preset-row { margin-top: 14px; }
+.signal-panel .qc-preset-row button { min-height: 31px; }
+.qc-gate-editor .signal-select { margin-top: 10px; }
+.signal-panel .qc-append-gate, .signal-panel .qc-reset-circuit { width: 100%; min-height: 35px; margin-top: 12px; }
+.qc-gate-key { display: grid; gap: 6px; }
+.qc-gate-description { display: flex; align-items: center; gap: 10px; color: rgb(var(--color-rgb-8da9a0)); font: 9px 'DM Mono', monospace; }
+.qc-gate-description strong { display: grid; width: 28px; height: 24px; place-items: center; border: 1px solid rgba(var(--color-rgb-f0a23a), 0.45); color: rgb(var(--color-rgb-f1d4a0)); font-weight: 400; }
+.signal-panel .qc-reset-circuit { border-color: rgba(var(--color-rgb-e98567), 0.42); }
 .oam-app { background: radial-gradient(ellipse at 34% 55%, rgba(var(--color-rgb-0e232f), 0.55), var(--color-transparent) 55%), linear-gradient(120deg, rgb(var(--color-rgb-071316)), rgb(var(--color-rgb-0a1e26)) 55%, rgb(var(--color-rgb-17191b))); }
 .oam-3d-field { position: absolute; inset: 0; z-index: 0; }
 .oam-3d-field canvas { display: block; width: 100%; height: 100%; }
@@ -1230,6 +1279,10 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
   .rail-heat-legend { display: none; }
   .amplitude-title, .ftle-title, .quantum-title, .thermal-title { display: none; }
   .signal-workbench { inset: 72px 12px 12px; padding-right: 0; }
+  .qc-output-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .qc-intensity-row { grid-template-columns: 38px minmax(30px, 1fr) 46px; gap: 6px; }
+  .qc-intensity-row code { grid-column: 2 / -1; }
+  .qc-workbench { gap: 12px; }
   .oam-workbench.is-3d { inset: 72px 0 0; padding: 16px; }
   .oam-workbench.is-3d .oam-heading { top: 60px; left: 16px; max-width: calc(100vw - 32px); }
   .oam-workbench.is-3d .oam-heading h1 { max-width: 340px; font-size: 26px; }

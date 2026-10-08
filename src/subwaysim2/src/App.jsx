@@ -11,6 +11,7 @@ const QuantumFluidSim = lazy(() => import('./QuantumFluidSim.jsx'));
 const ThermalLoopSim = lazy(() => import('./ThermalLoopSim.jsx'));
 const PhaseSignalSim = lazy(() => import('./PhaseSignalSim.jsx'));
 const OamSolitonSim = lazy(() => import('./OamSolitonSim.jsx'));
+const QuantumCircuitSim = lazy(() => import('./QuantumCircuitSim.jsx'));
 const FrcFusionSim = lazy(() => import('./FrcFusionSim.jsx'));
 const SubwaySim = lazy(() => import('./SubwaySim.jsx').then(({ SubwaySim: component }) => ({ default: component })));
 const RailTieMaterialSim = lazy(() => import('./RailTieMaterialSim.jsx'));
@@ -171,6 +172,15 @@ const SIMULATION_MODES = [
     description: 'Compare alternating and Halbach magnet rows against a phase-driven linear synchronous motor coil array.',
     detail: 'FLUX / COIL PHASE / LSM',
     accent: 'orange'
+  },
+  {
+    id: 'quantumcircuitsim',
+    index: '18',
+    name: 'quantumcircuitsim',
+    label: 'Quantum circuit intensity lab',
+    description: 'Build one- and two-qubit gate sequences and inspect complex amplitudes, output intensities, and measurement shots.',
+    detail: 'QUBITS / GATES / INTENSITY',
+    accent: 'teal'
   }
 ];
 
@@ -199,6 +209,7 @@ function SimulationLoader() {
   if (selectedSimulation === 'railheatsim') simulation = <RailHeatSim onBack={onBack} />;
   if (selectedSimulation === 'spacetieaccelerator') simulation = <SpaceTieAcceleratorSim onBack={onBack} />;
   if (selectedSimulation === 'halbachlinearmotor') simulation = <HalbachLinearMotorSim onBack={onBack} />;
+  if (selectedSimulation === 'quantumcircuitsim') simulation = <QuantumCircuitSim onBack={onBack} />;
   if (simulation) return <Suspense fallback={<LoadingScreen />}>{simulation}</Suspense>;
 
   return (
