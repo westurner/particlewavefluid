@@ -54,6 +54,9 @@ export const PHASE_MODES = [
   'Helical-Left',
   'Helical-Right'
 ];
+export const WIGNER_MECHANICS_QUANTITIES = Object.freeze(['position', 'momentum', 'rotation', 'shear']);
+export const WIGNER_TRANSVERSE_INTEGRATION_RANGE = 2;
+export const WIGNER_TRANSVERSE_INTEGRATION_INTERVALS = 8;
 export const DETECTOR_PHASE_VALUE_TOLERANCE = 0.011;
 
 export function filterWavesByPhase(waves, phaseMode = 'all', phaseValue = 0) {
@@ -631,6 +634,123 @@ function apertureComplexWaveField(emitters, x, y, z, time) {
     derivativeImaginary,
     referenceWaveNumber: referenceWeight > 0 ? weightedWaveNumber / referenceWeight : 1
   };
+}
+
+function sampleComplexWaveField(waves, x, y, z, time, apertureField) {
+  return apertureField?.emitters?.length
+    ? apertureComplexWaveField(apertureField.emitters, x, y, z, time)
+    : complexWaveField(waves, x, y, z, time);
+}
+
+export function sampleWignerMechanics(waves, x, y, z, time, apertureField = null, quantities = WIGNER_MECHANICS_QUANTITIES) {
+  const requested = new Set(quantities.filter((quantity) => WIGNER_MECHANICS_QUANTITIES.includes(quantity)));
+  const position = { x, y, z };
+  const activeOamStates = waves.slice(0, MAX_WAVES).flatMap((wave, index) => (
+    wave.enabled !== false && (wave.phaseMode === 'Helical-Left' || wave.phaseMode === 'Helical-Right')
+      ? [{ index: index + 1, charge: getOrbitalAngularMomentum(wave), phaseMode: wave.phaseMode }]
+      : []
+  ));
+  if (requested.size === 0) return { position: null, momentum: null, rotation: null, shear: null, density: 0, oamStates: activeOamStates };
+
+  const step = 0.002;
+  const point = { x, y, z };
+  const center = sampleComplexWaveField(waves, x, y, z, time, apertureField);
+  const density = center.real ** 2 + center.imaginary ** 2;
+  const result = {
+    position: requested.has('position') ? position : null,
+    momentum: null,
+    rotation: null,
+    shear: null,
+    density,
+    oamStates: activeOamStates
+  };
+  if (!(requested.has('momentum') || requested.has('rotation') || requested.has('shear')) || density < 1e-12) return result;
+
+  const axes = ['x', 'y', 'z'];
+  const firstDerivatives = axes.map((axis) => {
+    const ahead = sampleComplexWaveField(waves, x + (axis === 'x' ? step : 0), y + (axis === 'y' ? step : 0), z + (axis === 'z' ? step : 0), time, apertureField);
+    const behind = sampleComplexWaveField(waves, x - (axis === 'x' ? step : 0), y - (axis === 'y' ? step : 0), z - (axis === 'z' ? step : 0), time, apertureField);
+    return {
+      real: (ahead.real - behind.real) / (2 * step),
+      imaginary: (ahead.imaginary - behind.imaginary) / (2 * step)
+    };
+  });
+  const momentum = firstDerivatives.map(({ real, imaginary }) => (
+    (center.real * imaginary - center.imaginary * real) / density
+  ));
+  if (requested.has('momentum')) result.momentum = { x: momentum[0], y: momentum[1], z: momentum[2] };
+  if (requested.has('rotation')) {
+    result.rotation = {
+      x: y * momentum[2] - z * momentum[1],
+      y: z * momentum[0] - x * momentum[2],
+      z: x * momentum[1] - y * momentum[0]
+    };
+  }
+  if (!requested.has('shear')) return result;
+
+  const hessian = Array.from({ length: 3 }, () => Array(3));
+  for (let firstAxis = 0; firstAxis < 3; firstAxis += 1) {
+    const axis = axes[firstAxis];
+    const ahead = sampleComplexWaveField(waves, x + (axis === 'x' ? step : 0), y + (axis === 'y' ? step : 0), z + (axis === 'z' ? step : 0), time, apertureField);
+    const behind = sampleComplexWaveField(waves, x - (axis === 'x' ? step : 0), y - (axis === 'y' ? step : 0), z - (axis === 'z' ? step : 0), time, apertureField);
+    hessian[firstAxis][firstAxis] = {
+      real: (ahead.real - 2 * center.real + behind.real) / step ** 2,
+      imaginary: (ahead.imaginary - 2 * center.imaginary + behind.imaginary) / step ** 2
+    };
+    for (let secondAxis = firstAxis + 1; secondAxis < 3; secondAxis += 1) {
+      const other = axes[secondAxis];
+      const samples = [
+        [1, 1], [1, -1], [-1, 1], [-1, -1]
+      ].map(([firstSign, secondSign]) => sampleComplexWaveField(
+        waves,
+        x + (axis === 'x' ? firstSign * step : other === 'x' ? secondSign * step : 0),
+        y + (axis === 'y' ? firstSign * step : other === 'y' ? secondSign * step : 0),
+        z + (axis === 'z' ? firstSign * step : other === 'z' ? secondSign * step : 0),
+        time,
+        apertureField
+      ));
+      const crossDerivative = {
+        real: (samples[0].real - samples[1].real - samples[2].real + samples[3].real) / (4 * step ** 2),
+        imaginary: (samples[0].imaginary - samples[1].imaginary - samples[2].imaginary + samples[3].imaginary) / (4 * step ** 2)
+      };
+      hessian[firstAxis][secondAxis] = crossDerivative;
+      hessian[secondAxis][firstAxis] = crossDerivative;
+    }
+  }
+  const densityGradient = firstDerivatives.map(({ real, imaginary }) => 2 * (center.real * real + center.imaginary * imaginary));
+  const momentumGradient = firstDerivatives.map((derivative, axis) => firstDerivatives.map((componentDerivative, component) => (
+    (derivative.real * componentDerivative.imaginary + center.real * hessian[axis][component].imaginary
+      - derivative.imaginary * componentDerivative.real - center.imaginary * hessian[axis][component].real) / density
+      - momentum[component] * densityGradient[axis] / density
+  )));
+  result.shear = {
+    xx: momentumGradient[0][0],
+    yy: momentumGradient[1][1],
+    zz: momentumGradient[2][2],
+    xy: (momentumGradient[0][1] + momentumGradient[1][0]) / 2,
+    xz: (momentumGradient[0][2] + momentumGradient[2][0]) / 2,
+    yz: (momentumGradient[1][2] + momentumGradient[2][1]) / 2
+  };
+  return result;
+}
+
+export function sampleTransverseWignerFunction(waves, x, y, z, time, apertureField = null, transverseMomentum = 0) {
+  const intervals = WIGNER_TRANSVERSE_INTEGRATION_INTERVALS;
+  const step = WIGNER_TRANSVERSE_INTEGRATION_RANGE / intervals;
+  const twiceMomentum = 2 * (Number(transverseMomentum) || 0);
+  let integral = 0;
+  for (let index = 0; index <= intervals; index += 1) {
+    const offset = index * step;
+    const plus = sampleComplexWaveField(waves, x, y + offset, z, time, apertureField);
+    const minus = sampleComplexWaveField(waves, x, y - offset, z, time, apertureField);
+    const productReal = plus.real * minus.real + plus.imaginary * minus.imaginary;
+    const productImaginary = plus.real * minus.imaginary - plus.imaginary * minus.real;
+    const phase = twiceMomentum * offset;
+    const integrand = productReal * Math.cos(phase) - productImaginary * Math.sin(phase);
+    const simpsonWeight = index === 0 || index === intervals ? 1 : index % 2 === 0 ? 2 : 4;
+    integral += simpsonWeight * integrand;
+  }
+  return (2 * step / (3 * Math.PI)) * integral;
 }
 
 export function samplePilotWaveCurrent(waves, x, y, z, time, apertureField = null) {

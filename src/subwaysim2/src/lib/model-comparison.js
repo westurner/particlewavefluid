@@ -48,6 +48,18 @@ export function summarizeModelDifference(referenceValues, candidateValues) {
   };
 }
 
+export function rankModelOutputs(modelOutputs, referenceModel) {
+  if (!modelOutputs || typeof modelOutputs !== 'object' || !Array.isArray(modelOutputs[referenceModel])) {
+    throw new RangeError('A sampled reference model is required to rank model outputs.');
+  }
+  const referenceValues = modelOutputs[referenceModel];
+  return Object.entries(modelOutputs)
+    .map(([model, values]) => ({ model, ...summarizeModelDifference(referenceValues, values) }))
+    .sort((first, second) => first.scorePoints - second.scorePoints
+      || (first.model === referenceModel ? -1 : second.model === referenceModel ? 1 : first.model.localeCompare(second.model)))
+    .map((result, index) => ({ ...result, rank: index + 1 }));
+}
+
 export function compareModelVectors(referenceVectors, candidateVectors, referenceFloor = 1e-9) {
   if (!Array.isArray(referenceVectors) || !Array.isArray(candidateVectors) || referenceVectors.length !== candidateVectors.length) {
     throw new RangeError('Model vector outputs must have matching lengths.');

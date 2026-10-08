@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { Html } from '@react-three/drei';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DataTexture, DoubleSide, FloatType, FrontSide, Mesh, NearestFilter, NoBlending, OrthographicCamera, RGBAFormat, Scene, ShaderMaterial, UnsignedByteType, Vector3, WebGLRenderTarget } from 'three';
-import { advanceDetectorResponse, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacementAndTensorGaussian, calculateWaveFrame, calculateWaveOrbitalPhase, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_APERTURE_SETTINGS, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, DOUBLE_SLIT_SCREEN_THICKNESS, DOUBLE_SLIT_SCREEN_X, DOUBLE_SLIT_WIDTH, APERTURE_SCREEN_DEPTH, APERTURE_SCREEN_HEIGHT, DETECTOR_TRANSVERSE_SPAN, detectorDistanceForSlitScreenPosition, filterWavesByPhase, getOrbitalAngularMomentum, getSlitGeometry, getSlitScreenPlane, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, GRATING_SLIT_WIDTH, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, OAM_CHARGE_MAX, OAM_CHARGE_MIN, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, readSavedWaveStates, sampleApertureField, samplePilotWaveCurrent, SIGNAL_SOURCE_PRESETS, SINGLE_SLIT_WIDTH, slitScreenPlaneDepth, TWO_SOURCE_CENTERS, writeSavedWaveStates } from './waveModel.js';
+import { advanceDetectorResponse, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacementAndTensorGaussian, calculateWaveFrame, calculateWaveOrbitalPhase, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_APERTURE_SETTINGS, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, DOUBLE_SLIT_SCREEN_THICKNESS, DOUBLE_SLIT_SCREEN_X, DOUBLE_SLIT_WIDTH, APERTURE_SCREEN_DEPTH, APERTURE_SCREEN_HEIGHT, DETECTOR_TRANSVERSE_SPAN, detectorDistanceForSlitScreenPosition, filterWavesByPhase, getOrbitalAngularMomentum, getSlitGeometry, getSlitScreenPlane, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, GRATING_SLIT_WIDTH, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, OAM_CHARGE_MAX, OAM_CHARGE_MIN, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, readSavedWaveStates, sampleApertureField, samplePilotWaveCurrent, sampleTransverseWignerFunction, sampleWignerMechanics, SIGNAL_SOURCE_PRESETS, SINGLE_SLIT_WIDTH, slitScreenPlaneDepth, TWO_SOURCE_CENTERS, WIGNER_MECHANICS_QUANTITIES, writeSavedWaveStates } from './waveModel.js';
 import { HistoryControls, NumericParamControl, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 import { CameraPerspectiveToolbar, OrbitalTrackingParameters, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase, SimulatorExportModal, SimulatorIOJournal, SimulatorPresetControls, useSimulatorJournal } from './lib/SimulatorBase.jsx';
@@ -10,7 +10,8 @@ import { buildParameterReplayJournal, DEFAULT_CAMERA_VIEWS, DEFAULT_SIMULATOR_3D
 import { evaluateGpeResponse, WAVE_EVOLUTION_OPTIONS } from './mechanicsModels.js';
 import { calculateDdfMobility, evaluateMechanicsResponse, SIMULATION_MECHANICS_REGIMES } from './lib/simulationMechanics.js';
 import { COLOR_PALETTES, sampleColorPalette } from './lib/color-palettes.js';
-import { summarizeModelDifference } from './lib/model-comparison.js';
+import { rankModelOutputs, summarizeModelDifference } from './lib/model-comparison.js';
+import { createWignerGpuProcessor, WIGNER_GPU_RESOLUTION } from './wignerGpu.js';
 import PaletteParamControl from './lib/PaletteParamControl.jsx';
 
 const FIELD_SIZE = 18;
@@ -40,17 +41,27 @@ const DETECTOR_IMPLEMENTATION_OPTIONS = [
 ];
 const DETECTOR_MECHANICS_OPTIONS = [
   { value: 'classical', label: 'Classical intensity' },
-  { value: 'pilot-wave', label: 'Pilot-wave probability current' }
+  { value: 'pilot-wave', label: 'Pilot-wave probability current' },
+  { value: 'wigner-function', label: 'Wigner function' },
+  { value: 'wigner-gpu', label: 'Wigner (GPU)' }
 ];
+const DETECTOR_COMPARISON_MODEL_OPTIONS = DETECTOR_MECHANICS_OPTIONS.filter(({ value }) => value !== 'wigner-function');
+const DETECTOR_MODEL_LABELS = { classical: 'Classical intensity', 'pilot-wave': 'Pilot-wave current', 'wigner-gpu': 'Wigner (GPU)' };
+const DETECTOR_COMPARISON_MODELS = ['classical', 'pilot-wave', 'wigner-gpu'];
+const WIGNER_MECHANICS_LABELS = { position: 'Position', momentum: 'Momentum', rotation: 'Rotation', shear: 'Shear' };
 const DEFAULT_DETECTOR_MODEL_COMPARISON = {
   enabled: false,
   showDifference: false,
   referenceModel: 'classical',
+  candidateModel: 'pilot-wave',
   classical: { detectionTime: 1, glowTime: 100, brightness: 1.8 },
-  pilotWave: { detectionTime: 1, glowTime: 3, brightness: 1 }
+  pilotWave: { detectionTime: 1, glowTime: 3, brightness: 1 },
+  wignerGpu: { detectionTime: 1, glowTime: 3, brightness: 1 }
 };
+const DEFAULT_WIGNER_MECHANICS = { showOnDetector: false, showOnWaveField: false, showNegativeValues: true, quantities: [...WIGNER_MECHANICS_QUANTITIES] };
 const DetectorModelComparisonContext = createContext(DEFAULT_DETECTOR_MODEL_COMPARISON);
 const DetectorComparisonScoreContext = createContext({ scores: null, setScores: () => {} });
+const WignerMechanicsContext = createContext(DEFAULT_WIGNER_MECHANICS);
 const DETECTOR_PALETTES = COLOR_PALETTES;
 const DETECTOR_PALETTE_COLORS = Object.fromEntries(DETECTOR_PALETTES.map(({ value, stops }) => [value, stops.map((stop) => new Color(stop))]));
 
@@ -77,6 +88,11 @@ function normalizeWaveSnapshot(snapshot, defaults) {
     ? snapshot.detectorMechanicsMode
     : defaults.detectorMechanicsMode;
   const comparison = { ...defaults.detectorModelComparison, ...snapshot.detectorModelComparison };
+  const wignerMechanics = { ...defaults.wignerMechanics, ...snapshot.wignerMechanics };
+  const referenceModel = DETECTOR_COMPARISON_MODELS.includes(comparison.referenceModel) ? comparison.referenceModel : 'classical';
+  const candidateModel = DETECTOR_COMPARISON_MODELS.includes(comparison.candidateModel) && comparison.candidateModel !== referenceModel
+    ? comparison.candidateModel
+    : DETECTOR_COMPARISON_MODELS.find((model) => model !== referenceModel);
   return {
     ...defaults,
     ...snapshot,
@@ -87,10 +103,18 @@ function normalizeWaveSnapshot(snapshot, defaults) {
     detectorMechanicsMode,
     detectorModelComparison: {
       enabled: Boolean(comparison.enabled),
-      showDifference: Boolean(comparison.showDifference),
-      referenceModel: comparison.referenceModel === 'pilot-wave' ? 'pilot-wave' : 'classical',
+      showDifference: Boolean(comparison.showDifference && detectorMechanicsMode !== 'wigner-function'),
+      referenceModel,
+      candidateModel,
       classical: normalizeDetectorModelSettings(comparison.classical, defaults.detectorModelComparison.classical),
-      pilotWave: normalizeDetectorModelSettings(comparison.pilotWave, defaults.detectorModelComparison.pilotWave)
+      pilotWave: normalizeDetectorModelSettings(comparison.pilotWave, defaults.detectorModelComparison.pilotWave),
+      wignerGpu: normalizeDetectorModelSettings(comparison.wignerGpu, defaults.detectorModelComparison.wignerGpu)
+    },
+    wignerMechanics: {
+      showOnDetector: Boolean(wignerMechanics.showOnDetector),
+      showOnWaveField: Boolean(wignerMechanics.showOnWaveField),
+      showNegativeValues: wignerMechanics.showNegativeValues !== false,
+      quantities: [...new Set((Array.isArray(wignerMechanics.quantities) ? wignerMechanics.quantities : WIGNER_MECHANICS_QUANTITIES).filter((quantity) => WIGNER_MECHANICS_QUANTITIES.includes(quantity)))]
     },
     detectorPhaseMode: snapshot.detectorPhaseMode === 'all' || PHASE_MODES.includes(snapshot.detectorPhaseMode) ? snapshot.detectorPhaseMode : defaults.detectorPhaseMode,
     detectorPhaseValue: Number.isFinite(detectorPhaseValue) ? Math.min(Math.PI, Math.max(-Math.PI, detectorPhaseValue)) : defaults.detectorPhaseValue,
@@ -118,6 +142,8 @@ const DETECTOR_RESPONSE_FRAGMENT_SHADER = `
   uniform float uPilotWave;
   uniform float uPilotReferenceWaveNumber;
   uniform bool uComparisonEnabled;
+  uniform bool uWignerFunction;
+  uniform bool uShowWignerNegatives;
   uniform float uClassicalDetectionTime;
   uniform float uClassicalGlowTime;
   uniform float uPilotDetectionTime;
@@ -133,6 +159,33 @@ const DETECTOR_RESPONSE_FRAGMENT_SHADER = `
 
   const int MAX_EMITTERS = 1400;
 
+  vec2 sampleWignerWave(float sampleY, float sampleZ) {
+    float realPart = 0.0;
+    float imaginaryPart = 0.0;
+    for (int index = 0; index < MAX_EMITTERS; index += 1) {
+      if (float(index) >= uEmitterCount) break;
+      vec2 emitterUv = vec2((float(index) + 0.5) / uEmitterTextureWidth, 0.5);
+      vec4 phaseData = texture2D(uEmitterPhase, emitterUv);
+      vec4 amplitudeData = texture2D(uEmitterAmplitude, emitterUv);
+      vec4 polarizationData = texture2D(uEmitterPolarization, emitterUv);
+      vec4 sideData = texture2D(uEmitterSide, emitterUv);
+      vec3 offset = vec3(uDetectorX, sampleY, sampleZ) - phaseData.xyz;
+      float distanceToEmitter = max(length(offset), 0.000001);
+      vec3 propagation = offset / distanceToEmitter;
+      vec3 transverse = polarizationData.xyz;
+      vec3 polarization = transverse - dot(transverse, propagation) * propagation;
+      if (length(polarization) < 0.000001) {
+        vec3 side = sideData.xyz;
+        polarization = side - dot(side, propagation) * propagation;
+      }
+      float amplitude = amplitudeData.z * length(polarization) / distanceToEmitter;
+      float phase = phaseData.w * distanceToEmitter + amplitudeData.x - amplitudeData.y * uTime;
+      realPart += amplitude * cos(phase);
+      imaginaryPart += amplitude * sin(phase);
+    }
+    return vec2(realPart, imaginaryPart);
+  }
+
   void main() {
     float y = (vUv.y - 0.5) * uDetectorSpan;
     float z = (vUv.x - 0.5) * uDetectorSpan;
@@ -141,6 +194,7 @@ const DETECTOR_RESPONSE_FRAGMENT_SHADER = `
     float waveImaginary = 0.0;
     float derivativeReal = 0.0;
     float derivativeImaginary = 0.0;
+    float wignerValue = 0.0;
     for (int index = 0; index < MAX_EMITTERS; index += 1) {
       if (float(index) >= uEmitterCount) break;
       vec2 emitterUv = vec2((float(index) + 0.5) / uEmitterTextureWidth, 0.5);
@@ -172,6 +226,17 @@ const DETECTOR_RESPONSE_FRAGMENT_SHADER = `
         derivativeImaginary += amplitudeDerivative * sine + scalarAmplitude * cosine * phaseDerivative;
       }
     }
+    if (uWignerFunction) {
+      vec2 centerWave = sampleWignerWave(y, z);
+      vec2 plusOne = sampleWignerWave(y + 1.0, z);
+      vec2 minusOne = sampleWignerWave(y - 1.0, z);
+      vec2 plusTwo = sampleWignerWave(y + 2.0, z);
+      vec2 minusTwo = sampleWignerWave(y - 2.0, z);
+      float centerProduct = dot(centerWave, centerWave);
+      float firstProduct = dot(plusOne, minusOne);
+      float secondProduct = dot(plusTwo, minusTwo);
+      wignerValue = 2.0 * (centerProduct + 4.0 * firstProduct + secondProduct) / (3.0 * 3.14159265359);
+    }
     float classicalIntensity = dot(electric, electric);
     float pilotCurrent = max(0.0, waveReal * derivativeImaginary - waveImaginary * derivativeReal) / max(uPilotReferenceWaveNumber, 0.000001);
     vec4 previous = texture2D(uPreviousResponse, vUv);
@@ -179,7 +244,15 @@ const DETECTOR_RESPONSE_FRAGMENT_SHADER = `
     float classicalGlow = max(classicalAverage, previous.g * exp(-uElapsed / uClassicalGlowTime));
     float pilotAverage = previous.b + (pilotCurrent / uIntensityScale - previous.b) * (1.0 - exp(-uElapsed / uPilotDetectionTime));
     float pilotGlow = max(pilotAverage, previous.a * exp(-uElapsed / uPilotGlowTime));
-    gl_FragColor = vec4(clamp(classicalAverage, 0.0, 1.0), clamp(classicalGlow, 0.0, 1.0), clamp(pilotAverage, 0.0, 1.0), clamp(pilotGlow, 0.0, 1.0));
+    if (uWignerFunction) {
+      float signedValue = clamp(wignerValue / uIntensityScale, -1.0, 1.0);
+      if (!uShowWignerNegatives) signedValue = max(0.0, signedValue);
+      float average = previous.r + (abs(signedValue) - previous.r) * (1.0 - exp(-uElapsed / uDetectionTime));
+      float glow = max(average, previous.g * exp(-uElapsed / uGlowTime));
+      gl_FragColor = vec4(clamp(average, 0.0, 1.0), clamp(glow, 0.0, 1.0), signedValue < 0.0 ? 0.0 : 1.0, 1.0);
+    } else {
+      gl_FragColor = vec4(clamp(classicalAverage, 0.0, 1.0), clamp(classicalGlow, 0.0, 1.0), clamp(pilotAverage, 0.0, 1.0), clamp(pilotGlow, 0.0, 1.0));
+    }
   }
 `;
 const DETECTOR_DISPLAY_VERTEX_SHADER = `
@@ -201,6 +274,7 @@ const DETECTOR_DISPLAY_FRAGMENT_SHADER = `
   uniform float uClassicalBrightness;
   uniform float uPilotBrightness;
   uniform bool uPilotWave;
+  uniform bool uWignerFunction;
   uniform bool uComparisonEnabled;
   uniform bool uDifferenceView;
   uniform bool uReferencePilot;
@@ -214,7 +288,12 @@ const DETECTOR_DISPLAY_FRAGMENT_SHADER = `
       vec4 response = texture2D(uResponse, vUv);
       float classicalValue = clamp(pow(response.g, 0.65) * uClassicalBrightness, 0.0, 1.0);
       float pilotValue = clamp(pow(response.a, 0.65) * uPilotBrightness, 0.0, 1.0);
-      if (uComparisonEnabled && uDifferenceView) {
+      if (uWignerFunction) {
+        float magnitude = clamp(pow(texture2D(uResponse, vUv).g, 0.65) * uDetectorBrightness, 0.0, 1.0);
+        float signValue = response.b;
+        vec3 signColor = signValue >= 0.5 ? vec3(0.91, 0.31, 0.24) : vec3(0.22, 0.72, 0.77);
+        color = mix(vec3(0.012, 0.016, 0.023), signColor, magnitude);
+      } else if (uComparisonEnabled && uDifferenceView) {
         float difference = uReferencePilot ? classicalValue - pilotValue : pilotValue - classicalValue;
         vec3 differenceColor = difference >= 0.0 ? vec3(0.91, 0.31, 0.24) : vec3(0.22, 0.72, 0.77);
         color = mix(vec3(0.012, 0.016, 0.023), differenceColor, clamp(abs(difference), 0.0, 1.0));
@@ -360,6 +439,8 @@ function createDetectorRenderResources(width, height) {
       uPilotWave: { value: 0 },
       uPilotReferenceWaveNumber: { value: 1 },
       uComparisonEnabled: { value: false },
+      uWignerFunction: { value: false },
+      uShowWignerNegatives: { value: true },
       uClassicalDetectionTime: { value: 1 },
       uClassicalGlowTime: { value: 3 },
       uPilotDetectionTime: { value: 1 },
@@ -390,6 +471,7 @@ function createDetectorRenderResources(width, height) {
       uClassicalBrightness: { value: 1 },
       uPilotBrightness: { value: 1 },
       uPilotWave: { value: false },
+      uWignerFunction: { value: false },
       uComparisonEnabled: { value: false },
       uDifferenceView: { value: false },
       uReferencePilot: { value: false }
@@ -459,13 +541,15 @@ function createClassicDetectorGeometry(resolution) {
   geometry.userData.responses = Array.from({ length: binCount }, () => ({
     average: 0,
     glow: 0,
+    wignerSign: 0.5,
     classical: { average: 0, glow: 0 },
-    pilotWave: { average: 0, glow: 0 }
+    pilotWave: { average: 0, glow: 0 },
+    wignerGpu: { average: 0, glow: 0 }
   }));
   return geometry;
 }
 
-function sampleDetectorModelIntensities({ waves, waveCount, interferenceModes, experimentMode, apertureField, x, y, z, time }) {
+function sampleDetectorModelIntensities({ waves, waveCount, interferenceModes, experimentMode, apertureField, x, y, z, time, includeWignerGpu = false }) {
   const activeWaves = waves.slice(0, waveCount);
   const directFieldMode = experimentMode === 'field';
   const classicalIntensity = directFieldMode
@@ -479,34 +563,78 @@ function sampleDetectorModelIntensities({ waves, waveCount, interferenceModes, e
     ? activeWaves.reduce((total, wave) => total + (wave.enabled === false ? 0 : Math.abs(Number(wave.amplitude) || 0)), 0)
     : apertureField?.emitters.reduce((total, emitter) => total + Math.abs(emitter.amplitude), 0) ?? 0;
   const intensityScale = Math.max(0.001, 4 * totalAmplitude ** 2 / (directFieldMode ? 1 : DOUBLE_SLIT_DETECTOR_X ** 2));
-  return { classical: classicalIntensity / intensityScale, pilotWave: pilotWaveCurrent / intensityScale };
+  const wignerGpu = includeWignerGpu
+    ? Math.max(-1, Math.min(1, sampleTransverseWignerFunction(activeWaves, x, y, z, time, apertureField) / intensityScale))
+    : 0;
+  return { classical: classicalIntensity / intensityScale, pilotWave: pilotWaveCurrent / intensityScale, wignerGpu };
 }
 
 function scaleDetectorBrightness(glow, brightness) {
   return Math.min(1, Math.pow(Math.min(1, glow), 0.65) * brightness);
 }
 
-function updateDetectorComparisonScores({ scoreResponses, waves, waveCount, interferenceModes, experimentMode, apertureField, time, elapsed, comparison, onScores }) {
+function scaleSignedDetectorBrightness(value, brightness) {
+  return Math.sign(value) * scaleDetectorBrightness(Math.abs(value), brightness);
+}
+
+function sampleGpuWignerValue(values, y, z, resolution = WIGNER_GPU_RESOLUTION) {
+  if (!values) return null;
+  const row = Math.min(resolution - 1, Math.max(0, Math.floor((y / DETECTOR_TRANSVERSE_SPAN + 0.5) * resolution)));
+  const column = Math.min(resolution - 1, Math.max(0, Math.floor((z / DETECTOR_TRANSVERSE_SPAN + 0.5) * resolution)));
+  return values[(row * resolution + column) * 4];
+}
+
+function createCpuWignerFallbackGrid({ waves, waveCount, apertureField, time, intensityScale, resolution }) {
+  const values = new Float32Array(resolution ** 2 * 4);
+  for (let row = 0; row < resolution; row += 1) {
+    const y = ((row + 0.5) / resolution - 0.5) * DETECTOR_TRANSVERSE_SPAN;
+    for (let column = 0; column < resolution; column += 1) {
+      const z = ((column + 0.5) / resolution - 0.5) * DETECTOR_TRANSVERSE_SPAN;
+      const offset = (row * resolution + column) * 4;
+      values[offset] = Math.max(-1, Math.min(1, sampleTransverseWignerFunction(waves.slice(0, waveCount), DOUBLE_SLIT_DETECTOR_X, y, z, time, apertureField) / intensityScale));
+    }
+  }
+  return values;
+}
+
+function updateDetectorComparisonScores({ scoreResponses, waves, waveCount, interferenceModes, experimentMode, apertureField, time, elapsed, comparison, onScores, wignerGpuValues = null, wignerGpuResolution = WIGNER_GPU_RESOLUTION }) {
   const referenceModel = comparison.referenceModel;
-  const candidateModel = referenceModel === 'classical' ? 'pilot-wave' : 'classical';
+  const candidateModel = comparison.candidateModel;
+  const includeWignerGpu = true;
   const referenceValues = [];
   const candidateValues = [];
+  const modelValues = Object.fromEntries(DETECTOR_COMPARISON_MODELS.map((model) => [model, []]));
   for (let yIndex = 0; yIndex < DETECTOR_SCORE_GRID_RESOLUTION; yIndex += 1) {
     const y = ((yIndex + 0.5) / DETECTOR_SCORE_GRID_RESOLUTION - 0.5) * DETECTOR_TRANSVERSE_SPAN;
     for (let zIndex = 0; zIndex < DETECTOR_SCORE_GRID_RESOLUTION; zIndex += 1) {
       const z = ((zIndex + 0.5) / DETECTOR_SCORE_GRID_RESOLUTION - 0.5) * DETECTOR_TRANSVERSE_SPAN;
       const index = yIndex * DETECTOR_SCORE_GRID_RESOLUTION + zIndex;
-      const intensities = sampleDetectorModelIntensities({ waves, waveCount, interferenceModes, experimentMode, apertureField, x: DOUBLE_SLIT_DETECTOR_X, y, z, time });
+      const intensities = sampleDetectorModelIntensities({ waves, waveCount, interferenceModes, experimentMode, apertureField, x: DOUBLE_SLIT_DETECTOR_X, y, z, time, includeWignerGpu });
+      const gpuWignerValue = sampleGpuWignerValue(wignerGpuValues, y, z, wignerGpuResolution);
+      if (gpuWignerValue !== null) intensities.wignerGpu = gpuWignerValue;
       const response = scoreResponses[index];
       response.classical = advanceDetectorResponse(response.classical, intensities.classical, elapsed, comparison.classical.detectionTime, comparison.classical.glowTime);
       response.pilotWave = advanceDetectorResponse(response.pilotWave, intensities.pilotWave, elapsed, comparison.pilotWave.detectionTime, comparison.pilotWave.glowTime);
+      response.wignerGpu = advanceDetectorResponse(response.wignerGpu, Math.abs(intensities.wignerGpu), elapsed, comparison.wignerGpu.detectionTime, comparison.wignerGpu.glowTime);
+      response.wignerGpuSign = Math.sign(intensities.wignerGpu);
       const classicalValue = scaleDetectorBrightness(response.classical.glow, comparison.classical.brightness);
       const pilotWaveValue = scaleDetectorBrightness(response.pilotWave.glow, comparison.pilotWave.brightness);
-      referenceValues.push(referenceModel === 'classical' ? classicalValue : pilotWaveValue);
-      candidateValues.push(candidateModel === 'classical' ? classicalValue : pilotWaveValue);
+      const values = {
+        classical: classicalValue,
+        'pilot-wave': pilotWaveValue,
+        'wigner-gpu': scaleSignedDetectorBrightness(response.wignerGpuSign * response.wignerGpu.glow, comparison.wignerGpu.brightness)
+      };
+      DETECTOR_COMPARISON_MODELS.forEach((model) => modelValues[model].push(values[model]));
+      referenceValues.push(values[referenceModel]);
+      candidateValues.push(values[candidateModel]);
     }
   }
-  onScores({ ...summarizeModelDifference(referenceValues, candidateValues), referenceModel, candidateModel });
+  onScores({
+    ...summarizeModelDifference(referenceValues, candidateValues),
+    referenceModel,
+    candidateModel,
+    rankings: rankModelOutputs(modelValues, referenceModel)
+  });
 }
 
 function clearDetectorResponses(gl, resources) {
@@ -599,6 +727,7 @@ function PinholeScreen() {
 
 function NativeResolutionDetector({ apertureField, waves, waveCount, interferenceModes, experimentMode, running, timeRef, detectionTime, glowTime, detectorBrightness, detectorPalette, detectorMechanicsMode, detectorModelComparison, clearToken, maskEnabled, pixelDensity, onResolutionChange, onComparisonScores }) {
   const simulationSpeed = useContext(SimulationSpeedContext);
+  const wignerMechanics = useContext(WignerMechanicsContext);
   const { gl, size } = useThree();
   const baseWidth = E2E_MODE ? Math.min(size.width, E2E_DETECTOR_MAX_DIMENSION) : size.width;
   const baseHeight = E2E_MODE ? Math.min(size.height, E2E_DETECTOR_MAX_DIMENSION) : size.height;
@@ -611,7 +740,9 @@ function NativeResolutionDetector({ apertureField, waves, waveCount, interferenc
   const previousDifferenceView = useRef(false);
   const scoreResponses = useRef(Array.from({ length: DETECTOR_SCORE_GRID_RESOLUTION ** 2 }, () => ({
     classical: { average: 0, glow: 0 },
-    pilotWave: { average: 0, glow: 0 }
+    pilotWave: { average: 0, glow: 0 },
+    wignerGpu: { average: 0, glow: 0 },
+    wignerGpuSign: 0
   })));
   useEffect(() => {
     needsRefresh.current = true;
@@ -632,7 +763,7 @@ function NativeResolutionDetector({ apertureField, waves, waveCount, interferenc
         experimentMode,
         apertureField,
         time: timeRef.current,
-        elapsed: Math.max(detectorModelComparison.classical.detectionTime, detectorModelComparison.pilotWave.detectionTime) * 8,
+        elapsed: Math.max(detectorModelComparison.classical.detectionTime, detectorModelComparison.pilotWave.detectionTime, detectorModelComparison.wignerGpu.detectionTime) * 8,
         comparison: detectorModelComparison,
         onScores: onComparisonScores
       });
@@ -658,6 +789,8 @@ function NativeResolutionDetector({ apertureField, waves, waveCount, interferenc
     scoreResponses.current.forEach((response) => {
       response.classical = { average: 0, glow: 0 };
       response.pilotWave = { average: 0, glow: 0 };
+      response.wignerGpu = { average: 0, glow: 0 };
+      response.wignerGpuSign = 0;
     });
     updateTime.current = 0;
     comparisonScoreTimer.current = 0;
@@ -706,8 +839,10 @@ function NativeResolutionDetector({ apertureField, waves, waveCount, interferenc
   useEffect(() => {
     resources.responseMaterial.uniforms.uPilotWave.value = detectorMechanicsMode === 'pilot-wave' ? 1 : 0;
     resources.responseMaterial.uniforms.uComparisonEnabled.value = detectorModelComparison.enabled && detectorModelComparison.showDifference;
+    resources.responseMaterial.uniforms.uWignerFunction.value = detectorMechanicsMode === 'wigner-function';
+    resources.responseMaterial.uniforms.uShowWignerNegatives.value = wignerMechanics.showNegativeValues;
     needsRefresh.current = true;
-  }, [detectorMechanicsMode, detectorModelComparison.enabled, resources]);
+  }, [detectorMechanicsMode, detectorModelComparison.enabled, resources, wignerMechanics.showNegativeValues]);
 
   useEffect(() => {
     const uniforms = resources.displayMaterial.uniforms;
@@ -718,6 +853,7 @@ function NativeResolutionDetector({ apertureField, waves, waveCount, interferenc
     uniforms.uClassicalBrightness.value = comparisonValuesActive ? detectorModelComparison.classical.brightness : detectorBrightness;
     uniforms.uPilotBrightness.value = comparisonValuesActive ? detectorModelComparison.pilotWave.brightness : detectorBrightness;
     uniforms.uPilotWave.value = detectorMechanicsMode === 'pilot-wave';
+    uniforms.uWignerFunction.value = detectorMechanicsMode === 'wigner-function';
     uniforms.uComparisonEnabled.value = detectorModelComparison.enabled;
     uniforms.uDifferenceView.value = detectorModelComparison.enabled && detectorModelComparison.showDifference;
     uniforms.uReferencePilot.value = detectorModelComparison.referenceModel === 'pilot-wave';
@@ -779,7 +915,9 @@ function NativeResolutionDetector({ apertureField, waves, waveCount, interferenc
 
 function ClassicExperimentDetector({ apertureField, waves, waveCount, interferenceModes, experimentMode, running, timeRef, detectionTime, glowTime, detectorBrightness, detectorPalette, detectorMechanicsMode, detectorModelComparison, clearToken, maskEnabled, pixelDensity, onResolutionChange, onComparisonScores }) {
   const simulationSpeed = useContext(SimulationSpeedContext);
-  const resolution = Math.max(1, Math.round(CLASSIC_DETECTOR_BINS_PER_AXIS * pixelDensity));
+  const wignerMechanics = useContext(WignerMechanicsContext);
+  const resolutionScale = ['wigner-function', 'wigner-gpu'].includes(detectorMechanicsMode) ? 1.5 : 1;
+  const resolution = Math.max(1, Math.round(CLASSIC_DETECTOR_BINS_PER_AXIS * pixelDensity * resolutionScale));
   const geometry = useMemo(() => createClassicDetectorGeometry(resolution), [resolution]);
   const color = useMemo(() => new Color(), []);
   const updateTime = useRef(0);
@@ -788,9 +926,51 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
   const previousDifferenceView = useRef(false);
   const comparisonScoreResponses = useRef(Array.from({ length: DETECTOR_SCORE_GRID_RESOLUTION ** 2 }, () => ({
     classical: { average: 0, glow: 0 },
-    pilotWave: { average: 0, glow: 0 }
+    pilotWave: { average: 0, glow: 0 },
+    wignerGpu: { average: 0, glow: 0 },
+    wignerGpuSign: 0
   })));
+  const wignerGpuProcessor = useRef({ status: 'inactive', processor: null });
+  const wignerGpuSamples = useRef(null);
+  const wignerGpuBusy = useRef(false);
+  const wignerGpuSamplesReady = useRef(false);
+  const comparisonUsesWignerGpu = detectorModelComparison.enabled
+    && [detectorModelComparison.referenceModel, detectorModelComparison.candidateModel].includes('wigner-gpu');
+  const needsWignerGpu = detectorMechanicsMode === 'wigner-gpu' || comparisonUsesWignerGpu;
   useEffect(() => () => geometry.dispose(), [geometry]);
+  useEffect(() => {
+    if (!needsWignerGpu) {
+      wignerGpuProcessor.current = { status: 'inactive', processor: null };
+      wignerGpuSamples.current = null;
+      wignerGpuBusy.current = false;
+      wignerGpuSamplesReady.current = false;
+      return undefined;
+    }
+    const state = { status: 'loading', processor: null };
+    wignerGpuProcessor.current = state;
+    wignerGpuSamples.current = null;
+    wignerGpuBusy.current = false;
+    wignerGpuSamplesReady.current = false;
+    let active = true;
+    createWignerGpuProcessor(undefined, resolution, resolution).then((processor) => {
+      if (!active) {
+        processor?.dispose();
+        return;
+      }
+      state.processor = processor;
+      state.status = processor ? 'ready' : 'unavailable';
+      needsRefresh.current = true;
+    }).catch(() => {
+      if (!active) return;
+      state.status = 'unavailable';
+      needsRefresh.current = true;
+    });
+    return () => {
+      active = false;
+      state.processor?.dispose();
+      if (wignerGpuProcessor.current === state) wignerGpuProcessor.current = { status: 'inactive', processor: null };
+    };
+  }, [needsWignerGpu, resolution]);
   useEffect(() => {
     needsRefresh.current = true;
     updateTime.current = 0;
@@ -798,7 +978,7 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
   }, [geometry, onResolutionChange, resolution]);
   useEffect(() => {
     needsRefresh.current = true;
-  }, [apertureField, detectorBrightness, detectorMechanicsMode, detectorPalette, detectionTime, experimentMode, glowTime, interferenceModes, maskEnabled, waveCount, waves]);
+  }, [apertureField, detectorBrightness, detectorMechanicsMode, detectorPalette, detectionTime, experimentMode, glowTime, interferenceModes, maskEnabled, waveCount, waves, wignerMechanics.showNegativeValues]);
 
   useEffect(() => {
     const differenceView = detectorModelComparison.enabled && detectorModelComparison.showDifference;
@@ -815,7 +995,7 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
         experimentMode,
         apertureField,
         time: timeRef.current,
-        elapsed: Math.max(detectorModelComparison.classical.detectionTime, detectorModelComparison.pilotWave.detectionTime) * 8,
+        elapsed: Math.max(detectorModelComparison.classical.detectionTime, detectorModelComparison.pilotWave.detectionTime, detectorModelComparison.wignerGpu.detectionTime) * 8,
         comparison: detectorModelComparison,
         onScores: onComparisonScores
       });
@@ -832,10 +1012,15 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
       response.classical.glow = 0;
       response.pilotWave.average = 0;
       response.pilotWave.glow = 0;
+      response.wignerSign = 0.5;
+      response.wignerGpu = { average: 0, glow: 0 };
+      response.wignerGpuSign = 0;
     });
     comparisonScoreResponses.current.forEach((response) => {
       response.classical = { average: 0, glow: 0 };
       response.pilotWave = { average: 0, glow: 0 };
+      response.wignerGpu = { average: 0, glow: 0 };
+      response.wignerGpuSign = 0;
     });
     const baseColor = DETECTOR_PALETTE_COLORS[detectorPalette]?.[0] ?? DETECTOR_PALETTE_COLORS.thermal[0];
     const colors = geometry.attributes.color.array;
@@ -852,6 +1037,7 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
 
   useFrame((_, delta) => {
     comparisonScoreTimer.current += delta;
+    const configurationRefresh = needsRefresh.current;
     let elapsed = 0;
     if (running) {
       updateTime.current += Math.min(delta, 0.1);
@@ -860,16 +1046,49 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
       updateTime.current = 0;
     } else if (!needsRefresh.current) return;
     else elapsed = Math.max(0.01, detectorModelComparison.enabled && detectorModelComparison.showDifference
-      ? Math.max(detectorModelComparison.classical.detectionTime, detectorModelComparison.pilotWave.detectionTime)
+      ? Math.max(detectorModelComparison.classical.detectionTime, detectorModelComparison.pilotWave.detectionTime, detectorModelComparison.wignerGpu.detectionTime)
       : detectionTime) * 8;
     needsRefresh.current = false;
     const comparisonReference = detectorModelComparison.referenceModel;
-    const comparisonCandidate = comparisonReference === 'classical' ? 'pilotWave' : 'classical';
+    const comparisonCandidate = detectorModelComparison.candidateModel;
     const directFieldMode = experimentMode === 'field';
     const totalAmplitude = directFieldMode
       ? waves.slice(0, waveCount).reduce((total, wave) => total + (wave.enabled === false ? 0 : Math.abs(Number(wave.amplitude) || 0)), 0)
       : apertureField?.emitters.reduce((total, emitter) => total + Math.abs(emitter.amplitude), 0) ?? 0;
     const intensityScale = Math.max(0.001, 4 * totalAmplitude ** 2 / (directFieldMode ? 1 : DOUBLE_SLIT_DETECTOR_X ** 2));
+    const gpuState = wignerGpuProcessor.current;
+    if (needsWignerGpu && gpuState.status === 'ready' && apertureField?.emitters?.length && !wignerGpuSamplesReady.current) {
+      if (!wignerGpuBusy.current) {
+        wignerGpuBusy.current = true;
+        gpuState.processor.compute({
+          emitters: apertureField.emitters,
+          detectorX: DOUBLE_SLIT_DETECTOR_X,
+          detectorSpan: DETECTOR_TRANSVERSE_SPAN,
+          time: timeRef.current,
+          intensityScale
+        }).then((values) => {
+          if (wignerGpuProcessor.current !== gpuState) return;
+          wignerGpuSamples.current = values;
+          wignerGpuSamplesReady.current = values !== null;
+          wignerGpuBusy.current = false;
+          needsRefresh.current = true;
+        }).catch(() => {
+          if (wignerGpuProcessor.current !== gpuState) return;
+          gpuState.status = 'unavailable';
+          wignerGpuBusy.current = false;
+          needsRefresh.current = true;
+        });
+        return;
+      }
+      return;
+    }
+    const gpuSamplesReady = wignerGpuSamplesReady.current ? wignerGpuSamples.current : null;
+    wignerGpuSamplesReady.current = false;
+    const useCpuWignerFallback = needsWignerGpu && (!gpuState.processor || !apertureField?.emitters?.length);
+    const gpuSampleResolution = resolution;
+    const gpuSamplesForFrame = gpuSamplesReady ?? (useCpuWignerFallback
+      ? createCpuWignerFallbackGrid({ waves, waveCount, apertureField, time: timeRef.current, intensityScale, resolution })
+      : null);
     const stops = DETECTOR_PALETTE_COLORS[detectorPalette] ?? DETECTOR_PALETTE_COLORS.thermal;
     const colors = geometry.attributes.color.array;
     const responses = geometry.userData.responses;
@@ -880,41 +1099,61 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
         const bin = yBin * resolution + zBin;
         const response = responses[bin];
         if (detectorModelComparison.enabled && detectorModelComparison.showDifference) {
-          const intensities = sampleDetectorModelIntensities({ waves, waveCount, interferenceModes, experimentMode, apertureField, x: DOUBLE_SLIT_DETECTOR_X, y, z, time: timeRef.current });
+          const intensities = sampleDetectorModelIntensities({ waves, waveCount, interferenceModes, experimentMode, apertureField, x: DOUBLE_SLIT_DETECTOR_X, y, z, time: timeRef.current, includeWignerGpu: comparisonUsesWignerGpu });
+          const gpuWignerValue = sampleGpuWignerValue(gpuSamplesForFrame, y, z, gpuSampleResolution);
+          if (gpuWignerValue !== null) intensities.wignerGpu = gpuWignerValue;
           response.classical = advanceDetectorResponse(response.classical, intensities.classical, elapsed, detectorModelComparison.classical.detectionTime, detectorModelComparison.classical.glowTime);
           response.pilotWave = advanceDetectorResponse(response.pilotWave, intensities.pilotWave, elapsed, detectorModelComparison.pilotWave.detectionTime, detectorModelComparison.pilotWave.glowTime);
-          const selectedResponse = detectorMechanicsMode === 'pilot-wave' ? response.pilotWave : response.classical;
+          response.wignerGpu = advanceDetectorResponse(response.wignerGpu, Math.abs(intensities.wignerGpu), elapsed, detectorModelComparison.wignerGpu.detectionTime, detectorModelComparison.wignerGpu.glowTime);
+          response.wignerGpuSign = Math.sign(intensities.wignerGpu);
+          const selectedResponse = detectorMechanicsMode === 'pilot-wave' ? response.pilotWave : detectorMechanicsMode === 'wigner-gpu' ? response.wignerGpu : response.classical;
           response.average = selectedResponse.average;
           response.glow = selectedResponse.glow;
+          const values = {
+            classical: scaleDetectorBrightness(response.classical.glow, detectorModelComparison.classical.brightness),
+            'pilot-wave': scaleDetectorBrightness(response.pilotWave.glow, detectorModelComparison.pilotWave.brightness),
+            'wigner-gpu': scaleSignedDetectorBrightness(response.wignerGpuSign * response.wignerGpu.glow, detectorModelComparison.wignerGpu.brightness)
+          };
+          if (maskEnabled && Math.abs(y) > APERTURE_SCREEN_HEIGHT / 2) {
+            color.set('#030509');
+          } else {
+            const referenceValue = values[comparisonReference];
+            const candidateValue = values[comparisonCandidate];
+            const difference = candidateValue - referenceValue;
+            color.set(difference >= 0 ? '#e95042' : '#38b8c0').lerp(stops[0], 1 - Math.min(1, Math.abs(difference)));
+          }
         } else {
-          const intensity = detectorMechanicsMode === 'pilot-wave'
-            ? samplePilotWaveCurrent(waves.slice(0, waveCount), DOUBLE_SLIT_DETECTOR_X, y, z, timeRef.current, apertureField).forwardFlux
-            : directFieldMode
-              ? (() => {
-                const field = calculateWaveDisplacementAndTensorGaussian(waves.slice(0, waveCount), DOUBLE_SLIT_DETECTOR_X, z, timeRef.current, interferenceModes, y).displacement;
-                return field.x ** 2 + field.y ** 2 + field.z ** 2;
-              })()
-              : sampleApertureField(apertureField, DOUBLE_SLIT_DETECTOR_X, y, z, timeRef.current).intensity;
+          const gpuWignerValue = detectorMechanicsMode === 'wigner-gpu' ? sampleGpuWignerValue(gpuSamplesForFrame, y, z, gpuSampleResolution) : null;
+          const rawWignerValue = detectorMechanicsMode === 'wigner-function' || detectorMechanicsMode === 'wigner-gpu'
+            ? (gpuWignerValue ?? sampleTransverseWignerFunction(waves.slice(0, waveCount), DOUBLE_SLIT_DETECTOR_X, y, z, timeRef.current, apertureField)) * (gpuWignerValue === null ? 1 : intensityScale)
+            : null;
+          const wignerValue = rawWignerValue !== null && !wignerMechanics.showNegativeValues ? Math.max(0, rawWignerValue) : rawWignerValue;
+          const intensity = wignerValue !== null
+            ? Math.abs(wignerValue)
+            : detectorMechanicsMode === 'pilot-wave'
+              ? samplePilotWaveCurrent(waves.slice(0, waveCount), DOUBLE_SLIT_DETECTOR_X, y, z, timeRef.current, apertureField).forwardFlux
+              : directFieldMode
+                ? (() => {
+                  const field = calculateWaveDisplacementAndTensorGaussian(waves.slice(0, waveCount), DOUBLE_SLIT_DETECTOR_X, z, timeRef.current, interferenceModes, y).displacement;
+                  return field.x ** 2 + field.y ** 2 + field.z ** 2;
+                })()
+                : sampleApertureField(apertureField, DOUBLE_SLIT_DETECTOR_X, y, z, timeRef.current).intensity;
           const nextResponse = advanceDetectorResponse(response, intensity / intensityScale, elapsed, detectionTime, glowTime);
           response.average = nextResponse.average;
           response.glow = nextResponse.glow;
-        }
-        if (maskEnabled && Math.abs(y) > APERTURE_SCREEN_HEIGHT / 2) {
-          color.set('#030509');
-        } else if (detectorModelComparison.enabled && detectorModelComparison.showDifference) {
-          const referenceValue = comparisonReference === 'classical'
-            ? scaleDetectorBrightness(response.classical.glow, detectorModelComparison.classical.brightness)
-            : scaleDetectorBrightness(response.pilotWave.glow, detectorModelComparison.pilotWave.brightness);
-          const candidateValue = comparisonCandidate === 'classical'
-            ? scaleDetectorBrightness(response.classical.glow, detectorModelComparison.classical.brightness)
-            : scaleDetectorBrightness(response.pilotWave.glow, detectorModelComparison.pilotWave.brightness);
-          const difference = candidateValue - referenceValue;
-          color.set(difference >= 0 ? '#e95042' : '#38b8c0').lerp(stops[0], 1 - Math.min(1, Math.abs(difference)));
-        } else {
-          const brightness = scaleDetectorBrightness(response.glow, detectorBrightness);
-          const palettePosition = brightness * (stops.length - 1);
-          const lowerStop = Math.floor(palettePosition);
-          color.copy(stops[lowerStop]).lerp(stops[Math.min(lowerStop + 1, stops.length - 1)], palettePosition - lowerStop);
+          if (wignerValue !== null) response.wignerSign = wignerValue < 0 ? 0 : 1;
+          if (maskEnabled && Math.abs(y) > APERTURE_SCREEN_HEIGHT / 2) {
+            color.set('#030509');
+          } else if (detectorMechanicsMode === 'wigner-function' || detectorMechanicsMode === 'wigner-gpu') {
+            const magnitude = scaleDetectorBrightness(response.glow, detectorBrightness);
+            const signColor = response.wignerSign >= 0.5 ? '#e95042' : '#38b8c0';
+            color.set('#080d17').lerp(new Color(signColor), magnitude);
+          } else {
+            const brightness = scaleDetectorBrightness(response.glow, detectorBrightness);
+            const palettePosition = brightness * (stops.length - 1);
+            const lowerStop = Math.floor(palettePosition);
+            color.copy(stops[lowerStop]).lerp(stops[Math.min(lowerStop + 1, stops.length - 1)], palettePosition - lowerStop);
+          }
         }
         for (let vertex = 0; vertex < 6; vertex += 1) {
           const colorOffset = (bin * 6 + vertex) * 3;
@@ -925,8 +1164,8 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
       }
     }
     geometry.attributes.color.needsUpdate = true;
-    if (detectorModelComparison.enabled && detectorModelComparison.showDifference && comparisonScoreTimer.current >= 0.5) {
-      updateDetectorComparisonScores({ scoreResponses: comparisonScoreResponses.current, waves, waveCount, interferenceModes, experimentMode, apertureField, time: timeRef.current, elapsed, comparison: detectorModelComparison, onScores: onComparisonScores });
+    if (detectorModelComparison.enabled && (configurationRefresh || comparisonScoreTimer.current >= 0.5)) {
+      updateDetectorComparisonScores({ scoreResponses: comparisonScoreResponses.current, waves, waveCount, interferenceModes, experimentMode, apertureField, time: timeRef.current, elapsed, comparison: detectorModelComparison, onScores: onComparisonScores, wignerGpuValues: gpuSamplesForFrame, wignerGpuResolution: gpuSampleResolution });
       comparisonScoreTimer.current = 0;
     }
   });
@@ -942,7 +1181,9 @@ function ExperimentDetector({ implementation, experimentMode, ...props }) {
   const detectorModelComparison = useContext(DetectorModelComparisonContext);
   const { setScores } = useContext(DetectorComparisonScoreContext);
   const detectorProps = { ...props, detectorModelComparison, onComparisonScores: setScores };
-  return implementation === 'native' && experimentMode !== 'field'
+  const comparisonUsesWignerGpu = detectorModelComparison.enabled
+    && [detectorModelComparison.referenceModel, detectorModelComparison.candidateModel].includes('wigner-gpu');
+  return implementation === 'native' && experimentMode !== 'field' && detectorProps.detectorMechanicsMode !== 'wigner-gpu' && !comparisonUsesWignerGpu
     ? <NativeResolutionDetector {...detectorProps} />
     : <ClassicExperimentDetector {...detectorProps} experimentMode={experimentMode} />;
 }
@@ -952,6 +1193,37 @@ function DetectorOamReadout({ states }) {
     <div className="wave-detector-oam-label" aria-label="OAM states on detector">
       <span className="wave-oam-kicker">OAM</span>
       {states.map(({ index, charge }) => <span className="wave-oam-state" key={index}>W{index + 1} ℓ={charge > 0 ? `+${charge}` : charge}</span>)}
+    </div>
+  </Html>;
+}
+
+function formatWignerVector(vector) {
+  return `(${vector.x.toFixed(3)}, ${vector.y.toFixed(3)}, ${vector.z.toFixed(3)})`;
+}
+
+function WignerMechanicsReadout({ label, position, waves, waveCount, timeRef, apertureField = null, quantities }) {
+  const outputRef = useRef(null);
+  const updateTimer = useRef(0);
+  useFrame((_, delta) => {
+    updateTimer.current += delta;
+    if (updateTimer.current < 0.25 || !outputRef.current) return;
+    updateTimer.current = 0;
+    const sample = sampleWignerMechanics(waves.slice(0, waveCount), position[0], position[1], position[2], timeRef.current, apertureField, quantities);
+    const lines = [];
+    if (sample.position) lines.push(`r ${formatWignerVector(sample.position)}`);
+    if (sample.momentum) lines.push(`p ${formatWignerVector(sample.momentum)}`);
+    if (sample.rotation) lines.push(`L ${formatWignerVector(sample.rotation)}`);
+    if (sample.shear) lines.push(`S [${sample.shear.xx.toFixed(3)} ${sample.shear.xy.toFixed(3)} ${sample.shear.xz.toFixed(3)}; ${sample.shear.xy.toFixed(3)} ${sample.shear.yy.toFixed(3)} ${sample.shear.yz.toFixed(3)}; ${sample.shear.xz.toFixed(3)} ${sample.shear.yz.toFixed(3)} ${sample.shear.zz.toFixed(3)}]`);
+    const receivedOam = sample.oamStates.length
+      ? sample.oamStates.map(({ index, charge }) => `W${index} ℓ=${charge > 0 ? `+${charge}` : charge}`).join(', ')
+      : 'none';
+    lines.push(`OAM received: ${receivedOam}`);
+    outputRef.current.textContent = lines.join('\n');
+  });
+  return <Html position={position}>
+    <div className="wave-wigner-readout" aria-label={`${label} Wigner mechanics`}>
+      <strong>{label}</strong>
+      <pre ref={outputRef}>Sampling phase-space moments…</pre>
     </div>
   </Html>;
 }
@@ -1128,6 +1400,7 @@ function WaveScene({ waves, waveCount, interferenceModes, running, particleCount
   const contextDetectorVisible = useContext(DetectorVisibilityContext);
   const detectorOamReadout = useContext(DetectorOamReadoutContext);
   const detectorMechanicsMode = useContext(DetectorMechanicsContext);
+  const wignerMechanics = useContext(WignerMechanicsContext);
   const detectorPhaseFilter = useContext(DetectorPhaseFilterContext);
   const detectorClear = useContext(DetectorClearContext);
   const showDetector = detectorVisible ?? contextDetectorVisible;
@@ -1157,6 +1430,8 @@ function WaveScene({ waves, waveCount, interferenceModes, running, particleCount
       {experimentMode === 'two-source' && <TwoSourceMarkers />}
       <WaveField waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} timeRef={timeRef} experimentMode={experimentMode} apertureField={apertureField} apertureSettings={apertureSettings} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} particleAppearance={particleAppearance} occlusionPreset={occlusionPreset} waveMechanics={waveMechanics} showWaveRepresentation={showWaveRepresentation} showTensorGaussianSplatters={showTensorGaussianSplatters} classicalWavePalette={classicalWavePalette} superpositionPalette={superpositionPalette} oamSplatterPalette={oamSplatterPalette} />
       {showDetector && (experimentMode === 'field' || APERTURE_EXPERIMENT_MODES.includes(experimentMode)) && <ExperimentDetector key={`${experimentMode}:${detectorImplementation}`} implementation={detectorImplementation} experimentMode={experimentMode} waves={detectorWaves} waveCount={detectorWaves.length} interferenceModes={detectorInterferenceModes} apertureField={detectorApertureField} running={running} timeRef={timeRef} detectionTime={detectionTime} glowTime={glowTime} detectorBrightness={detectorBrightness} detectorPalette={detectorPalette} detectorMechanicsMode={detectorMechanicsMode} clearToken={detectorClear.token} maskEnabled={detectorMaskEnabled} pixelDensity={detectorPixelDensity} onResolutionChange={onDetectorResolutionChange} />}
+      {showDetector && wignerMechanics.showOnDetector && <WignerMechanicsReadout label="DETECTOR WIGNER MOMENTS" position={[DOUBLE_SLIT_DETECTOR_X - 0.03, DETECTOR_TRANSVERSE_SPAN / 2 - 0.7, -DETECTOR_TRANSVERSE_SPAN / 2 + 0.8]} waves={detectorWaves} waveCount={detectorWaves.length} timeRef={timeRef} apertureField={detectorApertureField} quantities={wignerMechanics.quantities} />}
+      {showWaveRepresentation && wignerMechanics.showOnWaveField && <WignerMechanicsReadout label="WAVE-FIELD WIGNER MOMENTS" position={[-8, 4.2, -8]} waves={waves} waveCount={waveCount} timeRef={timeRef} apertureField={apertureField} quantities={wignerMechanics.quantities} />}
       {showDetector && (experimentMode === 'field' || APERTURE_EXPERIMENT_MODES.includes(experimentMode)) && detectorOamReadout.enabled && detectorOamReadout.states.length > 0 && <DetectorOamReadout states={detectorOamReadout.states} />}
       <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={orbitSettings} cameraParams={{ minDistance: 7, maxDistance: 32, enabled: orbitControlsVisible }} onUserInteraction={onManualInteraction} />
     </>
@@ -1381,6 +1656,7 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
       <section className="wave-control-section wave-state-section">
         <span className="wave-section-label">FIELD REPRESENTATION</span>
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={showWaveRepresentation} onChange={(event) => onVisualizationChange('showWaveRepresentation', event.target.checked)} /><span>Show wave representation</span></label>
+        <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={(currentValue.wignerMechanics ?? DEFAULT_WIGNER_MECHANICS).showOnWaveField} onChange={(event) => onVisualizationChange('wignerMechanics', { ...(currentValue.wignerMechanics ?? DEFAULT_WIGNER_MECHANICS), showOnWaveField: event.target.checked })} /><span>Show Wigner mechanics on wave field</span></label>
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={showTensorGaussianSplatters} onChange={(event) => onVisualizationChange('showTensorGaussianSplatters', event.target.checked)} /><span>Show EM tensor-Gaussian splatters</span></label>
         <PaletteParamControl label="Classical wave colors" value={classicalWavePalette} onChange={(value) => onVisualizationChange('classicalWavePalette', value)} />
         <PaletteParamControl label="Superposition particle colors" value={superpositionPalette} onChange={(value) => onVisualizationChange('superpositionPalette', value)} />
@@ -1448,12 +1724,29 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
         </>}
         <span className="wave-section-label">DETECTOR SCREEN</span>
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={detectorVisible} onChange={(event) => onDetectorVisible(event.target.checked)} /><span>Show detection screen</span></label>
+        <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={(currentValue.wignerMechanics ?? DEFAULT_WIGNER_MECHANICS).showOnDetector} onChange={(event) => onVisualizationChange('wignerMechanics', { ...(currentValue.wignerMechanics ?? DEFAULT_WIGNER_MECHANICS), showOnDetector: event.target.checked })} /><span>Show Wigner mechanics on detector</span></label>
+        {((currentValue.wignerMechanics ?? DEFAULT_WIGNER_MECHANICS).showOnDetector || (currentValue.wignerMechanics ?? DEFAULT_WIGNER_MECHANICS).showOnWaveField) && <div className="wave-wigner-quantity-settings">
+          <span className="wave-palette-label">Wigner quantities</span>
+          <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={(currentValue.wignerMechanics ?? DEFAULT_WIGNER_MECHANICS).quantities.length === WIGNER_MECHANICS_QUANTITIES.length} onChange={(event) => onVisualizationChange('wignerMechanics', { ...(currentValue.wignerMechanics ?? DEFAULT_WIGNER_MECHANICS), quantities: event.target.checked ? [...WIGNER_MECHANICS_QUANTITIES] : [] })} /><span>All quantities</span></label>
+          {WIGNER_MECHANICS_QUANTITIES.map((quantity) => <label className="wave-toggle wave-visualization-toggle" key={quantity}><input type="checkbox" checked={(currentValue.wignerMechanics ?? DEFAULT_WIGNER_MECHANICS).quantities.includes(quantity)} onChange={(event) => {
+            const settings = currentValue.wignerMechanics ?? DEFAULT_WIGNER_MECHANICS;
+            const quantities = event.target.checked
+              ? [...new Set([...settings.quantities, quantity])]
+              : settings.quantities.filter((selected) => selected !== quantity);
+            onVisualizationChange('wignerMechanics', { ...settings, quantities });
+          }} /><span>{WIGNER_MECHANICS_LABELS[quantity]}</span></label>)}
+        </div>}
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={currentValue.showOamStatesOnDetector ?? false} onChange={(event) => onVisualizationChange('showOamStatesOnDetector', event.target.checked)} /><span>Show OAM states on detector</span></label>
-        <div data-detector-mechanics={currentValue.detectorMechanicsMode ?? 'classical'}><ParamSelect className="wave-select" label="Detector mechanics" value={currentValue.detectorMechanicsMode ?? 'classical'} options={DETECTOR_MECHANICS_OPTIONS} onChange={(detectorMechanicsMode) => onVisualizationChange('detectorMechanicsMode', detectorMechanicsMode)} /></div>
+        <div data-detector-mechanics={currentValue.detectorMechanicsMode ?? 'classical'}><ParamSelect className="wave-select" label="Detector mechanics" value={currentValue.detectorMechanicsMode ?? 'classical'} options={DETECTOR_MECHANICS_OPTIONS} onChange={(detectorMechanicsMode) => {
+          onVisualizationChange('detectorMechanicsMode', detectorMechanicsMode);
+          if (detectorMechanicsMode === 'wigner-function' && detectorModelComparison.showDifference) updateModelComparison({ showDifference: false });
+        }} /></div>
+        {['wigner-function', 'wigner-gpu'].includes(currentValue.detectorMechanicsMode) && <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={(currentValue.wignerMechanics ?? DEFAULT_WIGNER_MECHANICS).showNegativeValues} onChange={(event) => onVisualizationChange('wignerMechanics', { ...(currentValue.wignerMechanics ?? DEFAULT_WIGNER_MECHANICS), showNegativeValues: event.target.checked })} /><span>Show negative Wigner values</span></label>}
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={detectorModelComparison.enabled} onChange={(event) => updateModelComparison({ enabled: event.target.checked })} /><span>Compare detector models</span></label>
         {detectorModelComparison.enabled && <>
-          <ParamSelect className="wave-select" label="Comparison reference model" value={detectorModelComparison.referenceModel} options={DETECTOR_MECHANICS_OPTIONS} onChange={(referenceModel) => updateModelComparison({ referenceModel })} />
-          <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={detectorModelComparison.showDifference} onChange={(event) => updateModelComparison({ showDifference: event.target.checked })} /><span>Show model difference on detector</span></label>
+          <ParamSelect className="wave-select" label="Comparison reference model" value={detectorModelComparison.referenceModel} options={DETECTOR_COMPARISON_MODEL_OPTIONS} onChange={(referenceModel) => updateModelComparison({ referenceModel, ...(referenceModel === detectorModelComparison.candidateModel ? { candidateModel: DETECTOR_COMPARISON_MODELS.find((model) => model !== referenceModel) } : {}) })} />
+          <ParamSelect className="wave-select" label="Comparison candidate model" value={detectorModelComparison.candidateModel} options={DETECTOR_COMPARISON_MODEL_OPTIONS} onChange={(candidateModel) => updateModelComparison({ candidateModel, ...(candidateModel === detectorModelComparison.referenceModel ? { referenceModel: DETECTOR_COMPARISON_MODELS.find((model) => model !== candidateModel) } : {}) })} />
+          <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={detectorModelComparison.showDifference} disabled={currentValue.detectorMechanicsMode === 'wigner-function'} onChange={(event) => updateModelComparison({ showDifference: event.target.checked })} /><span>Show model difference on detector</span></label>
           <details className="wave-detector-model-params" open>
             <summary>Classical intensity parameters</summary>
             <RangeControl label="Classical detection time" value={detectorModelComparison.classical.detectionTime} min={0.1} max={100} step={0.1} suffix=" s" editing={editing} onChange={(detectionTime) => updateModelSettings('classical', { detectionTime })} />
@@ -1466,9 +1759,22 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
             <RangeControl label="Pilot-wave glow time" value={detectorModelComparison.pilotWave.glowTime} min={0.1} max={100} step={0.1} suffix=" s" editing={editing} onChange={(glowTime) => updateModelSettings('pilotWave', { glowTime })} />
             <RangeControl label="Pilot-wave brightness" value={detectorModelComparison.pilotWave.brightness} min={0.25} max={2.5} step={0.05} editing={editing} onChange={(brightness) => updateModelSettings('pilotWave', { brightness })} />
           </details>
+          <details className="wave-detector-model-params">
+            <summary>Wigner (GPU) parameters</summary>
+            <RangeControl label="Wigner (GPU) detection time" value={detectorModelComparison.wignerGpu.detectionTime} min={0.1} max={100} step={0.1} suffix=" s" editing={editing} onChange={(detectionTime) => updateModelSettings('wignerGpu', { detectionTime })} />
+            <RangeControl label="Wigner (GPU) glow time" value={detectorModelComparison.wignerGpu.glowTime} min={0.1} max={100} step={0.1} suffix=" s" editing={editing} onChange={(glowTime) => updateModelSettings('wignerGpu', { glowTime })} />
+            <RangeControl label="Wigner (GPU) brightness" value={detectorModelComparison.wignerGpu.brightness} min={0.25} max={2.5} step={0.05} editing={editing} onChange={(brightness) => updateModelSettings('wignerGpu', { brightness })} />
+          </details>
           {detectorComparisonScores && <div className="wave-detector-score-table-wrap">
+            <table className="wave-detector-ranking-table">
+              <caption>Detector models ranked against {DETECTOR_MODEL_LABELS[detectorComparisonScores.referenceModel]} · lower is closer</caption>
+              <thead><tr><th>Rank</th><th>Model</th><th>Relative difference</th><th>RMS difference</th></tr></thead>
+              <tbody>{detectorComparisonScores.rankings.map(({ rank, model, scorePoints, rmsDifference }) => <tr key={model}>
+                <th>{rank}</th><td>{DETECTOR_MODEL_LABELS[model]}</td><td>{scorePoints.toFixed(1)}%</td><td>{rmsDifference.toFixed(4)}</td>
+              </tr>)}</tbody>
+            </table>
             <table className="wave-detector-score-table">
-              <caption>Reference: {detectorComparisonScores.referenceModel === 'classical' ? 'Classical intensity' : 'Pilot-wave current'} · Compare: {detectorComparisonScores.candidateModel === 'classical' ? 'Classical intensity' : 'Pilot-wave current'}</caption>
+              <caption>Reference: {DETECTOR_MODEL_LABELS[detectorComparisonScores.referenceModel]} · Compare: {DETECTOR_MODEL_LABELS[detectorComparisonScores.candidateModel]}</caption>
               <thead><tr><th>Difference score</th><th>Value</th></tr></thead>
               <tbody>
                 <tr><th>RMS difference</th><td>{detectorComparisonScores.rmsDifference.toFixed(4)}</td></tr>
@@ -1506,6 +1812,7 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
         <h3>Mechanics</h3>
         <p>Aperture experiments sample finite opening points and add their propagated, polarization-projected electric fields coherently at each detector pixel. Wave field mode instead evaluates the configured wave field directly at the detector plane; it uses the Classic pixels implementation. In both paths, the displayed signal is squared field magnitude with exponential exposure averaging and a separate glow-persistence response.</p>
         <p>Pilot-wave probability-current mode colors the detector by positive forward flow, Im(ψ* ∂xψ), normalized by the amplitude-weighted reference wave number. It is a scalar guidance-current visualization, not calibrated particle-count data.</p>
+        <p>Wigner mechanics reports local phase-space moments in ħ=1 units: position, phase-gradient momentum, orbital rotation r×p, and symmetric momentum shear. It is a local moment readout, not a reconstruction of the full signed Wigner quasidistribution. Detector OAM receipt lists enabled helical waves after the detector phase filter.</p>
         <p>Classic pixels evaluates a 48x48 base grid on the CPU. Native resolution (GPU) evaluates one texel per canvas drawing-buffer pixel and is available for aperture experiments. Pixel density scales both axes, so 2x density uses 4x as many pixels. The visibility toggle only hides the display; it does not disable wave propagation. The optional detector mask darkens pixels outside the 3.2-unit wall-height band.</p>
         <p>Slit screens support 1 to 12 centered openings. Their automatic layouts are one slit, two slits 4.2 units apart, or five grating slits 1.6 units apart; count and center spacing can override those layouts. Width is constrained to fit between neighboring slits. The top/bottom wall-margin control shortens every opening equally and adds matching occluding bars; slit position shifts the full array. Side walls, margin bars, and opening geometry share one visual opacity, default 0.2. Opacity changes appearance only; the propagation mask remains fully blocking outside the clear apertures.</p>
         <p>Screen translation (X/Y/Z) and rotation (X/Y/Z, radians) affect the visible wall, aperture-source locations, and propagation mask using the same ZYX Euler transform. The detector center remains fixed at (7.2, 0, 0). Its distance control moves the screen along its current direction from the detector; editing any screen position coordinate recalculates the center-to-center distance.</p>
@@ -1585,8 +1892,10 @@ export default function WaveInterferenceSim({ onBack }) {
     detectorModelComparison: {
       ...DEFAULT_DETECTOR_MODEL_COMPARISON,
       classical: { ...DEFAULT_DETECTOR_MODEL_COMPARISON.classical },
-      pilotWave: { ...DEFAULT_DETECTOR_MODEL_COMPARISON.pilotWave }
+      pilotWave: { ...DEFAULT_DETECTOR_MODEL_COMPARISON.pilotWave },
+      wignerGpu: { ...DEFAULT_DETECTOR_MODEL_COMPARISON.wignerGpu }
     },
+    wignerMechanics: { ...DEFAULT_WIGNER_MECHANICS, quantities: [...DEFAULT_WIGNER_MECHANICS.quantities] },
     detectorPhaseMode: 'all',
     detectorPhaseValue: 0,
     detectorBrightness: 1,
@@ -1902,6 +2211,7 @@ export default function WaveInterferenceSim({ onBack }) {
 
   return (
     <DetectorClearContext.Provider value={{ token: detectorClearToken, clear: () => setDetectorClearToken((token) => token + 1) }}>
+    <WignerMechanicsContext.Provider value={waveEditor.value.wignerMechanics ?? DEFAULT_WIGNER_MECHANICS}>
     <DetectorModelComparisonContext.Provider value={waveEditor.value.detectorModelComparison ?? DEFAULT_DETECTOR_MODEL_COMPARISON}>
     <DetectorComparisonScoreContext.Provider value={{ scores: detectorComparisonScores, setScores: setDetectorComparisonScores }}>
     <DetectorMechanicsContext.Provider value={waveEditor.value.detectorMechanicsMode ?? 'classical'}>
@@ -2037,6 +2347,7 @@ export default function WaveInterferenceSim({ onBack }) {
     </DetectorMechanicsContext.Provider>
     </DetectorComparisonScoreContext.Provider>
     </DetectorModelComparisonContext.Provider>
+    </WignerMechanicsContext.Provider>
     </DetectorClearContext.Provider>
   );
 }

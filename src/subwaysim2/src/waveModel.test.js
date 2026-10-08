@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Euler, Vector3 } from 'three';
-import { DETECTOR_PHASE_VALUE_TOLERANCE, DOUBLE_SLIT_SCREEN_THICKNESS, filterWavesByPhase, getSlitScreenPlane, samplePilotWaveCurrent, slitScreenPlaneDepth } from './waveModel.js';
+import { DETECTOR_PHASE_VALUE_TOLERANCE, DOUBLE_SLIT_SCREEN_THICKNESS, filterWavesByPhase, getSlitScreenPlane, samplePilotWaveCurrent, sampleTransverseWignerFunction, sampleWignerMechanics, slitScreenPlaneDepth, WIGNER_MECHANICS_QUANTITIES, WIGNER_TRANSVERSE_INTEGRATION_RANGE } from './waveModel.js';
 import { advanceDetectorResponse, calculateDoubleSlitField, calculateElectromagneticField, calculateOcclusionTransmission, calculatePinholeField, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveDisplacementAndTensorGaussian, calculateWaveEnvelope, calculateWaveFrame, calculateWaveOrbitalPhase, calculateWaveSample, calculateWaveTensorGaussian, cloneWaveState, combineWaves, createApertureSamplePoints, DEFAULT_APERTURE_SETTINGS, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_COUNT, DEFAULT_WAVE_STATES, DEFAULT_WAVES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, detectorDistanceForSlitScreenPosition, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, getSlitGeometry, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, SIGNAL_SOURCE_PRESETS, slitScreenLocalToWorld, slitScreenWorldToLocal } from './waveModel.js';
 
 test('wave configuration exposes eight phase modes and eight defaults', () => {
@@ -42,6 +42,31 @@ test('pilot-wave detector current follows forward phase flow', () => {
   const aperture = samplePilotWaveCurrent([], 1, 0, 0, 0, { emitters: [{ x: 0, y: 0, z: 0, waveNumber: Math.PI * 2, phase: 0, phaseRate: 1, amplitude: 1, transverse: { x: 0, y: 1, z: 0 }, side: { x: 0, y: 0, z: 1 } }] });
   assert.ok(aperture.currentX > 0);
   assert.ok(Math.abs(aperture.forwardFlux - aperture.density) < 1e-10);
+});
+
+test('Wigner mechanics reports position, phase momentum, rotation, shear, and received OAM', () => {
+  assert.deepEqual(WIGNER_MECHANICS_QUANTITIES, ['position', 'momentum', 'rotation', 'shear']);
+  const wave = { wavelength: 2, amplitude: 1, phaseMode: 'Standard', phaseOffset: 0, phaseRate: 0, enabled: true, origin: { x: 0, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 }, polarization: 'Scalar' };
+  const sample = sampleWignerMechanics([wave], 1, 0, 0, 0);
+  assert.deepEqual(sample.position, { x: 1, y: 0, z: 0 });
+  assert.ok(Math.abs(sample.momentum.x - Math.PI) < 0.01);
+  assert.ok(Math.abs(sample.rotation.x) < 0.01 && Math.abs(sample.rotation.y) < 0.01 && Math.abs(sample.rotation.z) < 0.01);
+  assert.ok(Math.abs(sample.shear.xx) < 0.01 && Math.abs(sample.shear.xy) < 0.01);
+  const helicalSample = sampleWignerMechanics([
+    { ...wave, phaseMode: 'Helical-Left' },
+    { ...wave, phaseMode: 'Helical-Right', enabled: false }
+  ], 1, 0, 0, 0);
+  assert.deepEqual(helicalSample.oamStates, [{ index: 1, charge: 1, phaseMode: 'Helical-Left' }]);
+  const limited = sampleWignerMechanics([wave], 1, 0, 0, 0, null, ['position', 'rotation']);
+  assert.equal(limited.momentum, null);
+  assert.equal(limited.shear, null);
+  assert.deepEqual(limited.position, { x: 1, y: 0, z: 0 });
+});
+
+test('transverse Wigner function returns the finite-window plane-wave slice', () => {
+  const wave = { wavelength: 2, amplitude: 1, phaseMode: 'Standard', phaseOffset: 0, phaseRate: 0, enabled: true, origin: { x: 0, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 }, polarization: 'Scalar' };
+  const value = sampleTransverseWignerFunction([wave], 1, 0, 0, 0);
+  assert.ok(Math.abs(value - (2 * WIGNER_TRANSVERSE_INTEGRATION_RANGE / Math.PI)) < 1e-10);
 });
 
 test('named wave states teach the modeled phase concepts and retain all slots', () => {

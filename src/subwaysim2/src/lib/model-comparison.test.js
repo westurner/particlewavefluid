@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { compareModelVectors, rootMeanSquare, scoreWeightedNormalizedMetrics, summarizeModelDifference } from './model-comparison.js';
+import { compareModelVectors, rankModelOutputs, rootMeanSquare, scoreWeightedNormalizedMetrics, summarizeModelDifference } from './model-comparison.js';
 
 test('model comparison summarizes signed and absolute residuals', () => {
   assert.equal(rootMeanSquare([3, 4]), Math.sqrt(12.5));
@@ -35,4 +35,20 @@ test('model comparison rejects incompatible or non-finite samples', () => {
   assert.throws(() => summarizeModelDifference([1], []), RangeError);
   assert.throws(() => summarizeModelDifference([NaN], [0]), TypeError);
   assert.throws(() => compareModelVectors([[1]], [[1, 2]]), RangeError);
+});
+
+test('model ranking sorts every sampled output by normalized residual from a reference', () => {
+  const ranking = rankModelOutputs({
+    classical: [1, 2, 3],
+    'pilot-wave': [1, 2.1, 2.9],
+    'wigner-gpu': [3, 4, 5]
+  }, 'classical');
+  assert.deepEqual(ranking.map(({ rank, model }) => ({ rank, model })), [
+    { rank: 1, model: 'classical' },
+    { rank: 2, model: 'pilot-wave' },
+    { rank: 3, model: 'wigner-gpu' }
+  ]);
+  assert.equal(ranking[0].scorePoints, 0);
+  assert.ok(ranking[1].scorePoints < ranking[2].scorePoints);
+  assert.throws(() => rankModelOutputs({ classical: [1] }, 'missing'), RangeError);
 });
