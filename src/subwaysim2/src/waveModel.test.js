@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Euler, Vector3 } from 'three';
+import { DOUBLE_SLIT_SCREEN_THICKNESS, getSlitScreenPlane, slitScreenPlaneDepth } from './waveModel.js';
 import { advanceDetectorResponse, calculateDoubleSlitField, calculateElectromagneticField, calculateOcclusionTransmission, calculatePinholeField, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveDisplacementAndTensorGaussian, calculateWaveEnvelope, calculateWaveFrame, calculateWaveOrbitalPhase, calculateWaveSample, calculateWaveTensorGaussian, cloneWaveState, combineWaves, createApertureSamplePoints, DEFAULT_APERTURE_SETTINGS, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_COUNT, DEFAULT_WAVE_STATES, DEFAULT_WAVES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, detectorDistanceForSlitScreenPosition, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, getSlitGeometry, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, SIGNAL_SOURCE_PRESETS, slitScreenLocalToWorld, slitScreenWorldToLocal } from './waveModel.js';
 
 test('wave configuration exposes eight phase modes and eight defaults', () => {
@@ -305,6 +306,14 @@ test('slit screen XYZ pose is invertible and drives the rotated occlusion apertu
   assert.ok(Math.abs(roundTrip.z - localOpening.z) < 1e-12);
   assert.ok(Math.hypot(worldOpening.x - threeWorldOpening.x, worldOpening.y - threeWorldOpening.y, worldOpening.z - threeWorldOpening.z) < 1e-12);
   assert.equal(calculateOcclusionTransmission('double-slit', worldOpening.x, worldOpening.z, worldOpening.y, settings), 1);
+
+  const plane = getSlitScreenPlane(settings);
+  const movedSettings = normalizeApertureSettings({ ...settings, slitScreenPositionX: -0.8 });
+  const movedPlane = getSlitScreenPlane(movedSettings);
+  assert.ok(Math.abs(slitScreenPlaneDepth(movedPlane, -0.8, -0.75, 2.5)) < 1e-12);
+  assert.ok(Math.abs(slitScreenPlaneDepth(movedPlane, -0.8, -0.75, 2.5) - slitScreenPlaneDepth(plane, -0.8, -0.75, 2.5)) > 0.1);
+  assert.equal(slitScreenPlaneDepth(plane, 0.1, -0.75, 2.5) > DOUBLE_SLIT_SCREEN_THICKNESS / 2, false);
+  assert.equal(slitScreenPlaneDepth(movedPlane, 0.1, -0.75, 2.5) > DOUBLE_SLIT_SCREEN_THICKNESS / 2, true);
 
   const localWall = { x: 0, y: 1.5, z: 0 };
   const worldWall = slitScreenLocalToWorld(localWall, settings);

@@ -400,6 +400,20 @@ export function slitScreenWorldToLocal(point, apertureSettings = DEFAULT_APERTUR
   };
 }
 
+export function getSlitScreenPlane(apertureSettings = DEFAULT_APERTURE_SETTINGS) {
+  const settings = normalizeApertureSettings(apertureSettings);
+  return {
+    position: slitScreenPosition(settings),
+    normal: rotateVector({ x: 1, y: 0, z: 0 }, slitScreenRotation(settings))
+  };
+}
+
+export function slitScreenPlaneDepth(plane, x, y, z) {
+  return (x - plane.position.x) * plane.normal.x
+    + (y - plane.position.y) * plane.normal.y
+    + (z - plane.position.z) * plane.normal.z;
+}
+
 export function detectorDistanceForSlitScreenPosition(position) {
   return Math.hypot(
     DOUBLE_SLIT_DETECTOR_X - position.x,
