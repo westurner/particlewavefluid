@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { Html } from '@react-three/drei';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DataTexture, DoubleSide, FloatType, FrontSide, Mesh, NearestFilter, NoBlending, OrthographicCamera, RGBAFormat, Scene, ShaderMaterial, UnsignedByteType, Vector3, WebGLRenderTarget } from 'three';
-import { advanceDetectorResponse, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacementAndTensorGaussian, calculateWaveFrame, calculateWaveOrbitalPhase, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_APERTURE_SETTINGS, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, DOUBLE_SLIT_SCREEN_THICKNESS, DOUBLE_SLIT_SCREEN_X, DOUBLE_SLIT_WIDTH, APERTURE_SCREEN_DEPTH, APERTURE_SCREEN_HEIGHT, DETECTOR_TRANSVERSE_SPAN, detectorDistanceForSlitScreenPosition, getOrbitalAngularMomentum, getSlitGeometry, getSlitScreenPlane, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, GRATING_SLIT_WIDTH, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, OAM_CHARGE_MAX, OAM_CHARGE_MIN, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, readSavedWaveStates, sampleApertureField, SIGNAL_SOURCE_PRESETS, SINGLE_SLIT_WIDTH, slitScreenPlaneDepth, TWO_SOURCE_CENTERS, writeSavedWaveStates } from './waveModel.js';
+import { advanceDetectorResponse, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacementAndTensorGaussian, calculateWaveFrame, calculateWaveOrbitalPhase, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_APERTURE_SETTINGS, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, DOUBLE_SLIT_SCREEN_THICKNESS, DOUBLE_SLIT_SCREEN_X, DOUBLE_SLIT_WIDTH, APERTURE_SCREEN_DEPTH, APERTURE_SCREEN_HEIGHT, DETECTOR_TRANSVERSE_SPAN, detectorDistanceForSlitScreenPosition, filterWavesByPhase, getOrbitalAngularMomentum, getSlitGeometry, getSlitScreenPlane, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, GRATING_SLIT_WIDTH, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, OAM_CHARGE_MAX, OAM_CHARGE_MIN, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, readSavedWaveStates, sampleApertureField, samplePilotWaveCurrent, SIGNAL_SOURCE_PRESETS, SINGLE_SLIT_WIDTH, slitScreenPlaneDepth, TWO_SOURCE_CENTERS, writeSavedWaveStates } from './waveModel.js';
 import { HistoryControls, NumericParamControl, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 import { CameraPerspectiveToolbar, OrbitalTrackingParameters, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase, SimulatorExportModal, SimulatorIOJournal, SimulatorPresetControls, useSimulatorJournal } from './lib/SimulatorBase.jsx';
@@ -27,11 +27,18 @@ const CLASSIC_DETECTOR_BINS_PER_AXIS = 48;
 const DETECTOR_MAX_EMITTERS = 1400;
 const DetectorVisibilityContext = createContext(true);
 const DetectorOamReadoutContext = createContext({ enabled: false, states: [] });
+const DetectorMechanicsContext = createContext('classical');
 const SimulationSpeedContext = createContext(1);
+const DetectorPhaseFilterContext = createContext({ mode: 'all', value: 0 });
+const DetectorClearContext = createContext({ token: 0, clear: () => {} });
 const PerspectiveCameraContext = createContext({ viewMode: null, orbitPlaying: true, orbitControlsVisible: true, orbitSettings: DEFAULT_SIMULATOR_3D_PARAMETERS, particleAppearance: DEFAULT_SIMULATOR_3D_PARAMETERS.particleAppearance, onManualInteraction: () => {} });
 const DETECTOR_IMPLEMENTATION_OPTIONS = [
   { value: 'classic', label: 'Classic pixels' },
   { value: 'native', label: 'Native resolution (GPU)' }
+];
+const DETECTOR_MECHANICS_OPTIONS = [
+  { value: 'classical', label: 'Classical intensity' },
+  { value: 'pilot-wave', label: 'Pilot-wave probability current' }
 ];
 const DETECTOR_PALETTES = COLOR_PALETTES;
 const DETECTOR_PALETTE_COLORS = Object.fromEntries(DETECTOR_PALETTES.map(({ value, stops }) => [value, stops.map((stop) => new Color(stop))]));
@@ -42,6 +49,10 @@ function normalizeWaveSnapshot(snapshot, defaults) {
   }
   const waveCount = Number(snapshot.waveCount ?? defaults.waveCount);
   const simulationSpeed = Number(snapshot.simulationSpeed ?? defaults.simulationSpeed);
+  const detectorPhaseValue = Number(snapshot.detectorPhaseValue ?? defaults.detectorPhaseValue);
+  const detectorMechanicsMode = DETECTOR_MECHANICS_OPTIONS.some((option) => option.value === snapshot.detectorMechanicsMode)
+    ? snapshot.detectorMechanicsMode
+    : defaults.detectorMechanicsMode;
   return {
     ...defaults,
     ...snapshot,
@@ -49,6 +60,9 @@ function normalizeWaveSnapshot(snapshot, defaults) {
     running: Boolean(snapshot.running ?? defaults.running),
     waveCount: Number.isFinite(waveCount) ? Math.min(MAX_WAVES, Math.max(1, Math.round(waveCount))) : defaults.waveCount,
     simulationSpeed: Number.isFinite(simulationSpeed) ? Math.min(4, Math.max(0.1, simulationSpeed)) : defaults.simulationSpeed,
+    detectorMechanicsMode,
+    detectorPhaseMode: snapshot.detectorPhaseMode === 'all' || PHASE_MODES.includes(snapshot.detectorPhaseMode) ? snapshot.detectorPhaseMode : defaults.detectorPhaseMode,
+    detectorPhaseValue: Number.isFinite(detectorPhaseValue) ? Math.min(Math.PI, Math.max(-Math.PI, detectorPhaseValue)) : defaults.detectorPhaseValue,
     interferenceModes: { ...defaults.interferenceModes, ...snapshot.interferenceModes },
     apertureSettings: normalizeApertureSettings({ ...defaults.apertureSettings, ...snapshot.apertureSettings }),
     waveMechanics: { ...defaults.waveMechanics, ...snapshot.waveMechanics }
@@ -70,6 +84,8 @@ const DETECTOR_RESPONSE_FRAGMENT_SHADER = `
   uniform sampler2D uEmitterSide;
   uniform float uEmitterCount;
   uniform float uIntensityScale;
+  uniform float uPilotWave;
+  uniform float uPilotReferenceWaveNumber;
   uniform float uTime;
   uniform float uElapsed;
   uniform float uDetectionTime;
@@ -85,6 +101,10 @@ const DETECTOR_RESPONSE_FRAGMENT_SHADER = `
     float y = (vUv.y - 0.5) * uDetectorSpan;
     float z = (vUv.x - 0.5) * uDetectorSpan;
     vec3 electric = vec3(0.0);
+    float waveReal = 0.0;
+    float waveImaginary = 0.0;
+    float derivativeReal = 0.0;
+    float derivativeImaginary = 0.0;
     for (int index = 0; index < MAX_EMITTERS; index += 1) {
       if (float(index) >= uEmitterCount) break;
       vec2 emitterUv = vec2((float(index) + 0.5) / uEmitterTextureWidth, 0.5);
@@ -104,8 +124,19 @@ const DETECTOR_RESPONSE_FRAGMENT_SHADER = `
       float phase = phaseData.w * distanceToEmitter + amplitudeData.x - amplitudeData.y * uTime;
       float fieldAmplitude = amplitudeData.z * sin(phase) / distanceToEmitter;
       electric += polarization * fieldAmplitude;
+      float scalarAmplitude = amplitudeData.z * length(polarization) / distanceToEmitter;
+      float amplitudeDerivative = -scalarAmplitude * propagation.x / distanceToEmitter;
+      float phaseDerivative = phaseData.w * propagation.x;
+      float cosine = cos(phase);
+      float sine = sin(phase);
+      waveReal += scalarAmplitude * cosine;
+      waveImaginary += scalarAmplitude * sine;
+      derivativeReal += amplitudeDerivative * cosine - scalarAmplitude * sine * phaseDerivative;
+      derivativeImaginary += amplitudeDerivative * sine + scalarAmplitude * cosine * phaseDerivative;
     }
-    float intensity = dot(electric, electric) / uIntensityScale;
+    float classicalIntensity = dot(electric, electric);
+    float pilotCurrent = max(0.0, waveReal * derivativeImaginary - waveImaginary * derivativeReal) / max(uPilotReferenceWaveNumber, 0.000001);
+    float intensity = mix(classicalIntensity, pilotCurrent, uPilotWave) / uIntensityScale;
     vec4 previous = texture2D(uPreviousResponse, vUv);
     float average = previous.r + (intensity - previous.r) * (1.0 - exp(-uElapsed / uDetectionTime));
     float glow = max(average, previous.g * exp(-uElapsed / uGlowTime));
@@ -273,6 +304,8 @@ function createDetectorRenderResources(width, height) {
       uEmitterSide: { value: emitterTextures[3] },
       uEmitterCount: { value: 0 },
       uIntensityScale: { value: 1 },
+      uPilotWave: { value: 0 },
+      uPilotReferenceWaveNumber: { value: 1 },
       uTime: { value: 0 },
       uElapsed: { value: 0 },
       uDetectionTime: { value: 1 },
@@ -451,7 +484,7 @@ function PinholeScreen() {
   </mesh>;
 }
 
-function NativeResolutionDetector({ apertureField, running, timeRef, detectionTime, glowTime, detectorBrightness, detectorPalette, maskEnabled, pixelDensity, onResolutionChange }) {
+function NativeResolutionDetector({ apertureField, running, timeRef, detectionTime, glowTime, detectorBrightness, detectorPalette, detectorMechanicsMode, clearToken, maskEnabled, pixelDensity, onResolutionChange }) {
   const simulationSpeed = useContext(SimulationSpeedContext);
   const { gl, size } = useThree();
   const baseWidth = E2E_MODE ? Math.min(size.width, E2E_DETECTOR_MAX_DIMENSION) : size.width;
@@ -463,7 +496,7 @@ function NativeResolutionDetector({ apertureField, running, timeRef, detectionTi
   const needsRefresh = useRef(true);
   useEffect(() => {
     needsRefresh.current = true;
-  }, [apertureField, detectionTime, glowTime, resources]);
+  }, [apertureField, detectionTime, detectorMechanicsMode, glowTime, resources]);
 
   useEffect(() => {
     onResolutionChange(`${resolutionWidth}x${resolutionHeight}`);
@@ -475,6 +508,14 @@ function NativeResolutionDetector({ apertureField, running, timeRef, detectionTi
     needsRefresh.current = true;
     return () => resources.dispose();
   }, [gl, resources]);
+
+  useEffect(() => {
+    if (clearToken === 0) return;
+    clearDetectorResponses(gl, resources);
+    resources.displayMaterial.uniforms.uResponse.value = resources.responseTargets[0].texture;
+    updateTime.current = 0;
+    needsRefresh.current = false;
+  }, [clearToken, gl, resources]);
 
   useEffect(() => {
     const emitters = apertureField?.emitters ?? [];
@@ -501,13 +542,23 @@ function NativeResolutionDetector({ apertureField, running, timeRef, detectionTi
       sideTexture.image.data[offset + 1] = emitter.side.y;
       sideTexture.image.data[offset + 2] = emitter.side.z;
     }
+    const referenceWeight = emitters.slice(0, emitterCount).reduce((total, emitter) => total + Math.abs(emitter.amplitude), 0);
+    const referenceWaveNumber = referenceWeight > 0
+      ? emitters.slice(0, emitterCount).reduce((total, emitter) => total + Math.abs(emitter.amplitude) * emitter.waveNumber, 0) / referenceWeight
+      : 1;
     phaseTexture.needsUpdate = true;
     amplitudeTexture.needsUpdate = true;
     polarizationTexture.needsUpdate = true;
     sideTexture.needsUpdate = true;
     resources.responseMaterial.uniforms.uEmitterCount.value = emitterCount;
+    resources.responseMaterial.uniforms.uPilotReferenceWaveNumber.value = referenceWaveNumber;
     needsRefresh.current = true;
   }, [apertureField, resources]);
+
+  useEffect(() => {
+    resources.responseMaterial.uniforms.uPilotWave.value = detectorMechanicsMode === 'pilot-wave' ? 1 : 0;
+    needsRefresh.current = true;
+  }, [detectorMechanicsMode, resources]);
 
   useEffect(() => {
     const uniforms = resources.displayMaterial.uniforms;
@@ -524,6 +575,7 @@ function NativeResolutionDetector({ apertureField, running, timeRef, detectionTi
       elapsed = updateTime.current * simulationSpeed;
       updateTime.current = 0;
     } else if (!needsRefresh.current) return;
+    else elapsed = Math.max(0.01, detectionTime) * 8;
     needsRefresh.current = false;
     const totalAmplitude = apertureField?.emitters.reduce((total, emitter) => total + Math.abs(emitter.amplitude), 0) ?? 0;
     const uniforms = resources.responseMaterial.uniforms;
@@ -556,7 +608,7 @@ function NativeResolutionDetector({ apertureField, running, timeRef, detectionTi
   </mesh>;
 }
 
-function ClassicExperimentDetector({ apertureField, waves, waveCount, interferenceModes, experimentMode, running, timeRef, detectionTime, glowTime, detectorBrightness, detectorPalette, maskEnabled, pixelDensity, onResolutionChange }) {
+function ClassicExperimentDetector({ apertureField, waves, waveCount, interferenceModes, experimentMode, running, timeRef, detectionTime, glowTime, detectorBrightness, detectorPalette, detectorMechanicsMode, clearToken, maskEnabled, pixelDensity, onResolutionChange }) {
   const simulationSpeed = useContext(SimulationSpeedContext);
   const resolution = Math.max(1, Math.round(CLASSIC_DETECTOR_BINS_PER_AXIS * pixelDensity));
   const geometry = useMemo(() => createClassicDetectorGeometry(resolution), [resolution]);
@@ -571,7 +623,25 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
   }, [geometry, onResolutionChange, resolution]);
   useEffect(() => {
     needsRefresh.current = true;
-  }, [apertureField, detectorBrightness, detectorPalette, detectionTime, glowTime, maskEnabled]);
+  }, [apertureField, detectorBrightness, detectorMechanicsMode, detectorPalette, detectionTime, experimentMode, glowTime, interferenceModes, maskEnabled, waveCount, waves]);
+
+  useEffect(() => {
+    if (clearToken === 0) return;
+    geometry.userData.responses.forEach((response) => {
+      response.average = 0;
+      response.glow = 0;
+    });
+    const baseColor = DETECTOR_PALETTE_COLORS[detectorPalette]?.[0] ?? DETECTOR_PALETTE_COLORS.thermal[0];
+    const colors = geometry.attributes.color.array;
+    for (let index = 0; index < colors.length; index += 3) {
+      colors[index] = baseColor.r;
+      colors[index + 1] = baseColor.g;
+      colors[index + 2] = baseColor.b;
+    }
+    geometry.attributes.color.needsUpdate = true;
+    updateTime.current = 0;
+    needsRefresh.current = false;
+  }, [clearToken, detectorPalette, geometry]);
 
   useFrame((_, delta) => {
     let elapsed = 0;
@@ -581,6 +651,7 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
       elapsed = updateTime.current * simulationSpeed;
       updateTime.current = 0;
     } else if (!needsRefresh.current) return;
+    else elapsed = Math.max(0.01, detectionTime) * 8;
     needsRefresh.current = false;
     const directFieldMode = experimentMode === 'field';
     const totalAmplitude = directFieldMode
@@ -595,12 +666,14 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
       for (let zBin = 0; zBin < resolution; zBin += 1) {
         const z = ((zBin + 0.5) / resolution - 0.5) * DETECTOR_TRANSVERSE_SPAN;
         const bin = yBin * resolution + zBin;
-        const intensity = directFieldMode
-          ? (() => {
+        const intensity = detectorMechanicsMode === 'pilot-wave'
+          ? samplePilotWaveCurrent(waves.slice(0, waveCount), DOUBLE_SLIT_DETECTOR_X, y, z, timeRef.current, apertureField).forwardFlux
+          : directFieldMode
+            ? (() => {
             const field = calculateWaveDisplacementAndTensorGaussian(waves.slice(0, waveCount), DOUBLE_SLIT_DETECTOR_X, z, timeRef.current, interferenceModes, y).displacement;
             return field.x ** 2 + field.y ** 2 + field.z ** 2;
           })()
-          : sampleApertureField(apertureField, DOUBLE_SLIT_DETECTOR_X, y, z, timeRef.current).intensity;
+            : sampleApertureField(apertureField, DOUBLE_SLIT_DETECTOR_X, y, z, timeRef.current).intensity;
         responses[bin] = advanceDetectorResponse(responses[bin], intensity / intensityScale, elapsed, detectionTime, glowTime);
         if (maskEnabled && Math.abs(y) > APERTURE_SCREEN_HEIGHT / 2) {
           color.set('#030509');
@@ -814,11 +887,20 @@ function WaveScene({ waves, waveCount, interferenceModes, running, particleCount
   const { viewMode, orbitPlaying, orbitSettings, particleAppearance, onManualInteraction } = useContext(PerspectiveCameraContext);
   const contextDetectorVisible = useContext(DetectorVisibilityContext);
   const detectorOamReadout = useContext(DetectorOamReadoutContext);
+  const detectorMechanicsMode = useContext(DetectorMechanicsContext);
+  const detectorPhaseFilter = useContext(DetectorPhaseFilterContext);
+  const detectorClear = useContext(DetectorClearContext);
   const showDetector = detectorVisible ?? contextDetectorVisible;
   const timeRef = useRef(0);
+  const detectorWaves = useMemo(() => filterWavesByPhase(waves.slice(0, waveCount), detectorPhaseFilter.mode, detectorPhaseFilter.value), [detectorPhaseFilter.mode, detectorPhaseFilter.value, waveCount, waves]);
   const apertureField = useMemo(() => APERTURE_EXPERIMENT_MODES.includes(experimentMode)
     ? prepareApertureField(waves.slice(0, waveCount), experimentMode, apertureSettings)
     : null, [apertureSettings, experimentMode, waveCount, waves]);
+  const detectorApertureField = useMemo(() => !APERTURE_EXPERIMENT_MODES.includes(experimentMode)
+    ? null
+    : detectorPhaseFilter.mode === 'all'
+      ? apertureField
+      : prepareApertureField(detectorWaves, experimentMode, apertureSettings), [apertureField, apertureSettings, detectorPhaseFilter.mode, detectorWaves, experimentMode]);
   return (
     <>
       <color attach="background" args={['#080d17']} />
@@ -830,7 +912,7 @@ function WaveScene({ waves, waveCount, interferenceModes, running, particleCount
       {experimentMode === 'pinhole' && <PinholeScreen />}
       {experimentMode === 'two-source' && <TwoSourceMarkers />}
       <WaveField waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} timeRef={timeRef} experimentMode={experimentMode} apertureField={apertureField} apertureSettings={apertureSettings} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} particleAppearance={particleAppearance} occlusionPreset={occlusionPreset} waveMechanics={waveMechanics} showWaveRepresentation={showWaveRepresentation} showTensorGaussianSplatters={showTensorGaussianSplatters} classicalWavePalette={classicalWavePalette} superpositionPalette={superpositionPalette} oamSplatterPalette={oamSplatterPalette} />
-      {showDetector && (experimentMode === 'field' || APERTURE_EXPERIMENT_MODES.includes(experimentMode)) && <ExperimentDetector key={`${experimentMode}:${detectorImplementation}`} implementation={detectorImplementation} experimentMode={experimentMode} waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} apertureField={apertureField} running={running} timeRef={timeRef} detectionTime={detectionTime} glowTime={glowTime} detectorBrightness={detectorBrightness} detectorPalette={detectorPalette} maskEnabled={detectorMaskEnabled} pixelDensity={detectorPixelDensity} onResolutionChange={onDetectorResolutionChange} />}
+      {showDetector && (experimentMode === 'field' || APERTURE_EXPERIMENT_MODES.includes(experimentMode)) && <ExperimentDetector key={`${experimentMode}:${detectorImplementation}`} implementation={detectorImplementation} experimentMode={experimentMode} waves={detectorWaves} waveCount={detectorWaves.length} interferenceModes={interferenceModes} apertureField={detectorApertureField} running={running} timeRef={timeRef} detectionTime={detectionTime} glowTime={glowTime} detectorBrightness={detectorBrightness} detectorPalette={detectorPalette} detectorMechanicsMode={detectorMechanicsMode} clearToken={detectorClear.token} maskEnabled={detectorMaskEnabled} pixelDensity={detectorPixelDensity} onResolutionChange={onDetectorResolutionChange} />}
       {showDetector && (experimentMode === 'field' || APERTURE_EXPERIMENT_MODES.includes(experimentMode)) && detectorOamReadout.enabled && detectorOamReadout.states.length > 0 && <DetectorOamReadout states={detectorOamReadout.states} />}
       <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={orbitSettings} cameraParams={{ minDistance: 7, maxDistance: 32, enabled: orbitControlsVisible }} onUserInteraction={onManualInteraction} />
     </>
@@ -988,11 +1070,11 @@ function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate
       <div className={`wave-editor-workbench placement-${parameterPlacement}`}>
         <SourceOrbitControl wave={wave} index={index} onChange={update} editing={editing} />
         <div className="wave-parameter-dock">
-          <RangeControl label="Wavelength" value={wave.wavelength} min={1} max={12} step={0.1} suffix=" u" editing={editing} isDefault={isDefault(['waves', index, 'wavelength'])} onReset={() => onResetPath(['waves', index, 'wavelength'])} onChange={(value) => update('wavelength', value)} />
+          <RangeControl label="Wavelength" value={wave.wavelength} min={0.01} max={12} step={0.1} suffix=" u" editing={editing} isDefault={isDefault(['waves', index, 'wavelength'])} onReset={() => onResetPath(['waves', index, 'wavelength'])} onChange={(value) => update('wavelength', value)} />
           <RangeControl label="Amplitude" value={wave.amplitude} min={0} max={1.5} step={0.01} editing={editing} isDefault={isDefault(['waves', index, 'amplitude'])} onReset={() => onResetPath(['waves', index, 'amplitude'])} onChange={(value) => update('amplitude', value)} />
           <RangeControl label="Decay rate" value={wave.decayRate ?? 0} min={0} max={1} step={0.01} suffix=" /u" editing={editing} isDefault={isDefault(['waves', index, 'decayRate'])} onReset={() => onResetPath(['waves', index, 'decayRate'])} onChange={(value) => update('decayRate', value)} />
           <RangeControl label="Phase offset" value={wave.phaseOffset} min={-Math.PI} max={Math.PI} step={0.01} suffix=" rad" editing={editing} isDefault={isDefault(['waves', index, 'phaseOffset'])} onReset={() => onResetPath(['waves', index, 'phaseOffset'])} onChange={(value) => update('phaseOffset', value)} />
-          <RangeControl label="Phase rate" value={wave.phaseRate} min={-2} max={2} step={0.01} suffix=" /s" editing={editing} isDefault={isDefault(['waves', index, 'phaseRate'])} onReset={() => onResetPath(['waves', index, 'phaseRate'])} onChange={(value) => update('phaseRate', value)} />
+          <RangeControl label="Phase rate" value={wave.phaseRate} min={-3} max={3} step={0.01} suffix=" /s" editing={editing} isDefault={isDefault(['waves', index, 'phaseRate'])} onReset={() => onResetPath(['waves', index, 'phaseRate'])} onChange={(value) => update('phaseRate', value)} />
           <ParamSelect className="wave-select" label="Phase mode" value={wave.phaseMode} options={PHASE_MODES} onChange={changePhaseMode} />
           {isHelical(wave.phaseMode) && <RangeControl label="OAM charge (ℓ)" value={getOrbitalAngularMomentum(wave)} min={OAM_CHARGE_MIN} max={OAM_CHARGE_MAX} step={1} editing={editing} isDefault={isDefault(['waves', index, 'orbitalAngularMomentum'])} onReset={() => onResetPath(['waves', index, 'orbitalAngularMomentum'])} onChange={(value) => update('orbitalAngularMomentum', value)} />}
           <ParamSelect className="wave-select" label="Polarization" value={wave.polarization ?? 'Scalar'} options={POLARIZATION_MODES} onChange={(value) => update('polarization', value)} />
@@ -1007,6 +1089,7 @@ function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate
 }
 
 function WavePanel({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, orbitControlsVisible, sourceVectorsVisible, sourcePreset, occlusionPreset, stateOptions, selectedState, stateDescription, stateName, stateMessage, paramsVisible, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation, onExperimentModeChange, onDetectionTime, onGlowTime, onApertureSettingsChange, onDetectorVisible, onDetectorBrightness, onDetectorPalette, onDetectorMaskEnabled, onDetectorPixelDensity, onDetectorImplementation, onSourcePreset, onOcclusionPreset, onStateChange, onStateName, onSaveState, onChange, onWaveCountChange, onInterferenceChange, onRunning, onReset, onDuplicate, onRemove, onDoubleSided, onParticleCount, onParticleSize, onParticleOpacity, onParticleShape, onParticleDerivativeOrder, onOrbitControls, onSourceVectors, showWaveRepresentation = true, showTensorGaussianSplatters = true, classicalWavePalette = 'native', superpositionPalette = 'native', oamSplatterPalette = 'native', onVisualizationChange = () => {}, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {}, isDefault = () => true, onResetPath = () => {}, simulatorPresets = {}, currentSimulatorPreset = 'Default', simulatorPresetName = '', onSimulatorPresetName = () => {}, onApplySimulatorPreset = () => {}, onSaveSimulatorPreset = () => {}, currentValue = {}, jsonText = '', onJsonText = () => {}, onLoadJson = () => {}, onExport = () => {}, onDeleteSimulatorPresets = () => {}, showEditLog = false, onShowEditLog = () => {}, editLogYaml = '[]\n', onReplayLog = () => {}, replayMessage = '', replaying = false, journal = [], recording = false, onRecording = () => {}, playing = false, onTogglePlayback = () => {}, onStop = () => {}, playbackTime = 0, onPlaybackTime = () => {}, playbackSpeed = 1, onPlaybackSpeed = () => {} }) {
+  const detectorClear = useContext(DetectorClearContext);
   const enabledCount = waves.slice(0, waveCount).filter((wave) => wave.enabled).length;
   const activeModeLabels = Object.entries(INTERFERENCE_MODES).filter(([mode]) => interferenceModes[mode]).map(([, details]) => details.label);
   const defaultSlitCount = experimentMode === 'single-slit' ? 1 : experimentMode === 'grating' ? GRATING_SLIT_CENTERS.length : DOUBLE_SLIT_CENTERS.length;
@@ -1099,7 +1182,7 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
               const field = `slitScreenPosition${axis.toUpperCase()}`;
               return <RangeControl key={field} label={`Screen ${axis.toUpperCase()} position`} value={apertureSettings[field]} min={-9} max={9} step={0.1} suffix=" u" editing={editing} isDefault={isDefault(['apertureSettings', field])} onReset={() => onResetPath(['apertureSettings', field])} onChange={(value) => updateSlitScreenPosition(axis, value)} />;
             })}
-            <RangeControl label="Slit-to-detector distance" value={apertureSettings.detectorDistance} min={0.5} max={21} step={0.1} suffix=" u" editing={editing} isDefault={isDefault(['apertureSettings', 'detectorDistance'])} onReset={() => onResetPath(['apertureSettings', 'detectorDistance'])} onChange={updateDetectorDistance} />
+            <RangeControl label="Slit-to-detector distance" value={apertureSettings.detectorDistance} min={0} max={21} step={0.1} suffix=" u" editing={editing} isDefault={isDefault(['apertureSettings', 'detectorDistance'])} onReset={() => onResetPath(['apertureSettings', 'detectorDistance'])} onChange={updateDetectorDistance} />
             <span className="wave-section-label">SLIT SCREEN ROTATION</span>
             {['x', 'y', 'z'].map((axis) => {
               const field = `slitScreenRotation${axis.toUpperCase()}`;
@@ -1110,16 +1193,20 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
             <RangeControl label="Slit position" value={apertureSettings.slitPosition} min={-3} max={3} step={0.05} suffix=" z u" editing={editing} isDefault={isDefault(['apertureSettings', 'slitPosition'])} onReset={() => onResetPath(['apertureSettings', 'slitPosition'])} onChange={(slitPosition) => onApertureSettingsChange({ ...apertureSettings, slitPosition })} />
             {experimentMode === 'double-slit' && <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={apertureSettings.slitWidthsLinked} onChange={(event) => onApertureSettingsChange({ ...apertureSettings, slitWidthsLinked: event.target.checked, ...(event.target.checked ? { slitWidthB: apertureSettings.slitWidthA } : {}) })} /><span>Link slit widths</span></label>}
             {experimentMode === 'double-slit' && !apertureSettings.slitWidthsLinked ? <>
-              <RangeControl label="Left slit width" value={apertureSettings.slitWidthA} min={0.2} max={2.4} step={0.05} suffix=" u" editing={editing} isDefault={isDefault(['apertureSettings', 'slitWidthA'])} onReset={() => onResetPath(['apertureSettings', 'slitWidthA'])} onChange={(slitWidthA) => onApertureSettingsChange({ ...apertureSettings, slitWidthA })} />
-              <RangeControl label="Right slit width" value={apertureSettings.slitWidthB} min={0.2} max={2.4} step={0.05} suffix=" u" editing={editing} isDefault={isDefault(['apertureSettings', 'slitWidthB'])} onReset={() => onResetPath(['apertureSettings', 'slitWidthB'])} onChange={(slitWidthB) => onApertureSettingsChange({ ...apertureSettings, slitWidthB })} />
+              <RangeControl label="Left slit width" value={apertureSettings.slitWidthA} min={0} max={5} step={0.05} suffix=" u" editing={editing} isDefault={isDefault(['apertureSettings', 'slitWidthA'])} onReset={() => onResetPath(['apertureSettings', 'slitWidthA'])} onChange={(slitWidthA) => onApertureSettingsChange({ ...apertureSettings, slitWidthA })} />
+              <RangeControl label="Right slit width" value={apertureSettings.slitWidthB} min={0} max={5} step={0.05} suffix=" u" editing={editing} isDefault={isDefault(['apertureSettings', 'slitWidthB'])} onReset={() => onResetPath(['apertureSettings', 'slitWidthB'])} onChange={(slitWidthB) => onApertureSettingsChange({ ...apertureSettings, slitWidthB })} />
             </> : <RangeControl label={experimentMode === 'grating' ? 'Grating slit width' : 'Slit width'} value={apertureSettings.slitWidthA} min={0.2} max={experimentMode === 'grating' ? 1.4 : experimentMode === 'double-slit' ? 2.4 : 3.6} step={0.05} suffix=" u" editing={editing} isDefault={isDefault(['apertureSettings', 'slitWidthA'])} onReset={() => onResetPath(['apertureSettings', 'slitWidthA'])} onChange={(slitWidthA) => onApertureSettingsChange({ ...apertureSettings, slitWidthA, ...(experimentMode === 'double-slit' ? { slitWidthB: slitWidthA } : {}) })} />}
           </>}
         </>}
         <span className="wave-section-label">DETECTOR SCREEN</span>
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={detectorVisible} onChange={(event) => onDetectorVisible(event.target.checked)} /><span>Show detection screen</span></label>
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={currentValue.showOamStatesOnDetector ?? false} onChange={(event) => onVisualizationChange('showOamStatesOnDetector', event.target.checked)} /><span>Show OAM states on detector</span></label>
-        <RangeControl label="Detection time" value={detectionTime} min={0.1} max={5} step={0.1} suffix=" s" editing={editing} isDefault={isDefault('detectionTime')} onReset={() => onResetPath('detectionTime')} onChange={onDetectionTime} />
-        <RangeControl label="Glow time" value={glowTime} min={0.2} max={10} step={0.1} suffix=" s" editing={editing} isDefault={isDefault('glowTime')} onReset={() => onResetPath('glowTime')} onChange={onGlowTime} />
+        <div data-detector-mechanics={currentValue.detectorMechanicsMode ?? 'classical'}><ParamSelect className="wave-select" label="Detector mechanics" value={currentValue.detectorMechanicsMode ?? 'classical'} options={DETECTOR_MECHANICS_OPTIONS} onChange={(detectorMechanicsMode) => onVisualizationChange('detectorMechanicsMode', detectorMechanicsMode)} /></div>
+        <ParamSelect className="wave-select" label="Detector phase mode" value={currentValue.detectorPhaseMode ?? 'all'} options={[{ value: 'all', label: 'All phase modes' }, ...PHASE_MODES]} onChange={(detectorPhaseMode) => onVisualizationChange('detectorPhaseMode', detectorPhaseMode)} />
+        <RangeControl label="Detector phase value (offset)" value={currentValue.detectorPhaseValue ?? 0} min={-3.14} max={3.14} step={0.01} suffix=" rad" editing={editing} isDefault={isDefault('detectorPhaseValue')} onReset={() => onResetPath('detectorPhaseValue')} onChange={(detectorPhaseValue) => onVisualizationChange('detectorPhaseValue', detectorPhaseValue)} />
+        <div className="wave-actions"><button type="button" onClick={detectorClear.clear}>Clear detector</button></div>
+        <RangeControl label="Detection time" value={detectionTime} min={0.1} max={100} step={0.1} suffix=" s" editing={editing} isDefault={isDefault('detectionTime')} onReset={() => onResetPath('detectionTime')} onChange={onDetectionTime} />
+        <RangeControl label="Glow time" value={glowTime} min={0.1} max={100} step={0.1} suffix=" s" editing={editing} isDefault={isDefault('glowTime')} onReset={() => onResetPath('glowTime')} onChange={onGlowTime} />
         <ParamSelect className="wave-select" label="Detector implementation" value={experimentMode === 'field' ? 'classic' : detectorImplementation} options={experimentMode === 'field' ? [DETECTOR_IMPLEMENTATION_OPTIONS[0]] : DETECTOR_IMPLEMENTATION_OPTIONS} onChange={onDetectorImplementation} />
         <RangeControl label="Detector brightness" value={detectorBrightness} min={0.25} max={2.5} step={0.05} editing={editing} isDefault={isDefault('detectorBrightness')} onReset={() => onResetPath('detectorBrightness')} onChange={onDetectorBrightness} />
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={detectorMaskEnabled} onChange={(event) => onDetectorMaskEnabled(event.target.checked)} /><span>Mask outside wall-height band</span></label>
@@ -1138,6 +1225,7 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
         <summary>Detector model notes</summary>
         <h3>Mechanics</h3>
         <p>Aperture experiments sample finite opening points and add their propagated, polarization-projected electric fields coherently at each detector pixel. Wave field mode instead evaluates the configured wave field directly at the detector plane; it uses the Classic pixels implementation. In both paths, the displayed signal is squared field magnitude with exponential exposure averaging and a separate glow-persistence response.</p>
+        <p>Pilot-wave probability-current mode colors the detector by positive forward flow, Im(ψ* ∂xψ), normalized by the amplitude-weighted reference wave number. It is a scalar guidance-current visualization, not calibrated particle-count data.</p>
         <p>Classic pixels evaluates a 48x48 base grid on the CPU. Native resolution (GPU) evaluates one texel per canvas drawing-buffer pixel and is available for aperture experiments. Pixel density scales both axes, so 2x density uses 4x as many pixels. The visibility toggle only hides the display; it does not disable wave propagation. The optional detector mask darkens pixels outside the 3.2-unit wall-height band.</p>
         <p>Slit screens support 1 to 12 centered openings. Their automatic layouts are one slit, two slits 4.2 units apart, or five grating slits 1.6 units apart; count and center spacing can override those layouts. Width is constrained to fit between neighboring slits. The top/bottom wall-margin control shortens every opening equally and adds matching occluding bars; slit position shifts the full array. Side walls, margin bars, and opening geometry share one visual opacity, default 0.2. Opacity changes appearance only; the propagation mask remains fully blocking outside the clear apertures.</p>
         <p>Screen translation (X/Y/Z) and rotation (X/Y/Z, radians) affect the visible wall, aperture-source locations, and propagation mask using the same ZYX Euler transform. The detector center remains fixed at (7.2, 0, 0). Its distance control moves the screen along its current direction from the detector; editing any screen position coordinate recalculates the center-to-center distance.</p>
@@ -1213,6 +1301,9 @@ export default function WaveInterferenceSim({ onBack }) {
     apertureSettings: { ...DEFAULT_APERTURE_SETTINGS },
     detectorVisible: true,
     showOamStatesOnDetector: false,
+    detectorMechanicsMode: 'classical',
+    detectorPhaseMode: 'all',
+    detectorPhaseValue: 0,
     detectorBrightness: 1,
     detectorPalette: 'thermal',
     detectorMaskEnabled: false,
@@ -1241,6 +1332,7 @@ export default function WaveInterferenceSim({ onBack }) {
   const [glowTime, setGlowTime] = useState(3);
   const [apertureSettings, setApertureSettings] = useState(() => ({ ...DEFAULT_APERTURE_SETTINGS }));
   const [detectorVisible, setDetectorVisible] = useState(initialSnapshot.detectorVisible);
+  const [detectorClearToken, setDetectorClearToken] = useState(0);
   const [detectorBrightness, setDetectorBrightness] = useState(1);
   const [detectorPalette, setDetectorPalette] = useState(initialSnapshot.detectorPalette);
   const [detectorMaskEnabled, setDetectorMaskEnabled] = useState(initialSnapshot.detectorMaskEnabled);
@@ -1523,6 +1615,9 @@ export default function WaveInterferenceSim({ onBack }) {
     .filter(({ wave }) => wave.enabled !== false && (wave.phaseMode === 'Helical-Left' || wave.phaseMode === 'Helical-Right'));
 
   return (
+    <DetectorClearContext.Provider value={{ token: detectorClearToken, clear: () => setDetectorClearToken((token) => token + 1) }}>
+    <DetectorMechanicsContext.Provider value={waveEditor.value.detectorMechanicsMode ?? 'classical'}>
+    <DetectorPhaseFilterContext.Provider value={{ mode: waveEditor.value.detectorPhaseMode ?? 'all', value: waveEditor.value.detectorPhaseValue ?? 0 }}>
     <SimulationSpeedContext.Provider value={waveEditor.value.simulationSpeed ?? 1}>
     <DetectorVisibilityContext.Provider value={detectorVisible}>
     <PerspectiveCameraContext.Provider value={{ viewMode, orbitPlaying, orbitControlsVisible, orbitSettings: waveEditor.value, particleAppearance: waveEditor.value.particleAppearance, onManualInteraction: () => setViewMode(null) }}>
@@ -1650,5 +1745,8 @@ export default function WaveInterferenceSim({ onBack }) {
     </PerspectiveCameraContext.Provider>
     </DetectorVisibilityContext.Provider>
     </SimulationSpeedContext.Provider>
+    </DetectorPhaseFilterContext.Provider>
+    </DetectorMechanicsContext.Provider>
+    </DetectorClearContext.Provider>
   );
 }

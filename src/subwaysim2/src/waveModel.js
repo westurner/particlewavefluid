@@ -54,6 +54,18 @@ export const PHASE_MODES = [
   'Helical-Left',
   'Helical-Right'
 ];
+export const DETECTOR_PHASE_VALUE_TOLERANCE = 0.011;
+
+export function filterWavesByPhase(waves, phaseMode = 'all', phaseValue = 0) {
+  if (phaseMode === 'all') return waves;
+  const target = Number(phaseValue) || 0;
+  return waves.filter((wave) => {
+    if (wave.phaseMode !== phaseMode) return false;
+    const offset = Number(wave.phaseOffset) || 0;
+    const difference = Math.atan2(Math.sin(offset - target), Math.cos(offset - target));
+    return Math.abs(difference) <= DETECTOR_PHASE_VALUE_TOLERANCE;
+  });
+}
 
 export const INTERFERENCE_MODES = {
   constructive: {
@@ -533,6 +545,116 @@ export function calculateWaveSample(wave, x, z, time, y = 0) {
     default:
       return Math.sin(travel) * envelope;
   }
+}
+
+function complexWaveField(waves, x, y, z, time) {
+  let real = 0;
+  let imaginary = 0;
+  let weightedWaveNumber = 0;
+  let referenceWeight = 0;
+  for (const wave of waves) {
+    if (wave.enabled === false) continue;
+    const wavelength = Math.max(0.1, Number(wave.wavelength) || 0.1);
+    const waveNumber = (Math.PI * 2) / wavelength;
+    const phaseRate = Number(wave.phaseRate) || 0;
+    const phaseOffset = Number(wave.phaseOffset) || 0;
+    const frame = calculateWaveFrame(wave, x, y, z);
+    const amplitude = (Number(wave.amplitude) || 0) * calculateWaveEnvelope(wave, frame.longitudinal);
+    let phase = waveNumber * frame.longitudinal - phaseRate * time + phaseOffset;
+    if (wave.phaseMode === 'Standing') {
+      real += amplitude * Math.sin(waveNumber * frame.longitudinal + phaseOffset) * Math.cos(phaseRate * time);
+      continue;
+    }
+    if (wave.phaseMode === 'Inverted') phase += Math.PI;
+    else if (wave.phaseMode === 'Quadrature') phase += Math.PI / 2;
+    else if (wave.phaseMode === 'Circular-Left') phase = waveNumber * frame.transverseRadius - phaseRate * time + phaseOffset + frame.angle;
+    else if (wave.phaseMode === 'Circular-Right') phase = waveNumber * frame.transverseRadius - phaseRate * time + phaseOffset - frame.angle;
+    else if (wave.phaseMode === 'Helical-Left' || wave.phaseMode === 'Helical-Right') phase += getOrbitalAngularMomentum(wave) * frame.angle;
+    const beamWeight = wave.polarization === 'Scalar'
+      ? 1
+      : Math.exp(-(frame.transverseRadius ** 2) / (2 * Math.max(0.1, Number(wave.beamWaist) || DEFAULT_BEAM_WAIST) ** 2));
+    const weightedAmplitude = amplitude * beamWeight;
+    real += weightedAmplitude * Math.cos(phase);
+    imaginary += weightedAmplitude * Math.sin(phase);
+    const weight = Math.abs(weightedAmplitude);
+    weightedWaveNumber += weight * waveNumber;
+    referenceWeight += weight;
+  }
+  return { real, imaginary, referenceWaveNumber: referenceWeight > 0 ? weightedWaveNumber / referenceWeight : 1 };
+}
+
+function apertureComplexWaveField(emitters, x, y, z, time) {
+  let real = 0;
+  let imaginary = 0;
+  let derivativeReal = 0;
+  let derivativeImaginary = 0;
+  let weightedWaveNumber = 0;
+  let referenceWeight = 0;
+  for (const emitter of emitters) {
+    const offsetX = x - emitter.x;
+    const offsetY = y - emitter.y;
+    const offsetZ = z - emitter.z;
+    const distance = Math.max(1e-6, Math.hypot(offsetX, offsetY, offsetZ));
+    const directionX = offsetX / distance;
+    const directionY = offsetY / distance;
+    const directionZ = offsetZ / distance;
+    const transverseAlongRay = emitter.transverse.x * directionX + emitter.transverse.y * directionY + emitter.transverse.z * directionZ;
+    let polarizationX = emitter.transverse.x - transverseAlongRay * directionX;
+    let polarizationY = emitter.transverse.y - transverseAlongRay * directionY;
+    let polarizationZ = emitter.transverse.z - transverseAlongRay * directionZ;
+    let polarizationLength = Math.hypot(polarizationX, polarizationY, polarizationZ);
+    if (polarizationLength < 1e-6) {
+      const sideAlongRay = emitter.side.x * directionX + emitter.side.y * directionY + emitter.side.z * directionZ;
+      polarizationX = emitter.side.x - sideAlongRay * directionX;
+      polarizationY = emitter.side.y - sideAlongRay * directionY;
+      polarizationZ = emitter.side.z - sideAlongRay * directionZ;
+      polarizationLength = Math.hypot(polarizationX, polarizationY, polarizationZ);
+    }
+    const amplitude = emitter.amplitude * polarizationLength / distance;
+    const phase = emitter.waveNumber * distance + emitter.phase - emitter.phaseRate * time;
+    const cosine = Math.cos(phase);
+    const sine = Math.sin(phase);
+    const amplitudeDerivative = -amplitude * directionX / distance;
+    const phaseDerivative = emitter.waveNumber * directionX;
+    real += amplitude * cosine;
+    imaginary += amplitude * sine;
+    derivativeReal += amplitudeDerivative * cosine - amplitude * sine * phaseDerivative;
+    derivativeImaginary += amplitudeDerivative * sine + amplitude * cosine * phaseDerivative;
+    const weight = Math.abs(amplitude);
+    weightedWaveNumber += weight * emitter.waveNumber;
+    referenceWeight += weight;
+  }
+  return {
+    real,
+    imaginary,
+    derivativeReal,
+    derivativeImaginary,
+    referenceWaveNumber: referenceWeight > 0 ? weightedWaveNumber / referenceWeight : 1
+  };
+}
+
+export function samplePilotWaveCurrent(waves, x, y, z, time, apertureField = null) {
+  let field;
+  if (apertureField?.emitters?.length) {
+    field = apertureComplexWaveField(apertureField.emitters, x, y, z, time);
+  } else {
+    const step = 0.001;
+    const center = complexWaveField(waves, x, y, z, time);
+    const ahead = complexWaveField(waves, x + step, y, z, time);
+    const behind = complexWaveField(waves, x - step, y, z, time);
+    field = {
+      ...center,
+      derivativeReal: (ahead.real - behind.real) / (2 * step),
+      derivativeImaginary: (ahead.imaginary - behind.imaginary) / (2 * step)
+    };
+  }
+  const density = field.real ** 2 + field.imaginary ** 2;
+  const currentX = field.real * field.derivativeImaginary - field.imaginary * field.derivativeReal;
+  return {
+    density,
+    currentX,
+    forwardFlux: Math.max(0, currentX) / Math.max(field.referenceWaveNumber, 1e-6)
+  };
 }
 
 function scaleVector(vector, scale) {

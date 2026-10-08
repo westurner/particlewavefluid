@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Euler, Vector3 } from 'three';
-import { DOUBLE_SLIT_SCREEN_THICKNESS, getSlitScreenPlane, slitScreenPlaneDepth } from './waveModel.js';
+import { DETECTOR_PHASE_VALUE_TOLERANCE, DOUBLE_SLIT_SCREEN_THICKNESS, filterWavesByPhase, getSlitScreenPlane, samplePilotWaveCurrent, slitScreenPlaneDepth } from './waveModel.js';
 import { advanceDetectorResponse, calculateDoubleSlitField, calculateElectromagneticField, calculateOcclusionTransmission, calculatePinholeField, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveDisplacementAndTensorGaussian, calculateWaveEnvelope, calculateWaveFrame, calculateWaveOrbitalPhase, calculateWaveSample, calculateWaveTensorGaussian, cloneWaveState, combineWaves, createApertureSamplePoints, DEFAULT_APERTURE_SETTINGS, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_COUNT, DEFAULT_WAVE_STATES, DEFAULT_WAVES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, detectorDistanceForSlitScreenPosition, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, getSlitGeometry, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, SIGNAL_SOURCE_PRESETS, slitScreenLocalToWorld, slitScreenWorldToLocal } from './waveModel.js';
 
 test('wave configuration exposes eight phase modes and eight defaults', () => {
@@ -12,6 +12,36 @@ test('wave configuration exposes eight phase modes and eight defaults', () => {
   assert.equal(DEFAULT_WAVES.find((wave) => wave.phaseMode === 'Helical-Right').enabled, false);
   assert.deepEqual(PHASE_MODES.slice(-4), ['Circular-Left', 'Circular-Right', 'Helical-Left', 'Helical-Right']);
   assert.deepEqual(Object.keys(INTERFERENCE_MODES), ['constructive', 'superposition']);
+});
+
+test('detector phase filter matches phase mode and wrapped phase-offset value', () => {
+  const waves = [
+    { phaseMode: 'Standard', phaseOffset: 0.75 },
+    { phaseMode: 'Standard', phaseOffset: -0.4 },
+    { phaseMode: 'Helical-Left', phaseOffset: 0.75 }
+  ];
+  assert.equal(filterWavesByPhase(waves, 'all', 0), waves);
+  assert.deepEqual(filterWavesByPhase(waves, 'Standard', 0.75), [waves[0]]);
+  assert.deepEqual(filterWavesByPhase(waves, 'Helical-Left', 0.75), [waves[2]]);
+  assert.deepEqual(filterWavesByPhase([{ phaseMode: 'Standard', phaseOffset: -Math.PI + DETECTOR_PHASE_VALUE_TOLERANCE / 2 }], 'Standard', Math.PI), [
+    { phaseMode: 'Standard', phaseOffset: -Math.PI + DETECTOR_PHASE_VALUE_TOLERANCE / 2 }
+  ]);
+  assert.deepEqual(filterWavesByPhase(waves, 'Standard', 1), []);
+});
+
+test('pilot-wave detector current follows forward phase flow', () => {
+  const wave = { wavelength: 2, amplitude: 1, phaseMode: 'Standard', phaseOffset: 0, phaseRate: 1, enabled: true, origin: { x: 0, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 }, polarization: 'Scalar' };
+  const forward = samplePilotWaveCurrent([wave], 1, 0, 0, 0);
+  assert.ok(forward.currentX > 0);
+  assert.ok(Math.abs(forward.forwardFlux - forward.density) < 0.00001);
+  const standing = samplePilotWaveCurrent([{ ...wave, phaseMode: 'Standing' }], 0.5, 0, 0, 0);
+  assert.equal(standing.currentX, 0);
+  const backward = samplePilotWaveCurrent([{ ...wave, direction: { x: -1, y: 0, z: 0 } }], 1, 0, 0, 0);
+  assert.ok(backward.currentX < 0);
+  assert.equal(backward.forwardFlux, 0);
+  const aperture = samplePilotWaveCurrent([], 1, 0, 0, 0, { emitters: [{ x: 0, y: 0, z: 0, waveNumber: Math.PI * 2, phase: 0, phaseRate: 1, amplitude: 1, transverse: { x: 0, y: 1, z: 0 }, side: { x: 0, y: 0, z: 1 } }] });
+  assert.ok(aperture.currentX > 0);
+  assert.ok(Math.abs(aperture.forwardFlux - aperture.density) < 1e-10);
 });
 
 test('named wave states teach the modeled phase concepts and retain all slots', () => {
