@@ -1,12 +1,12 @@
-import { calculateDdfMobility, calculateTensorGaussianWeight, evaluateGeneralRelativityPair as evaluateSharedGeneralRelativityPair, evaluateMechanicsResponse, GRAVITY_MODEL_LIBRARY } from './lib/simulationMechanics.js';
+import { calculateDdfMobility, calculateTensorGaussianWeight, evaluateGeneralRelativityPair as evaluateSharedGeneralRelativityPair, evaluateMechanicsResponse, evaluateRotationalGravityPair, GRAVITY_MODEL_LIBRARY } from './lib/simulationMechanics.js';
+import { DEFAULT_FIELD_MECHANICS, evaluateFieldModel, FIELD_MODEL_OPTIONS, sanitizeFieldMechanics } from './mechanicsModels.js';
 
 export const AMPLITUDE_GRAVITY_MODES = [
-  { value: 'newtonian', label: 'Newtonian reference' },
+  ...FIELD_MODEL_OPTIONS,
   { value: 'general-relativity', label: 'GR (General Relativity)' },
   { value: 'gr-normed-tensor-gaussian', label: GRAVITY_MODEL_LIBRARY['gr-normed-tensor-gaussian'].label },
   { value: 'spin2-tree', label: 'Spin-2 EFT tree proxy' },
-  { value: 'gravituhedron', label: GRAVITY_MODEL_LIBRARY.gravituhedron.label },
-  { value: 'ddf-tensor-gaussian', label: 'DDF / normed tensor-Gaussian' }
+  { value: 'gravituhedron', label: GRAVITY_MODEL_LIBRARY.gravituhedron.label }
 ];
 
 export const DEFAULT_AMPLITUDE_GRAVITY = Object.freeze({
@@ -16,6 +16,14 @@ export const DEFAULT_AMPLITUDE_GRAVITY = Object.freeze({
   coupling: 0.35,
   correctionRange: 4,
   tensorGaussianWaist: 3,
+  fieldCoreRadius: 0.8,
+  quantumPressure: 0.35,
+  compressibility: 0.45,
+  geometryCoupling: 0.15,
+  grassmannianPoleWeight: 0.72,
+  spinPhaseCoupling: 0.15,
+  geometrySpinCoupling: 0.1,
+  fieldSpinStrength: 0.02,
   ddfStrength: 0.5,
   ddfSpeedLimitMS: 8,
   ddfBaseViscosity: 0.02,
@@ -24,6 +32,7 @@ export const DEFAULT_AMPLITUDE_GRAVITY = Object.freeze({
   speedOfLight: 20,
   grSpeedOfLight: 63241.077,
   grTensorGaussianWaist: 0.75,
+  includeRotationalEffects: false,
   showDifference: false,
   showStreamlines: false,
   streamlineLength: 9,
@@ -40,6 +49,7 @@ export const AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY = AMPLITUDE_GRAVITY_PATH_SA
 export const AMPLITUDE_GRAVITY_MAX_INTEGRATION_STEP_YEARS = 0.001;
 
 const MODE_IDS = new Set(AMPLITUDE_GRAVITY_MODES.map(({ value }) => value));
+const FIELD_MODEL_IDS = new Set(FIELD_MODEL_OPTIONS.map(({ value }) => value));
 
 function finiteOr(value, fallback) {
   return Number.isFinite(value) ? value : fallback;
@@ -57,6 +67,55 @@ function positiveMass(value, fallback = 1) {
   return Math.max(Number.MIN_VALUE, finiteOr(value, fallback));
 }
 
+function vectorCross(first, second) {
+  return [
+    first[1] * second[2] - first[2] * second[1],
+    first[2] * second[0] - first[0] * second[2],
+    first[0] * second[1] - first[1] * second[0]
+  ];
+}
+
+function normalizedAxis(axis) {
+  if (!Array.isArray(axis) || axis.length !== 3) return [0, 1, 0];
+  const magnitude = Math.hypot(...axis);
+  return magnitude > 1e-15 ? axis.map((component) => component / magnitude) : [0, 1, 0];
+}
+
+function pairSpinAxis(first, second) {
+  const firstAxis = first?.spinAxis;
+  const secondAxis = second?.spinAxis;
+  if (!firstAxis && !secondAxis) return [0, 1, 0];
+  const firstNormalized = normalizedAxis(firstAxis ?? secondAxis);
+  const secondNormalized = normalizedAxis(secondAxis ?? firstAxis);
+  const sum = firstNormalized.map((component, axis) => component + secondNormalized[axis]);
+  return Math.hypot(...sum) > 1e-15 ? normalizedAxis(sum) : firstNormalized;
+}
+
+function pairPhaseVorticity(first, second) {
+  const firstSpin = first?.spinAngularVelocity ?? [0, 0, 0];
+  const secondSpin = second?.spinAngularVelocity ?? [0, 0, 0];
+  return [0, 1, 2].map((axis) => ((firstSpin[axis] ?? 0) + (secondSpin[axis] ?? 0)) * 43200);
+}
+
+function amplitudeFieldMechanics(settings) {
+  return sanitizeFieldMechanics({
+    ...DEFAULT_FIELD_MECHANICS,
+    model: settings.mode,
+    coreRadius: settings.fieldCoreRadius,
+    quantumPressure: settings.quantumPressure,
+    compressibility: settings.compressibility,
+    dilatancy: settings.ddfStrength,
+    speedLimit: settings.ddfSpeedLimitMS,
+    baseViscosity: settings.ddfBaseViscosity,
+    grSpeedOfLight: settings.grSpeedOfLight,
+    tensorGaussianWaist: settings.tensorGaussianWaist,
+    grassmannianPoleWeight: settings.grassmannianPoleWeight,
+    geometryCoupling: settings.geometryCoupling,
+    spinPhaseCoupling: settings.spinPhaseCoupling,
+    geometrySpinCoupling: settings.geometrySpinCoupling
+  });
+}
+
 export function sanitizeAmplitudeGravity(value = {}) {
   const gaps = Array.isArray(value.cellGaps) ? value.cellGaps : DEFAULT_AMPLITUDE_GRAVITY.cellGaps;
   return {
@@ -66,6 +125,14 @@ export function sanitizeAmplitudeGravity(value = {}) {
     coupling: clamp(finiteOr(value.coupling, DEFAULT_AMPLITUDE_GRAVITY.coupling), 0, 4),
     correctionRange: positive(value.correctionRange, DEFAULT_AMPLITUDE_GRAVITY.correctionRange),
     tensorGaussianWaist: positive(value.tensorGaussianWaist, DEFAULT_AMPLITUDE_GRAVITY.tensorGaussianWaist),
+    fieldCoreRadius: clamp(finiteOr(value.fieldCoreRadius, DEFAULT_AMPLITUDE_GRAVITY.fieldCoreRadius), 0.05, 20),
+    quantumPressure: clamp(finiteOr(value.quantumPressure, DEFAULT_AMPLITUDE_GRAVITY.quantumPressure), 0, 20),
+    compressibility: clamp(finiteOr(value.compressibility, DEFAULT_AMPLITUDE_GRAVITY.compressibility), 0, 4),
+    geometryCoupling: clamp(finiteOr(value.geometryCoupling, DEFAULT_AMPLITUDE_GRAVITY.geometryCoupling), 0, 0.25),
+    grassmannianPoleWeight: clamp(finiteOr(value.grassmannianPoleWeight, DEFAULT_AMPLITUDE_GRAVITY.grassmannianPoleWeight), 0, 1),
+    spinPhaseCoupling: clamp(finiteOr(value.spinPhaseCoupling, DEFAULT_AMPLITUDE_GRAVITY.spinPhaseCoupling), 0, 1),
+    geometrySpinCoupling: clamp(finiteOr(value.geometrySpinCoupling, DEFAULT_AMPLITUDE_GRAVITY.geometrySpinCoupling), 0, 0.25),
+    fieldSpinStrength: clamp(finiteOr(value.fieldSpinStrength, DEFAULT_AMPLITUDE_GRAVITY.fieldSpinStrength), 0, 1),
     ddfStrength: clamp(finiteOr(value.ddfStrength, DEFAULT_AMPLITUDE_GRAVITY.ddfStrength), 0, 20),
     ddfSpeedLimitMS: clamp(finiteOr(value.ddfSpeedLimitMS, DEFAULT_AMPLITUDE_GRAVITY.ddfSpeedLimitMS), 0.1, 1e6),
     ddfBaseViscosity: clamp(finiteOr(value.ddfBaseViscosity, DEFAULT_AMPLITUDE_GRAVITY.ddfBaseViscosity), 0, 1),
@@ -74,6 +141,7 @@ export function sanitizeAmplitudeGravity(value = {}) {
     speedOfLight: clamp(finiteOr(value.speedOfLight, DEFAULT_AMPLITUDE_GRAVITY.speedOfLight), 1, 1e6),
     grSpeedOfLight: clamp(finiteOr(value.grSpeedOfLight, DEFAULT_AMPLITUDE_GRAVITY.grSpeedOfLight), 1, 1e9),
     grTensorGaussianWaist: positive(value.grTensorGaussianWaist, DEFAULT_AMPLITUDE_GRAVITY.grTensorGaussianWaist),
+    includeRotationalEffects: Boolean(value.includeRotationalEffects),
     showDifference: Boolean(value.showDifference),
     showStreamlines: Boolean(value.showStreamlines),
     streamlineLength: clamp(finiteOr(value.streamlineLength, DEFAULT_AMPLITUDE_GRAVITY.streamlineLength), 1, 24),
@@ -123,11 +191,25 @@ export function updateAmplitudeGravityStreamlines(target, bodies, configuration 
           const distanceSquared = dx * dx + dy * dy + dz * dz;
           if (distanceSquared < 1e-12) continue;
           const distance = Math.sqrt(distanceSquared);
-          const kernel = evaluateAmplitudeChannels({ distance, massProduct: sourceMasses[sourceIndex] }, settings).selectedKernel;
-          const fieldScale = kernel / distance;
-          field[0] += dx * fieldScale;
-          field[1] += dy * fieldScale;
-          field[2] += dz * fieldScale;
+          const source = bodies[sourceIndex];
+          const sourceAxis = normalizedAxis(source.spinAxis);
+          const channels = evaluateAmplitudeChannels({
+            distance,
+            massProduct: sourceMasses[sourceIndex],
+            fieldMagnitude: settings.gravitationalConstant * sourceMasses[sourceIndex],
+            radialDirection: [x - sourcePosition[0], y - sourcePosition[1], z - sourcePosition[2]],
+            spinAxis: sourceAxis,
+            phaseVorticity: (source.spinAngularVelocity ?? [0, 0, 0]).map((component) => component * 86400),
+            rotation: settings.fieldSpinStrength
+          }, settings);
+          const direction = [dx, dy, dz].map((component) => component / distance);
+          const tangent = vectorCross(sourceAxis, direction);
+          const tangentMagnitude = Math.hypot(...tangent);
+          const tangentDirection = tangentMagnitude > 1e-15 ? tangent.map((component) => component / tangentMagnitude) : [0, 0, 0];
+          for (let axis = 0; axis < 3; axis += 1) {
+            field[axis] += direction[axis] * channels.selectedKernel
+              + tangentDirection[axis] * channels.selectedTangentialKernel;
+          }
         }
 
         const fieldMagnitude = Math.hypot(field[0], field[1], field[2]);
@@ -215,33 +297,63 @@ export function createPositiveGrassmannianCell(configuration = DEFAULT_AMPLITUDE
   };
 }
 
-export function evaluateAmplitudeChannels({ distance, massProduct = 1, chargeProduct = 0, speedMS = 0 }, configuration = DEFAULT_AMPLITUDE_GRAVITY) {
+export function evaluateAmplitudeChannels({
+  distance,
+  massProduct = 1,
+  reducedMass = 1,
+  fieldMagnitude,
+  chargeProduct = 0,
+  speedMS = 0,
+  radialDirection = [1, 0, 0],
+  spinAxis = [0, 1, 0],
+  phaseGradient = [0, 0, 0],
+  phaseVorticity = [0, 0, 0],
+  rotation
+}, configuration = DEFAULT_AMPLITUDE_GRAVITY) {
   const settings = sanitizeAmplitudeGravity(configuration);
   const cell = createPositiveGrassmannianCell(settings);
   const radius = Math.sqrt(distance * distance + settings.softening * settings.softening);
   const momentumTransferSquared = 1 / (radius * radius);
   const photonExchange = chargeProduct * momentumTransferSquared;
   const spin2Tree = settings.gravitationalConstant * massProduct * momentumTransferSquared;
-  const gaussianWeight = settings.mode === 'ddf-tensor-gaussian'
+  const gaussianWeight = settings.mode === 'ddf-tensor-gaussian' || settings.mode === 'sqg-tensor-gaussian'
     ? calculateTensorGaussianWeight(radius, settings.tensorGaussianWaist)
     : Math.exp(-radius / settings.correctionRange);
-  const ddfMobility = settings.mode === 'ddf-tensor-gaussian'
+  const ddfMobility = settings.mode === 'ddf' || settings.mode === 'ddf-tensor-gaussian'
     ? calculateDdfMobility({ radiusM: radius, speedMS, coreRadiusM: settings.softening, speedLimitMS: settings.ddfSpeedLimitMS, dilatancy: settings.ddfStrength, baseViscosity: settings.ddfBaseViscosity })
     : 1;
-  const ddfResponse = settings.mode === 'ddf-tensor-gaussian'
+  const ddfResponse = settings.mode === 'ddf' || settings.mode === 'ddf-tensor-gaussian'
     ? evaluateMechanicsResponse({ regime: 'ddf-tensor-gaussian', gaussianWeight, ddfMobility })
     : null;
   const geometricResponse = settings.mode === 'gravituhedron'
     ? evaluateMechanicsResponse({ regime: 'grassmannian-amplituhedron', gaussianWeight, grassmannianWeight: cell.canonicalPoleWeight, geometryCoupling: settings.coupling, geometryCouplingMax: 4 })
     : null;
-  const geometricCorrection = geometricResponse ? geometricResponse.accelerationScale - 1 : 0;
+  const fieldResponse = FIELD_MODEL_IDS.has(settings.mode)
+    ? evaluateFieldModel(settings.mode, {
+      radius,
+      speed: speedMS,
+      magnitude: Math.max(0, finiteOr(fieldMagnitude, settings.gravitationalConstant * massProduct)),
+      rotation: finiteOr(rotation, settings.fieldSpinStrength),
+      spinAxis,
+      radialDirection,
+      phaseGradient,
+      phaseVorticity
+    }, amplitudeFieldMechanics(settings))
+    : null;
+  const geometricCorrection = fieldResponse?.geometricCorrection
+    ?? (geometricResponse ? geometricResponse.accelerationScale - 1 : 0);
   const selectedKernel = settings.mode === 'newtonian'
     ? spin2Tree
     : settings.mode === 'spin2-tree'
       ? spin2Tree * (1 + settings.coupling / radius)
-      : settings.mode === 'ddf-tensor-gaussian'
-        ? spin2Tree * ddfResponse.accelerationScale
-        : spin2Tree * (1 + geometricCorrection);
+      : settings.mode === 'gravituhedron'
+        ? spin2Tree * (1 + geometricCorrection)
+        : fieldResponse
+          ? -fieldResponse.radialAcceleration * Math.max(0, reducedMass)
+          : spin2Tree;
+  const selectedTangentialKernel = fieldResponse
+    ? fieldResponse.tangentialAcceleration * Math.max(0, reducedMass)
+    : 0;
   return {
     cell,
     radius,
@@ -249,10 +361,12 @@ export function evaluateAmplitudeChannels({ distance, massProduct = 1, chargePro
     photonExchange,
     spin2Tree,
     selectedKernel,
+    selectedTangentialKernel,
+    fieldResponse,
     geometricCorrection,
-    ddfMobility,
-    tensorGaussian: ddfResponse?.splatWeight ?? geometricResponse?.splatWeight ?? 0,
-    relativeDifference: spin2Tree === 0 ? 0 : Math.abs(selectedKernel - spin2Tree) / Math.abs(spin2Tree)
+    ddfMobility: fieldResponse?.ddfMobility ?? ddfMobility,
+    tensorGaussian: fieldResponse?.tensorGaussian ?? ddfResponse?.splatWeight ?? geometricResponse?.splatWeight ?? 0,
+    relativeDifference: spin2Tree === 0 ? 0 : Math.hypot(selectedKernel - spin2Tree, selectedTangentialKernel) / Math.abs(spin2Tree)
   };
 }
 
@@ -275,18 +389,60 @@ export function evaluateNBodyAmplitudeGravity(bodies, configuration = DEFAULT_AM
       const secondMass = positiveMass(bodies[second].mass, 1);
       const firstVelocity = bodies[first].velocity ?? [0, 0, 0];
       const secondVelocity = bodies[second].velocity ?? [0, 0, 0];
+      const totalMass = firstMass + secondMass;
+      const reducedMass = firstMass * secondMass / totalMass;
+      const relativeVelocity = secondVelocity.map((value, axis) => value - (firstVelocity[axis] ?? 0));
+      const spinAxis = pairSpinAxis(bodies[first], bodies[second]);
+      const phaseGradientProjection = Math.abs(spinAxis.reduce(
+        (sum, component, axis) => sum + component * relativeVelocity[axis],
+        0
+      ));
       const channels = evaluateAmplitudeChannels({
         distance,
         massProduct: firstMass * secondMass,
+        reducedMass,
+        fieldMagnitude: settings.gravitationalConstant * totalMass,
         chargeProduct: finiteOr(bodies[first].charge, 0) * finiteOr(bodies[second].charge, 0),
-        speedMS: Math.hypot(...secondVelocity.map((value, axis) => value - (firstVelocity[axis] ?? 0)))
+        speedMS: Math.hypot(...relativeVelocity),
+        radialDirection: offset.map((component) => -component / distance),
+        spinAxis,
+        phaseGradient: spinAxis.map((component) => component * phaseGradientProjection),
+        phaseVorticity: pairPhaseVorticity(bodies[first], bodies[second]),
+        rotation: settings.fieldSpinStrength
       }, settings);
       const direction = offset.map((component) => component / distance);
       const forceMagnitude = channels.selectedKernel;
+      const tangent = vectorCross(spinAxis, direction);
+      const tangentMagnitude = Math.hypot(...tangent);
+      const tangentDirection = tangentMagnitude > 1e-15 ? tangent.map((component) => component / tangentMagnitude) : [0, 0, 0];
       for (let axis = 0; axis < 3; axis += 1) {
-        const force = direction[axis] * forceMagnitude;
+        const force = direction[axis] * forceMagnitude + tangentDirection[axis] * channels.selectedTangentialKernel;
         accelerations[first][axis] += force / firstMass;
         accelerations[second][axis] -= force / secondMass;
+      }
+      if (settings.includeRotationalEffects) {
+        const rotational = evaluateRotationalGravityPair({
+          positionFirst: bodies[first].position,
+          positionSecond: bodies[second].position,
+          velocityFirst: firstVelocity,
+          velocitySecond: secondVelocity,
+          massFirst: firstMass,
+          massSecond: secondMass,
+          bodyFirst: bodies[first],
+          bodySecond: bodies[second]
+        }, {
+          gravitationalConstant: settings.gravitationalConstant,
+          softening: settings.softening,
+          includeSpinOrbit: false,
+          includeSpinSpin: false,
+          includeJ2: true
+        });
+        const totalMass = firstMass + secondMass;
+        for (let axis = 0; axis < 3; axis += 1) {
+          accelerations[first][axis] += rotational.j2[axis] * secondMass / totalMass;
+          accelerations[second][axis] -= rotational.j2[axis] * firstMass / totalMass;
+        }
+        maximumDifference = Math.max(maximumDifference, vectorMagnitude(rotational.j2) / Math.max(Math.abs(forceMagnitude / firstMass), 1e-30));
       }
       potential -= forceMagnitude * channels.radius;
       photonDiagnostic += channels.photonExchange;
@@ -364,13 +520,36 @@ function evaluateGeneralRelativityNBody(bodies, settings) {
         massFirst: firstMass,
         massSecond: secondMass
       }, settings);
+      const rotational = settings.includeRotationalEffects
+        ? evaluateRotationalGravityPair({
+          positionFirst: bodies[first].position,
+          positionSecond: bodies[second].position,
+          velocityFirst: bodies[first].velocity,
+          velocitySecond: bodies[second].velocity,
+          massFirst: firstMass,
+          massSecond: secondMass,
+          spinFirst: bodies[first].spinAngularMomentum,
+          spinSecond: bodies[second].spinAngularMomentum,
+          bodyFirst: bodies[first],
+          bodySecond: bodies[second]
+        }, {
+          gravitationalConstant: settings.gravitationalConstant,
+          speedOfLight: settings.grSpeedOfLight,
+          softening: settings.softening,
+          includeSpinOrbit: true,
+          includeSpinSpin: true,
+          includeJ2: true
+        })
+        : { total: [0, 0, 0] };
+      const pairAcceleration = pair.generalRelativity.map((value, axis) => value + rotational.total[axis]);
       const totalMass = firstMass + secondMass;
       for (let axis = 0; axis < 3; axis += 1) {
-        accelerations[first][axis] += pair.generalRelativity[axis] * secondMass / totalMass;
-        accelerations[second][axis] -= pair.generalRelativity[axis] * firstMass / totalMass;
+        accelerations[first][axis] += pairAcceleration[axis] * secondMass / totalMass;
+        accelerations[second][axis] -= pairAcceleration[axis] * firstMass / totalMass;
       }
       const newtonianMagnitude = Math.max(vectorMagnitude(pair.newtonian), 1e-30);
-      maximumDifference = Math.max(maximumDifference, vectorMagnitude(pair.pnCorrection) / newtonianMagnitude);
+      const totalCorrection = pair.pnCorrection.map((value, axis) => value + rotational.total[axis]);
+      maximumDifference = Math.max(maximumDifference, vectorMagnitude(totalCorrection) / newtonianMagnitude);
       const distance = vectorMagnitude(bodies[first].position.map((value, axis) => value - bodies[second].position[axis]));
       potential -= settings.gravitationalConstant * firstMass * secondMass / Math.sqrt(distance ** 2 + settings.softening ** 2);
     }

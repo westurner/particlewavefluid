@@ -21,6 +21,7 @@ import {
   updateAmplitudeGravityStreamlines
 } from './amplitudeGravityModel.js';
 import { ColorParamControl, NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
+import { FIELD_MODEL_DETAILS } from './mechanicsModels.js';
 import { TelemetryHud } from './lib/TelemetryHud.jsx';
 import { CameraPerspectiveToolbar, OrbitalTrackingParameters, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
 import { DEFAULT_CAMERA_VIEWS, DEFAULT_ORBITAL_TRACKING_CONFIGURATION, DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION } from './lib/simulator-base.js';
@@ -30,6 +31,7 @@ import {
   MERCURY_PERIHELION_REFERENCE,
   ORBIT_VALIDATION_MODEL_EXTENSION_PLAN,
   ORBIT_VALIDATION_DESCRIPTION,
+  optimizeObservedOrbitModels,
   scoreObservedOrbits
 } from './orbitalValidationModel.js';
 import {
@@ -232,7 +234,7 @@ function NBodyField({ configuration, running, resetToken, initialBodies, onTelem
 
   useEffect(() => {
     streamlineNeedsUpdateRef.current = true;
-  }, [configuration.coupling, configuration.mode, configuration.softening, configuration.cellGaps[0], configuration.cellGaps[1], configuration.cellGaps[2], configuration.fourthColumnWeight, configuration.streamlineLength, configuration.showStreamlines, resetToken]);
+  }, [configuration.coupling, configuration.mode, configuration.softening, configuration.fieldCoreRadius, configuration.quantumPressure, configuration.compressibility, configuration.geometryCoupling, configuration.grassmannianPoleWeight, configuration.spinPhaseCoupling, configuration.geometrySpinCoupling, configuration.fieldSpinStrength, configuration.grSpeedOfLight, configuration.tensorGaussianWaist, configuration.ddfStrength, configuration.ddfSpeedLimitMS, configuration.ddfBaseViscosity, configuration.cellGaps[0], configuration.cellGaps[1], configuration.cellGaps[2], configuration.fourthColumnWeight, configuration.streamlineLength, configuration.showStreamlines, resetToken]);
 
   useEffect(() => {
     if (configuration.showAttractorPaths) {
@@ -411,12 +413,12 @@ function validationBodyLabel(id) {
   })[id] ?? id;
 }
 
-function OrbitalValidationPanel({ configuration, selectedResult, scores, onChange, onRun, isRunning, isStale, report, reports, selectedReportId, onSelectReport, error }) {
+function OrbitalValidationPanel({ configuration, selectedResult, scores, onChange, onRun, isRunning, isStale, report, reports, selectedReportId, onSelectReport, error, onOptimize, isOptimizing, optimizationProgress, optimizationResults, optimizationIsStale, optimizationError, onApplyOptimization }) {
   const setOption = (key, value) => onChange({ ...configuration, [key]: value });
   return <details className="orbital-validation-panel" open>
     <summary>Observed orbit validation</summary>
     <p className="amplitude-note">{ORBIT_VALIDATION_DESCRIPTION} Reference: JPL Horizons DE441, 2026-10-06 to 2026-11-05.</p>
-    <button type="button" className="amplitude-validation-run" onClick={onRun} disabled={isRunning}>{isRunning ? 'Running model tests…' : 'Run all model tests'}</button>
+    <button type="button" className="amplitude-validation-run" onClick={onRun} disabled={isRunning || isOptimizing}>{isRunning ? 'Running model tests…' : 'Run all model tests'}</button>
     {reports.length > 0 && <ParamSelect
       className="amplitude-select"
       label="Validation report"
@@ -447,6 +449,30 @@ function OrbitalValidationPanel({ configuration, selectedResult, scores, onChang
         </tr>)}</tbody>
       </table>
     </div>}
+    <button type="button" className="amplitude-validation-run" onClick={onOptimize} disabled={!report || isStale || isRunning || isOptimizing}>
+      {isOptimizing ? `Tuning ${optimizationProgress?.label ?? 'models'}…` : 'Optimize model parameters'}
+    </button>
+    <p className="amplitude-note">Uses a bounded coordinate sweep of score-relevant settings. This fits the same short DE441 interval and Mercury residual shown above; it is not an independent validation set.</p>
+    {isOptimizing && optimizationProgress && <p className="amplitude-note" role="status">{optimizationProgress.completed} / {optimizationProgress.total} candidate scores · {optimizationProgress.label} · {optimizationProgress.parameter}</p>}
+    {optimizationError && <p className="amplitude-note is-warning">Optimization failed: {optimizationError}</p>}
+    {optimizationResults && <>
+      {optimizationIsStale && <p className="amplitude-note is-warning">Optimization settings no longer match this report. Rerun the report and optimizer before applying a result.</p>}
+      <div className="orbit-validation-table-wrap">
+        <table className="orbit-validation-table orbit-optimization-table">
+          <thead><tr><th>Model</th><th>Report pts</th><th>Best found pts</th><th>Gain</th><th>Tuned parameters</th><th>Action</th></tr></thead>
+          <tbody>{optimizationResults.map((result) => <tr key={result.mode}>
+            <th>{result.label}</th>
+            <td>{result.baselineScorePoints.toFixed(1)}</td>
+            <td>{result.optimizedScorePoints.toFixed(1)}</td>
+            <td>{result.improvementPoints.toFixed(1)}</td>
+            <td>{result.parameterChanges.length
+              ? result.parameterChanges.map(({ label, from, to }) => `${label}: ${from} → ${to}`).join('; ')
+              : 'No adjustable parameters improved the score'}</td>
+            <td><button type="button" disabled={isOptimizing || isStale || optimizationIsStale || result.parameterChanges.length === 0} onClick={() => onApplyOptimization(result)}>Apply</button></td>
+          </tr>)}</tbody>
+        </table>
+      </div>
+    </>}
     <label className="amplitude-toggle"><input type="checkbox" checked={configuration.showValidationTracks} onChange={(event) => setOption('showValidationTracks', event.target.checked)} /><span>Show JPL and predicted tracks together</span></label>
     {configuration.showValidationTracks && <div className="orbit-validation-legend"><span><i className="is-observed" />JPL observations</span><span><i className="is-predicted" />Selected model</span></div>}
     <label className="amplitude-toggle"><input type="checkbox" checked={configuration.showPairDistanceContributions} onChange={(event) => setOption('showPairDistanceContributions', event.target.checked)} /><span>Show pair distances contributing to score</span></label>
@@ -499,6 +525,10 @@ export default function AmplitudeGravitySim({ onBack }) {
   const [selectedValidationReportId, setSelectedValidationReportId] = useState(null);
   const [validationRunning, setValidationRunning] = useState(false);
   const [validationError, setValidationError] = useState('');
+  const [optimizationRun, setOptimizationRun] = useState(null);
+  const [optimizationRunning, setOptimizationRunning] = useState(false);
+  const [optimizationProgress, setOptimizationProgress] = useState(null);
+  const [optimizationError, setOptimizationError] = useState('');
   const [telemetry, setTelemetry] = useState({ potential: 0, photonDiagnostic: 0, forceResidual: 0, maximumDifference: 0, bodyDifferences: [], energyDrift: 0, momentumResidual: 0, angularMomentumResidual: 0 });
   const settings = sanitizeAmplitudeGravity(configuration);
   const cell = useMemo(() => createPositiveGrassmannianCell(settings), [settings.cellGaps.join(','), settings.fourthColumnWeight]);
@@ -540,7 +570,16 @@ export default function AmplitudeGravitySim({ onBack }) {
     settings.ddfStrength,
     settings.ddfSpeedLimitMS,
     settings.ddfBaseViscosity,
-    settings.grTensorGaussianWaist
+    settings.grTensorGaussianWaist,
+    settings.includeRotationalEffects,
+    settings.fieldCoreRadius,
+    settings.quantumPressure,
+    settings.compressibility,
+    settings.geometryCoupling,
+    settings.grassmannianPoleWeight,
+    settings.spinPhaseCoupling,
+    settings.geometrySpinCoupling,
+    settings.fieldSpinStrength
   ]);
   const validationReport = validationReports.find(({ id }) => id === selectedValidationReportId) ?? validationReports[0] ?? null;
   const validationScores = validationReport?.scores ?? [];
@@ -566,6 +605,32 @@ export default function AmplitudeGravitySim({ onBack }) {
     } finally {
       setValidationRunning(false);
     }
+  };
+  const runOptimization = async () => {
+    if (optimizationRunning || validationRunning || validationReportIsStale || !validationReport) return;
+    setOptimizationRunning(true);
+    setOptimizationError('');
+    setOptimizationProgress({ completed: 0, total: 0, label: 'Preparing', parameter: '' });
+    try {
+      const results = await optimizeObservedOrbitModels({
+        configuration: settings,
+        baselineScores: validationScores,
+        onProgress: setOptimizationProgress
+      });
+      setOptimizationRun({ reportId: validationReport.id, inputSignature: validationInputSignature, results });
+    } catch (error) {
+      setOptimizationError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setOptimizationRunning(false);
+    }
+  };
+  const optimizationIsStale = Boolean(optimizationRun && (
+    optimizationRun.reportId !== validationReport?.id
+    || optimizationRun.inputSignature !== validationInputSignature
+  ));
+  const applyOptimization = (result) => {
+    if (optimizationRunning || validationReportIsStale || optimizationIsStale) return;
+    update({ ...result.configuration, mode: result.mode });
   };
   const sceneConfiguration = {
     ...DEFAULT_ORBITAL_TRACKING_CONFIGURATION,
@@ -650,6 +715,7 @@ export default function AmplitudeGravitySim({ onBack }) {
               <p className="amplitude-note">{selectedBody.magneticField}</p>
               <p className="amplitude-note">{selectedBody.chargeField}</p>
               <p className="amplitude-note">{selectedBody.dataQuality}</p>
+              {selectedBody.spinGravityDataQuality && <p className="amplitude-note">{selectedBody.spinGravityDataQuality}</p>}
               <p className="amplitude-note">{selectedBody.massSource}</p>
               {selectedBody.moonOrbit?.displayScale > 1 && <p className="amplitude-note">Moon orbit spacing is visually expanded; actual-diameter mode restores true scale. This does not change the gravitational or Kepler state.</p>}
               <a className="amplitude-source-link" href={selectedBody.source} target="_blank" rel="noreferrer">NASA planetary fact sheets</a>
@@ -673,6 +739,13 @@ export default function AmplitudeGravitySim({ onBack }) {
             selectedReportId={selectedValidationReportId}
             onSelectReport={setSelectedValidationReportId}
             error={validationError}
+            onOptimize={runOptimization}
+            isOptimizing={optimizationRunning}
+            optimizationProgress={optimizationProgress}
+            optimizationResults={optimizationRun?.results ?? null}
+            optimizationIsStale={optimizationIsStale}
+            optimizationError={optimizationError}
+            onApplyOptimization={applyOptimization}
           />}
           {configuration.flightMode === 'orbital-path' && <section className="amplitude-launch-controls">
             <h3>Launch conditions</h3>
@@ -709,13 +782,19 @@ export default function AmplitudeGravitySim({ onBack }) {
           <h3>Validation report</h3>
           <p className="amplitude-note">The embedded JPL Horizons DE441 barycentric sample covers {JPL_DE441_ORBIT_INTERVAL.startDate} through {JPL_DE441_ORBIT_INTERVAL.endDate} at {JPL_DE441_ORBIT_INTERVAL.sampleStepDays}-day spacing. The score is a weighted RMS of normalized position, velocity, pair-distance, and (where supported) Mercury perihelion residuals. Model versions and this short reference interval are not independent validation data.</p>
           <p className="amplitude-note">Astronomical validation fixes the physical-unit constants, including gravitational softening and speed of light, regardless of their visualization control values. Configurable model terms that do affect scores are included in the stale-report check.</p>
+          <h3>Rotational gravity</h3>
+          <p className="amplitude-note">Planetary J2 is a sourced Newtonian quadrupole correction. In GR modes, the optional spin-orbit and spin-spin terms are leading-order Kidder-style post-Newtonian approximations, not a complete N-body PN model. Body axes are held fixed: torques and spin precession are not integrated. The energy display is a diagnostic proxy; it omits exact field-response, spin-tangential, spin-PN, and J2 potentials.</p>
+          <p className="amplitude-note">References: <a className="amplitude-source-link" href="https://doi.org/10.1103/PhysRevD.52.821" target="_blank" rel="noreferrer">Kidder (1995)</a> and <a className="amplitude-source-link" href="https://nssdc.gsfc.nasa.gov/planetary/factsheet/" target="_blank" rel="noreferrer">NASA/NSSDC planetary factsheets</a>.</p>
+          <p className="amplitude-note">SimpleAttractorSim field models are available here as pair-relative radial and spin-tangential responses. Pair axes are the normalized mean of the two body poles, with +Y as the missing-axis fallback; SQG projects the absolute relative-velocity component onto that axis and averages the pair spin vorticity. These remain response-field proxies, not fluid pressure or density evolution.</p>
           <h3>Adding a future model</h3>
           <ol className="amplitude-extension-list">{ORBIT_VALIDATION_MODEL_EXTENSION_PLAN.map((step) => <li key={step}>{step}</li>)}</ol>
         </details>
         <OrbitalTrackingParameters configuration={configuration} onChange={setConfiguration} className="amplitude-control-section" />
         <ParticleAppearanceSettings configuration={configuration} onChange={setConfiguration} className="amplitude-control-section" capabilities={{ shape: false, derivativeOrder: false, colorMode: false, color: false }} />
-        <p className="amplitude-warning">{settings.mode === 'general-relativity' ? 'GR mode uses pairwise two-body 1PN acceleration in harmonic coordinates. It captures leading weak-field relativistic effects, including periapsis advance; it omits full N-body EIH cross-body terms.' : settings.mode === 'gr-normed-tensor-gaussian' ? 'Research variant: a trace-normalized velocity tensor and bounded Gaussian window modulate the pairwise 1PN correction. This is a visualization hypothesis, not a solution of Einstein’s field equations.' : physicalModel ? 'The ephemeris state vectors are observationally grounded; planetary motion uses an educational N-body integrator and moon motion uses parent-relative Kepler propagation. The selectable non-Newtonian models are explicitly approximate.' : 'QED photon exchange does not itself produce gravity. The gravity channel here is a spin-2 EFT proxy; “gravituhedron” is a testable visualization hypothesis.'}</p>
+        <p className="amplitude-warning">{settings.mode === 'general-relativity' ? 'GR mode uses pairwise two-body 1PN acceleration in harmonic coordinates. It captures leading weak-field relativistic effects, including periapsis advance; it omits full N-body EIH cross-body terms.' : settings.mode === 'gr-normed-tensor-gaussian' ? 'Research variant: a trace-normalized velocity tensor and bounded Gaussian window modulate the pairwise 1PN correction. This is a visualization hypothesis, not a solution of Einstein’s field equations.' : FIELD_MODEL_DETAILS[settings.mode] ? `${FIELD_MODEL_DETAILS[settings.mode].description} In this lab it supplies pair-relative radial and spin-tangential responses, not a full fluid or pressure solver.` : physicalModel ? 'The ephemeris state vectors are observationally grounded; planetary motion uses an educational N-body integrator and moon motion uses parent-relative Kepler propagation. The selectable non-Newtonian models are explicitly approximate.' : 'QED photon exchange does not itself produce gravity. The gravity channel here is a spin-2 EFT proxy; “gravituhedron” is a testable visualization hypothesis.'}</p>
         <ParamSelect className="amplitude-select" label="Gravity model" value={settings.mode} options={AMPLITUDE_GRAVITY_MODES} onChange={(mode) => update({ mode })} />
+        <label className="amplitude-toggle"><input type="checkbox" checked={settings.includeRotationalEffects} onChange={(event) => update({ includeRotationalEffects: event.target.checked })} /><span>Include sourced J2 and GR spin corrections</span></label>
+        {settings.includeRotationalEffects && <p className="amplitude-note">J2 acts in every N-body mode when cataloged. Spin-orbit and spin-spin terms act only in GR modes; spin axes are fixed, and noncataloged J2 values remain off.</p>}
         <label className="amplitude-toggle"><input type="checkbox" checked={settings.showDifference} onChange={(event) => update({ showDifference: event.target.checked })} /><span>Show acceleration difference from Newtonian</span></label>
         <label className="amplitude-toggle"><input type="checkbox" checked={settings.showStreamlines} onChange={(event) => update({ showStreamlines: event.target.checked })} /><span>Show gravitational streamlines</span></label>
         <Slider label="Streamline length" value={settings.streamlineLength} min={1} max={24} step={0.1} onChange={(streamlineLength) => update({ streamlineLength })} />
@@ -725,12 +804,27 @@ export default function AmplitudeGravitySim({ onBack }) {
         <Slider label="Field and path opacity" value={settings.streamlineOpacity} min={0} max={1} step={0.01} onChange={(streamlineOpacity) => update({ streamlineOpacity })} />
         <Slider label="Geometric coupling" value={settings.coupling} min={0} max={4} step={0.01} onChange={(coupling) => update({ coupling })} />
         <Slider label="Correction range" value={settings.correctionRange} min={0.2} max={12} step={0.1} onChange={(correctionRange) => update({ correctionRange })} />
-        {settings.mode === 'ddf-tensor-gaussian' && <>
-          <Slider label="Tensor-Gaussian waist" value={settings.tensorGaussianWaist} min={0.1} max={20} step={0.1} onChange={(tensorGaussianWaist) => update({ tensorGaussianWaist })} />
+        {['ns-compressible', 'sqg', 'sqg-tensor-gaussian', 'ddf', 'ddf-tensor-gaussian'].includes(settings.mode) && <>
+          <Slider label="Field core radius" value={settings.fieldCoreRadius} min={0.05} max={5} step={0.05} onChange={(fieldCoreRadius) => update({ fieldCoreRadius })} />
+          <Slider label="Compressibility" value={settings.compressibility} min={0} max={4} step={0.01} onChange={(compressibility) => update({ compressibility })} />
+        </>}
+        {['sqg', 'sqg-tensor-gaussian', 'ddf', 'ddf-tensor-gaussian'].includes(settings.mode) && <>
+          <Slider label="Quantum pressure" value={settings.quantumPressure} min={0} max={5} step={0.01} onChange={(quantumPressure) => update({ quantumPressure })} />
+          <Slider label="Normalized speed of light" value={settings.grSpeedOfLight} min={5} max={1000} step={1} onChange={(grSpeedOfLight) => update({ grSpeedOfLight })} />
+          <Slider label="SQG phase/vorticity spin coupling" value={settings.spinPhaseCoupling} min={0} max={1} step={0.01} onChange={(spinPhaseCoupling) => update({ spinPhaseCoupling })} />
+        </>}
+        {['sqg-tensor-gaussian', 'ddf-tensor-gaussian'].includes(settings.mode) && <Slider label="Tensor-Gaussian waist" value={settings.tensorGaussianWaist} min={0.1} max={20} step={0.1} onChange={(tensorGaussianWaist) => update({ tensorGaussianWaist })} />}
+        {['ddf', 'ddf-tensor-gaussian'].includes(settings.mode) && <>
           <Slider label="DDF dilatancy" value={settings.ddfStrength} min={0} max={20} step={0.1} onChange={(ddfStrength) => update({ ddfStrength })} />
           <Slider label="DDF speed limit" value={settings.ddfSpeedLimitMS} min={0.1} max={1000} step={0.1} onChange={(ddfSpeedLimitMS) => update({ ddfSpeedLimitMS })} suffix="m/s" />
           <Slider label="DDF base viscosity" value={settings.ddfBaseViscosity} min={0} max={1} step={0.01} onChange={(ddfBaseViscosity) => update({ ddfBaseViscosity })} />
         </>}
+        {settings.mode === 'grassmannian-amplituhedron' && <>
+          <Slider label="Positive-cell pole weight" value={settings.grassmannianPoleWeight} min={0} max={1} step={0.01} onChange={(grassmannianPoleWeight) => update({ grassmannianPoleWeight })} />
+          <Slider label="Amplituhedron acceleration coupling" value={settings.geometryCoupling} min={0} max={0.25} step={0.005} onChange={(geometryCoupling) => update({ geometryCoupling })} />
+          <Slider label="Gr(2,4) spin-axis coupling" value={settings.geometrySpinCoupling} min={0} max={0.25} step={0.005} onChange={(geometrySpinCoupling) => update({ geometrySpinCoupling })} />
+        </>}
+        {['default', 'ns-compressible', 'ns-incompressible', 'sqg', 'sqg-tensor-gaussian', 'ddf', 'ddf-tensor-gaussian', 'grassmannian-amplituhedron'].includes(settings.mode) && <Slider label="Field spin strength" value={settings.fieldSpinStrength} min={0} max={1} step={0.01} onChange={(fieldSpinStrength) => update({ fieldSpinStrength })} />}
         {settings.mode === 'gr-normed-tensor-gaussian' && <Slider label="GR splatter Gaussian waist" value={settings.grTensorGaussianWaist} min={0.01} max={5} step={0.01} onChange={(grTensorGaussianWaist) => update({ grTensorGaussianWaist })} suffix="scene units" />}
         <Slider label="Softening" value={settings.softening} min={0.01} max={1} step={0.01} onChange={(softening) => update({ softening })} />
         <Slider label="Relativistic scale c" value={settings.speedOfLight} min={5} max={100} step={1} onChange={(speedOfLight) => update({ speedOfLight })} />

@@ -1,4 +1,5 @@
 import * as Astronomy from 'astronomy-engine';
+import { DEFAULT_ANISE_EPHEMERIS_ADAPTER } from './lib/aniseEphemerisAdapter.js';
 
 export const SOLAR_SYSTEM_SCENE_SCALE = 0.42;
 export const ASTRONOMICAL_UNITS_PER_YEAR = 365.25;
@@ -23,6 +24,20 @@ const BODY_FACTS_SOURCE = 'https://nssdc.gsfc.nasa.gov/planetary/factsheet/';
 const SATELLITE_MASS_SOURCE = 'https://ssd.jpl.nasa.gov/sats/phys_par/';
 const SATELLITE_ELEMENTS_SOURCE = 'https://ssd.jpl.nasa.gov/sats/elem/';
 const ROTATION_SOURCE = 'https://github.com/cosinekitty/astronomy';
+const SECONDS_PER_YEAR = 365.25 * 86400;
+
+export const PLANETARY_SPIN_GRAVITY_DATA = Object.freeze({
+  Sun: Object.freeze({ equatorialRadiusKm: 695700, momentFactor: 0.07, j2: null }),
+  Mercury: Object.freeze({ equatorialRadiusKm: 2440.5, momentFactor: 0.35, j2: 50.3e-6 }),
+  Venus: Object.freeze({ equatorialRadiusKm: 6051.8, momentFactor: 0.337, j2: 4.458e-6 }),
+  Earth: Object.freeze({ equatorialRadiusKm: 6378.137, momentFactor: 0.3308, j2: 1082.63e-6 }),
+  Moon: Object.freeze({ equatorialRadiusKm: 1738.1, momentFactor: 0.394, j2: 202.7e-6 }),
+  Mars: Object.freeze({ equatorialRadiusKm: 3396.2, momentFactor: 0.366, j2: 1960.45e-6 }),
+  Jupiter: Object.freeze({ equatorialRadiusKm: 71492, momentFactor: 0.254, j2: 14736e-6 }),
+  Saturn: Object.freeze({ equatorialRadiusKm: 60268, momentFactor: 0.210, j2: 16298e-6 }),
+  Uranus: Object.freeze({ equatorialRadiusKm: 25559, momentFactor: 0.225, j2: 3343.43e-6 }),
+  Neptune: Object.freeze({ equatorialRadiusKm: 24764, momentFactor: 0.4, momentFactorAssumed: true, j2: 3411e-6 })
+});
 
 export const JPL_SATELLITE_GM_KM3_S2 = Object.freeze({
   Moon: 4902.800,
@@ -238,12 +253,23 @@ function vectorToScene(x, y, z) {
   return [x * SOLAR_SYSTEM_SCENE_SCALE, z * SOLAR_SYSTEM_SCENE_SCALE, -y * SOLAR_SYSTEM_SCENE_SCALE];
 }
 
+function vectorDirectionToScene(x, y, z) {
+  return [x, z, -y];
+}
+
 function stateToScene(state) {
   return {
     position: vectorToScene(state.x, state.y, state.z),
     velocity: vectorToScene(state.vx * ASTRONOMICAL_UNITS_PER_YEAR, state.vy * ASTRONOMICAL_UNITS_PER_YEAR, state.vz * ASTRONOMICAL_UNITS_PER_YEAR),
     positionAU: [state.x, state.y, state.z],
     velocityAUPerDay: [state.vx, state.vy, state.vz]
+  };
+}
+
+function ephemerisStateToModelState(state) {
+  return {
+    x: state.positionAU[0], y: state.positionAU[1], z: state.positionAU[2],
+    vx: state.velocityAUPerDay[0], vy: state.velocityAUPerDay[1], vz: state.velocityAUPerDay[2]
   };
 }
 
@@ -257,21 +283,16 @@ function displayRadius(radiusKm, id, diameterMode, diameterExaggeration = 1) {
   return illustrativeRadius(radiusKm, id) * diameterExaggeration;
 }
 
-function bodyRotation(body, date) {
+function bodyRotation(body, date, ephemerisAdapter = DEFAULT_ANISE_EPHEMERIS_ADAPTER) {
   if (!Astronomy.Body[body.id]) return null;
   try {
-    const axis = Astronomy.RotationAxis(Astronomy.Body[body.id], date);
-    const rightAscension = axis.ra * Math.PI / 12;
-    const declination = axis.dec * Math.PI / 180;
-    const pole = [
-      Math.cos(declination) * Math.cos(rightAscension),
-      Math.cos(declination) * Math.sin(rightAscension),
-      Math.sin(declination)
-    ];
+    const orientation = ephemerisAdapter.orientationOf(body.id, date);
+    const angularVelocityRadPerSecond = ephemerisAdapter.angularVelocityRadPerSecond(body.id, 'J2000_EQJ', date);
     const libration = body.id === 'Moon' ? Astronomy.Libration(date) : null;
     return {
-      pole: vectorToScene(...pole),
-      primeMeridianDeg: axis.spin,
+      pole: vectorDirectionToScene(...orientation.poleJ2000),
+      primeMeridianDeg: orientation.primeMeridianDeg,
+      angularVelocityRadPerSecond: vectorDirectionToScene(...angularVelocityRadPerSecond),
       librationLongitudeDeg: libration?.elon ?? null,
       librationLatitudeDeg: libration?.elat ?? null
     };
@@ -280,7 +301,7 @@ function bodyRotation(body, date) {
   }
 }
 
-function makeBody(definition, state, date, parentId = null, relativeState = null, diameterOptions = {}) {
+function makeBody(definition, state, date, parentId = null, relativeState = null, diameterOptions = {}, ephemerisAdapter = DEFAULT_ANISE_EPHEMERIS_ADAPTER) {
   const converted = stateToScene(state);
   const satelliteGM = JPL_SATELLITE_GM_KM3_S2[definition.name];
   const massKg = satelliteGM == null ? definition.massKg : satelliteGM / STANDARD_G_KM3_PER_KG_S2;
@@ -313,6 +334,21 @@ function makeBody(definition, state, date, parentId = null, relativeState = null
   const displayPosition = relativeScenePosition && moonOrbit
     ? converted.position.map((value, axis) => value + relativeScenePosition[axis] * (orbitDisplayScale - 1))
     : [...converted.position];
+  const bodyId = definition.id ?? definition.name;
+  const spinGravityData = PLANETARY_SPIN_GRAVITY_DATA[bodyId] ?? {
+    equatorialRadiusKm: definition.radiusKm,
+    momentFactor: 0.4,
+    momentFactorAssumed: true,
+    j2: null
+  };
+  const spinSource = spinGravityData.momentFactorAssumed
+    ? 'Spin inertia uses a homogeneous-sphere fallback because no moment-of-inertia factor is cataloged.'
+    : 'Rotation, moment of inertia, and J2 sourced from the NASA/NSSDC planetary fact sheet.';
+  const momentOfInertiaKgM2 = spinGravityData.momentFactor * massKg * (spinGravityData.equatorialRadiusKm * 1000) ** 2;
+  const spinUnitKgM2PerSecond = SOLAR_MASS_KG * (KM_PER_AU * 1000 * SOLAR_SYSTEM_SCENE_SCALE) ** 2 / SECONDS_PER_YEAR;
+  const rotation = bodyRotation(definition, date, ephemerisAdapter);
+  const spinAngularVelocity = rotation?.angularVelocityRadPerSecond ?? [0, 0, 0];
+  const spinAngularMomentum = spinAngularVelocity.map((component) => component * momentOfInertiaKgM2 / spinUnitKgM2PerSecond);
   return {
     name: definition.name,
     id: definition.id ?? definition.name,
@@ -334,7 +370,16 @@ function makeBody(definition, state, date, parentId = null, relativeState = null
     color: definition.color ?? '#a9c4cf',
     rotationPeriodHours: definition.rotationPeriodHours ?? null,
     axialTiltDeg: definition.axialTiltDeg ?? null,
-    rotation: bodyRotation(definition, date),
+    rotation,
+    spinAxis: rotation?.pole ?? null,
+    spinAngularVelocity,
+    spinAngularMomentum,
+    j2: spinGravityData.j2 ?? 0,
+    j2Known: spinGravityData.j2 != null,
+    equatorialRadius: spinGravityData.equatorialRadiusKm / KM_PER_AU * SOLAR_SYSTEM_SCENE_SCALE,
+    momentOfInertiaFactor: spinGravityData.momentFactor,
+    momentOfInertiaFactorAssumed: Boolean(spinGravityData.momentFactorAssumed),
+    spinGravityDataQuality: `${spinSource} ${spinGravityData.j2 == null ? 'J2 is not cataloged and is disabled.' : `J2 = ${spinGravityData.j2}.`}`,
     moonOrbit: moonOrbit ? { ...moonOrbit, displayScale: orbitDisplayScale } : null,
     magneticField: definition.magneticField ?? 'No global magnetic-field value in this catalog.',
     chargeField: definition.chargeField ?? 'No fixed net electric charge is established.',
@@ -437,23 +482,20 @@ function addRelativeState(parent, relative) {
   };
 }
 
-export function createSolarSystemBodies(date = new Date(), { includeMajorMoons = false, diameterMode = 'illustrative', diameterExaggeration = 1 } = {}) {
+export function createSolarSystemBodies(date = new Date(), { includeMajorMoons = false, diameterMode = 'illustrative', diameterExaggeration = 1, ephemerisAdapter = DEFAULT_ANISE_EPHEMERIS_ADAPTER } = {}) {
   const diameterOptions = { mode: diameterMode, exaggeration: diameterExaggeration };
   const definitions = [CENTRAL_BODIES[0], ...CENTRAL_BODIES.slice(1)];
   const ephemerisStates = new Map();
   const bodies = definitions.map((definition) => {
-    const state = definition.id === 'Sun'
-      ? { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0 }
-      : Astronomy.HelioState(Astronomy.Body[definition.id], date);
+    const state = ephemerisStateToModelState(ephemerisAdapter.stateOf(definition.id, 'Sun', date));
     ephemerisStates.set(definition.id, state);
-    return makeBody(definition, state, date, null, null, diameterOptions);
+    return makeBody(definition, state, date, null, null, diameterOptions, ephemerisAdapter);
   });
 
-  const earth = ephemerisStates.get('Earth');
   const geocentricMoon = Astronomy.GeoMoonState(date);
-  const moonState = addRelativeState(earth, geocentricMoon);
+  const moonState = ephemerisStateToModelState(ephemerisAdapter.stateOf('Moon', 'Sun', date));
   ephemerisStates.set('Moon', moonState);
-  bodies.splice(4, 0, makeBody(MOON_FACTS, moonState, date, 'Earth', geocentricMoon, diameterOptions));
+  bodies.splice(4, 0, makeBody(MOON_FACTS, moonState, date, 'Earth', geocentricMoon, diameterOptions, ephemerisAdapter));
 
   if (!includeMajorMoons) return bodies;
 
@@ -476,7 +518,7 @@ export function createSolarSystemBodies(date = new Date(), { includeMajorMoons =
       dataQuality: moon.parentId === 'Jupiter' && jupiterStates[moon.name]
         ? 'Astronomy Engine major-moon state; moon catalog facts from NASA.'
         : 'Simplified circular satellite orbit from catalog radius, period, and inclination; not a full ephemeris.'
-    }, state, date, moon.parentId, relativeState, diameterOptions));
+    }, state, date, moon.parentId, relativeState, diameterOptions, ephemerisAdapter));
   }
   return bodies;
 }
@@ -535,6 +577,13 @@ export function getSolarSystemBodyFacts(bodies, bodyId) {
 export const SOLAR_SYSTEM_SOURCE_URLS = Object.freeze({ facts: BODY_FACTS_SOURCE, ephemeris: ROTATION_SOURCE });
 export const SOLAR_SYSTEM_DATASET_CITATIONS = Object.freeze([
   {
+    id: 'anise-frame-api',
+    label: 'ANISE Almanac API reference',
+    source: 'https://docs.rs/anise/latest/anise/almanac/struct.Almanac.html',
+    description: 'The local ephemeris adapter follows ANISE-style stateOf/translate, rotate, and angular-velocity operations; Astronomy Engine is the active provider.',
+    limitations: 'This app does not load ANISE SPK/BPC/PCA kernels. The adapter boundary is ready for a future synchronous WASM bridge; local states remain Astronomy Engine approximations.'
+  },
+  {
     id: 'astronomy-engine',
     label: 'Astronomy Engine',
     source: ROTATION_SOURCE,
@@ -547,6 +596,13 @@ export const SOLAR_SYSTEM_DATASET_CITATIONS = Object.freeze([
     source: BODY_FACTS_SOURCE,
     description: 'Planet masses, radii, spin periods, axial tilts, magnetic-field context, and descriptive facts.',
     limitations: 'Rounded reference facts; electric net charges are not assumed or inferred.'
+  },
+  {
+    id: 'planet-spin-j2',
+    label: 'NASA / NSSDC spin, inertia, and J2 data',
+    source: BODY_FACTS_SOURCE,
+    description: 'Cataloged rotation periods, I/MR2 moment factors, and J2 gravity harmonics are included for the Sun, major planets, and Moon.',
+    limitations: 'Unpublished/unavailable coefficients are disabled as zero. Neptune I/MR2 uses a clearly marked homogeneous-sphere fallback; smaller satellites use zero J2 until sourced.'
   },
   {
     id: 'satellite-gm',

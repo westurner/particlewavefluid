@@ -120,6 +120,19 @@ const PLANETARY_SYSTEM_IDS = ['Mercury', 'Venus', 'EarthMoonBarycenter', 'MarsBa
 const BODY_IDS = ['Sun', ...PLANETARY_SYSTEM_IDS];
 const SAMPLE_COUNT = JPL_DE441_ORBIT_INTERVAL.intervalDays / JPL_DE441_ORBIT_INTERVAL.sampleStepDays + 1;
 const DEFAULT_SCORE_WEIGHTS = Object.freeze({ position: 0.35, velocity: 0.2, pairDistance: 0.2, mercuryPerihelion: 0.25 });
+const OPTIMIZATION_PARAMETER_CANDIDATES = Object.freeze({
+  'default': { fieldSpinStrength: [0, 0.01, 0.05, 0.1] },
+  'ns-compressible': { fieldCoreRadius: [0.25, 0.8, 1.6], compressibility: [0, 0.45, 1], fieldSpinStrength: [0, 0.02, 0.08] },
+  'ns-incompressible': { fieldSpinStrength: [0, 0.02, 0.08] },
+  sqg: { fieldCoreRadius: [0.25, 0.8, 1.6], quantumPressure: [0, 0.35, 0.8], compressibility: [0, 0.45, 1], spinPhaseCoupling: [0, 0.15, 0.5], fieldSpinStrength: [0, 0.02, 0.08] },
+  'sqg-tensor-gaussian': { fieldCoreRadius: [0.25, 0.8, 1.6], quantumPressure: [0, 0.35, 0.8], compressibility: [0, 0.45, 1], spinPhaseCoupling: [0, 0.15, 0.5], tensorGaussianWaist: [0.5, 2, 5], fieldSpinStrength: [0, 0.02, 0.08] },
+  ddf: { fieldCoreRadius: [0.25, 0.8, 1.6], quantumPressure: [0, 0.35, 0.8], compressibility: [0, 0.45, 1], spinPhaseCoupling: [0, 0.15, 0.5], ddfStrength: [0, 0.5, 2], ddfSpeedLimitMS: [2, 8, 32], ddfBaseViscosity: [0, 0.02, 0.1], fieldSpinStrength: [0, 0.02, 0.08] },
+  'ddf-tensor-gaussian': { fieldCoreRadius: [0.25, 0.8, 1.6], quantumPressure: [0, 0.35, 0.8], compressibility: [0, 0.45, 1], spinPhaseCoupling: [0, 0.15, 0.5], ddfStrength: [0, 0.5, 2], ddfSpeedLimitMS: [2, 8, 32], ddfBaseViscosity: [0, 0.02, 0.1], tensorGaussianWaist: [0.5, 2, 5], fieldSpinStrength: [0, 0.02, 0.08] },
+  'grassmannian-amplituhedron': { tensorGaussianWaist: [0.5, 2, 5], grassmannianPoleWeight: [0, 0.5, 1], geometryCoupling: [0, 0.15, 0.25], geometrySpinCoupling: [0, 0.1, 0.25], fieldSpinStrength: [0, 0.02, 0.08] },
+  'gr-normed-tensor-gaussian': { grTensorGaussianWaist: [0.05, 0.2, 0.75, 1.5, 3] },
+  'spin2-tree': { coupling: [0, 0.35, 1.5] },
+  gravituhedron: { coupling: [0, 0.35, 1.5, 3], correctionRange: [1, 4, 10] }
+});
 
 function magnitude(vector) {
   return Math.hypot(...vector);
@@ -316,4 +329,90 @@ export function scoreObservedOrbits({ modes = AMPLITUDE_GRAVITY_MODES, configura
       interval: JPL_DE441_ORBIT_INTERVAL
     };
   }).sort((first, second) => first.scorePoints - second.scorePoints);
+}
+
+const OPTIMIZATION_PARAMETER_LABELS = Object.freeze({
+  coupling: 'Geometric coupling',
+  correctionRange: 'Correction range',
+  tensorGaussianWaist: 'Tensor-Gaussian waist',
+  fieldCoreRadius: 'Field core radius',
+  quantumPressure: 'Quantum pressure',
+  compressibility: 'Compressibility',
+  geometryCoupling: 'Amplituhedron coupling',
+  grassmannianPoleWeight: 'Positive-cell pole weight',
+  spinPhaseCoupling: 'SQG spin-phase coupling',
+  geometrySpinCoupling: 'Gr(2,4) spin-axis coupling',
+  fieldSpinStrength: 'Field spin strength',
+  ddfStrength: 'DDF dilatancy',
+  ddfSpeedLimitMS: 'DDF speed limit',
+  ddfBaseViscosity: 'DDF base viscosity',
+  grTensorGaussianWaist: 'GR tensor-Gaussian waist'
+});
+
+export async function optimizeObservedOrbitModels({
+  modes = AMPLITUDE_GRAVITY_MODES,
+  configuration = {},
+  baselineScores = [],
+  scoreEvaluator = scoreObservedOrbits,
+  onProgress = () => {},
+  yieldControl = () => new Promise((resolve) => setTimeout(resolve, 0))
+} = {}) {
+  const baseSettings = sanitizeAmplitudeGravity(configuration);
+  const totalEvaluations = modes.reduce((sum, { value: mode }) => {
+    const parameters = OPTIMIZATION_PARAMETER_CANDIDATES[mode] ?? {};
+    return sum + Object.entries(parameters).reduce((parameterSum, [key, values]) => (
+      parameterSum + new Set([baseSettings[key], ...values]).size - 1
+    ), 0);
+  }, 0);
+  let completedEvaluations = 0;
+  const optimizedModels = [];
+
+  for (const modeEntry of modes) {
+    const { value: mode, label = modeEntry.value } = modeEntry;
+    const initialSettings = sanitizeAmplitudeGravity({ ...baseSettings, mode });
+    const baselineResult = baselineScores.find((score) => score.mode === mode)
+      ?? (await scoreEvaluator({ modes: [modeEntry], configuration: initialSettings }))[0];
+    let bestSettings = initialSettings;
+    let bestScorePoints = baselineResult.scorePoints;
+    let evaluations = 0;
+
+    for (const [parameter, candidates] of Object.entries(OPTIMIZATION_PARAMETER_CANDIDATES[mode] ?? {})) {
+      const values = [...new Set([initialSettings[parameter], ...candidates])];
+      for (const value of values) {
+        if (Object.is(value, bestSettings[parameter])) continue;
+        const candidateSettings = sanitizeAmplitudeGravity({ ...bestSettings, [parameter]: value, mode });
+        const candidateResults = await scoreEvaluator({ modes: [modeEntry], configuration: candidateSettings });
+        const candidateResult = candidateResults.find((score) => score.mode === mode) ?? candidateResults[0];
+        evaluations += 1;
+        completedEvaluations += 1;
+        if (Number.isFinite(candidateResult?.scorePoints) && candidateResult.scorePoints < bestScorePoints) {
+          bestSettings = candidateSettings;
+          bestScorePoints = candidateResult.scorePoints;
+        }
+        onProgress({ completed: completedEvaluations, total: totalEvaluations, mode, label, parameter });
+        await yieldControl();
+      }
+    }
+
+    const parameterChanges = Object.keys(OPTIMIZATION_PARAMETER_CANDIDATES[mode] ?? {})
+      .filter((parameter) => !Object.is(initialSettings[parameter], bestSettings[parameter]))
+      .map((parameter) => ({
+        key: parameter,
+        label: OPTIMIZATION_PARAMETER_LABELS[parameter] ?? parameter,
+        from: initialSettings[parameter],
+        to: bestSettings[parameter]
+      }));
+    optimizedModels.push({
+      mode,
+      label,
+      baselineScorePoints: baselineResult.scorePoints,
+      optimizedScorePoints: bestScorePoints,
+      improvementPoints: baselineResult.scorePoints - bestScorePoints,
+      evaluations,
+      parameterChanges,
+      configuration: bestSettings
+    });
+  }
+
+  return optimizedModels.sort((first, second) => first.optimizedScorePoints - second.optimizedScorePoints);
 }

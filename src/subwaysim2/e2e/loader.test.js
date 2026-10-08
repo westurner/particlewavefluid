@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
+import { AMPLITUDE_GRAVITY_MODES } from '../src/amplitudeGravityModel.js';
 
 const baseUrl = process.env.BASE_URL ?? 'http://localhost:5173/';
 
@@ -112,6 +113,9 @@ test('DDF loads as a distinct hypothesis model with comparison controls', async 
   await page.goto(`${baseUrl}?e2e=1`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: /05 \/ LOAD FIELD/ }).click();
   await page.locator('.attractor-panel').waitFor();
+  assert.match(await page.locator('.attractor-status').innerText(), /2,048 particles/);
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator('.attractor-error').count(), 0, 'reduced GPU particle field should initialize');
 
   const model = page.getByRole('combobox', { name: 'Active model' });
   assert.match(await model.textContent(), /DDF hypothesis/);
@@ -169,6 +173,11 @@ test('amplitude gravity lab exposes positive-cell and model-difference diagnosti
   assert.match(await page.locator('.amplitude-body-facts summary').textContent(), /Io/);
   assert.match(await page.getByText('JPL GM').locator('..').textContent(), /5959\.915 km³\/s²/);
   assert.equal(await page.getByRole('link', { name: 'JPL satellite GM table' }).getAttribute('href'), 'https://ssd.jpl.nasa.gov/sats/phys_par/');
+  const rotationalCorrections = page.getByRole('checkbox', { name: 'Include sourced J2 and GR spin corrections' });
+  assert.equal(await rotationalCorrections.isChecked(), false);
+  await rotationalCorrections.click();
+  assert.equal(await rotationalCorrections.isChecked(), true);
+  await page.getByText(/J2 acts in every N-body mode/).waitFor();
   await page.getByRole('button', { name: 'Pause' }).click();
   await page.waitForTimeout(250);
   const canvas = page.locator('.amplitude-scene canvas');
@@ -200,11 +209,35 @@ test('amplitude gravity lab exposes positive-cell and model-difference diagnosti
   assert.equal(await page.getByRole('slider', { name: 'Illustrative planet size' }).count(), 1);
 
   const gravityModel = page.getByRole('combobox', { name: 'Gravity model' });
+  const sharedFieldLabels = [
+    'Default particle mechanics', 'Newtonian response', 'NS compressible fluid',
+    'NS incompressible fluid', 'SQG / GR + GPE', 'SQG / normed tensor-Gaussian splat',
+    'DDF hypothesis', 'DDF / normed tensor-Gaussian splat', 'GR(2,4) / amplituhedron splat'
+  ];
+  for (const label of sharedFieldLabels) {
+    await gravityModel.click();
+    await page.getByRole('option', { name: label }).click();
+    assert.ok((await gravityModel.textContent()).includes(label), `expected ${label} in AmplitudeGravitySim`);
+    if (label === 'Default particle mechanics') {
+      assert.equal(await page.getByRole('slider', { name: 'Field spin strength' }).count(), 1);
+    }
+    if (label === 'SQG / GR + GPE') {
+      assert.equal(await page.getByRole('slider', { name: 'Quantum pressure' }).count(), 1);
+      assert.equal(await page.getByRole('slider', { name: 'SQG phase/vorticity spin coupling' }).count(), 1);
+    }
+    if (label === 'DDF / normed tensor-Gaussian splat') {
+      assert.equal(await page.getByRole('slider', { name: 'Tensor-Gaussian waist' }).count(), 1);
+      assert.equal(await page.getByRole('slider', { name: 'DDF dilatancy' }).count(), 1);
+    }
+    if (label === 'GR(2,4) / amplituhedron splat') {
+      assert.equal(await page.getByRole('slider', { name: 'Gr(2,4) spin-axis coupling' }).count(), 1);
+    }
+  }
   await gravityModel.click();
   await page.getByRole('option', { name: 'GR (General Relativity)' }).click();
   assert.match(await page.locator('.amplitude-warning').textContent(), /pairwise two-body 1PN/);
   await gravityModel.click();
-  await page.getByRole('option', { name: 'GR (Normed Tensor Gaussian Splatter)' }).click();
+  await page.getByRole('option', { name: 'GR / normed tensor-Gaussian' }).click();
   assert.equal(await page.getByRole('slider', { name: 'GR splatter Gaussian waist' }).count(), 1);
 
   await page.getByRole('combobox', { name: 'Study mode' }).click();
@@ -223,7 +256,7 @@ test('amplitude gravity lab exposes positive-cell and model-difference diagnosti
     assert.match(await historicMission.textContent(), new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }
 
-  assert.match(await gravityModel.textContent(), /GR \(Normed Tensor Gaussian Splatter\)/);
+  assert.match(await gravityModel.textContent(), /GR \/ normed tensor-Gaussian/);
   const pluckerResidual = Number(await page.getByText('Plücker residual').locator('..').locator('strong').textContent());
   assert.ok(Math.abs(pluckerResidual) < 1e-12, `expected a negligible Plücker residual, received ${pluckerResidual}`);
   const difference = page.getByRole('checkbox', { name: 'Show acceleration difference from Newtonian' });
@@ -250,14 +283,28 @@ test('amplitude gravity validation scores all models, shows JPL tracks, and repo
   assert.equal(await page.locator('.orbit-validation-table tbody tr').count(), 0);
   assert.match(await page.locator('.orbital-validation-readout').textContent(), /Not run/);
   await page.getByRole('button', { name: 'Run all model tests' }).click();
-  await page.locator('.orbit-validation-table tbody tr').nth(5).waitFor();
-  assert.equal(await page.locator('.orbit-validation-table tbody tr').count(), 6);
+  await page.locator('.orbit-validation-table tbody tr').nth(AMPLITUDE_GRAVITY_MODES.length - 1).waitFor();
+  assert.equal(await page.locator('.orbit-validation-table tbody tr').count(), AMPLITUDE_GRAVITY_MODES.length);
   assert.match(await page.locator('.orbital-validation-readout').textContent(), /pts/);
   assert.match(await page.locator('.orbital-validation-panel .amplitude-note').filter({ hasText: /JPL Horizons DE441/ }).textContent(), /six 5-day DE441 samples/);
 
+  await page.getByRole('button', { name: 'Optimize model parameters' }).click();
+  const progressIndicator = page.getByRole('status');
+  await progressIndicator.waitFor();
+  assert.match(await progressIndicator.textContent(), /candidate scores/);
+  const optimizationRows = page.locator('.orbit-optimization-table tbody tr');
+  await optimizationRows.nth(AMPLITUDE_GRAVITY_MODES.length - 1).waitFor({ timeout: 120000 });
+  assert.equal(await optimizationRows.count(), AMPLITUDE_GRAVITY_MODES.length);
+  const applicableResult = page.locator('.orbit-optimization-table tbody tr td button:not([disabled])').first();
+  assert.ok(await applicableResult.count(), 'optimizer should find at least one improving model configuration');
+  const resultRow = applicableResult.locator('xpath=../..');
+  const modelName = (await resultRow.locator('th').textContent()).trim();
+  await applicableResult.click();
+  assert.match(await page.getByRole('combobox', { name: 'Gravity model' }).textContent(), new RegExp(modelName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
   const modelSelect = page.getByRole('combobox', { name: 'Gravity model' });
   await modelSelect.click();
-  await page.getByRole('option', { name: 'GR (Normed Tensor Gaussian Splatter)' }).click();
+  await page.getByRole('option', { name: 'GR / normed tensor-Gaussian' }).click();
   assert.match(await page.locator('.orbital-validation-readout').textContent(), /pts/);
   const gaussianWaist = page.getByRole('slider', { name: 'GR splatter Gaussian waist' });
   await gaussianWaist.focus();

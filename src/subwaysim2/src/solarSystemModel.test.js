@@ -7,6 +7,7 @@ import {
   createSolarSystemOrbitPaths,
   createSpacecraftLaunchBody,
   JPL_SATELLITE_GM_KM3_S2,
+  PLANETARY_SPIN_GRAVITY_DATA,
   SOLAR_SYSTEM_DATASET_CITATIONS,
   PLANET_DIAMETER_MODES,
   HISTORIC_MISSIONS,
@@ -38,6 +39,26 @@ test('default Solar System contains the Sun, eight planets, and Earth’s Moon w
   assert.ok(Number.isFinite(bodies.find(({ id }) => id === 'Moon').rotation.librationLongitudeDeg));
   assert.match(bodies.find(({ id }) => id === 'Sun').massSource, /NASA planetary fact sheet/);
   assert.equal(bodies.find(({ id }) => id === 'Sun').massSourceUrl, SOLAR_SYSTEM_SOURCE_URLS.facts);
+});
+
+test('planet spin vectors and cataloged J2 parameters reach the physical body records', () => {
+  const bodies = createSolarSystemBodies(new Date('2026-10-06T00:00:00Z'));
+  const byId = new Map(bodies.map((body) => [body.id, body]));
+  for (const id of ['Sun', 'Earth', 'Jupiter', 'Moon']) {
+    const body = byId.get(id);
+    assert.ok(body.spinAxis?.length === 3 && body.spinAxis.every(Number.isFinite));
+    assert.ok(body.spinAngularVelocity.length === 3 && body.spinAngularVelocity.every(Number.isFinite));
+    assert.ok(body.spinAngularMomentum.length === 3 && body.spinAngularMomentum.every(Number.isFinite));
+    assert.ok(body.equatorialRadius > 0);
+  }
+  assert.equal(byId.get('Earth').j2, PLANETARY_SPIN_GRAVITY_DATA.Earth.j2);
+  assert.equal(byId.get('Sun').j2, 0);
+  assert.equal(byId.get('Sun').j2Known, false);
+  assert.equal(byId.get('Neptune').momentOfInertiaFactorAssumed, true);
+  assert.match(byId.get('Earth').spinGravityDataQuality, /J2/);
+  assert.ok(Math.abs(Math.hypot(...byId.get('Earth').spinAxis) - 1) < 1e-12);
+  const earthSpinRate = Math.hypot(...byId.get('Earth').spinAngularVelocity);
+  assert.ok(earthSpinRate > 7.2e-5 && earthSpinRate < 7.4e-5, `expected Earth's physical spin rate, received ${earthSpinRate}`);
 });
 
 test('optional moon catalog stays at ten or fewer per planet and uses finite approximate states', () => {

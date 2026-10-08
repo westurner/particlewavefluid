@@ -740,6 +740,7 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
 .wave-oam-kicker { color: rgb(var(--color-rgb-e4a458)); font-size: 8px; }
 .wave-oam-state-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .wave-oam-state { padding: 4px 6px; border-left: 1px solid rgba(var(--color-rgb-79cccc), 0.55); background: rgba(var(--color-rgb-080d17), 0.58); }
+.wave-detector-oam-label { display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid rgba(var(--color-rgb-79cccc), 0.4); background: rgba(var(--color-rgb-080d17), 0.86); color: rgb(var(--color-rgb-dcebe4)); font: 9px 'DM Mono', monospace; white-space: nowrap; pointer-events: none; }
 .wave-oam-readout small { color: rgb(var(--color-rgb-9ab5b8)); font: 8px 'DM Mono', monospace; line-height: 1.4; }
 .wave-panel { top: 90px; right: 28px; bottom: 22px; width: 360px; overflow-y: auto; padding: 19px; border: 1px solid rgba(var(--color-rgb-7dcacf), 0.25); background: rgba(var(--color-rgb-08131e), 0.78); box-shadow: 0 22px 60px rgba(var(--color-rgb-000000), 0.38); backdrop-filter: blur(16px); scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track); scrollbar-width: thin; }
 .wave-panel.is-hidden { display: none; }
@@ -788,6 +789,13 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
 .wave-detector-notes summary { color: rgb(var(--color-rgb-80aaa9)); font: 9px 'DM Mono', monospace; cursor: pointer; }
 .wave-detector-notes h3 { margin: 13px 0 0; color: rgb(var(--color-rgb-e3eee7)); font-size: 10px; font-weight: 500; }
 .wave-detector-notes p { margin: 5px 0 0; color: rgb(var(--color-rgb-7f9ca1)); font-size: 9px; line-height: 1.5; }
+.wave-detector-model-params { margin-top: 11px; padding: 8px; border: 1px solid rgba(var(--color-rgb-7dcacf), 0.16); background: rgba(var(--color-rgb-0e232f), 0.34); }
+.wave-detector-model-params summary { color: rgb(var(--color-rgb-b9d6d0)); font: 9px 'DM Mono', monospace; cursor: pointer; }
+.wave-detector-score-table-wrap { max-width: 100%; margin-top: 12px; overflow-x: auto; }
+.wave-detector-score-table { width: 100%; border-collapse: collapse; color: rgb(var(--color-rgb-abc0c2)); font: 8px 'DM Mono', monospace; }
+.wave-detector-score-table caption { margin-bottom: 6px; color: rgb(var(--color-rgb-e4a458)); text-align: left; }
+.wave-detector-score-table th, .wave-detector-score-table td { padding: 6px 4px; border-bottom: 1px solid rgba(var(--color-rgb-7dcacf), 0.14); text-align: left; }
+.wave-detector-score-table td { color: rgb(var(--color-rgb-e3eee7)); text-align: right; white-space: nowrap; }
 .wave-actions { display: flex; gap: 7px; margin-top: 15px; }
 .wave-actions button { flex: 1; padding: 7px 8px; }
 .wave-state-section { margin-top: 16px; }

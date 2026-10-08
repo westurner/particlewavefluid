@@ -8,6 +8,7 @@ import {
   MERCURY_PERIHELION_REFERENCE,
   ORBIT_VALIDATION_DATASET_CITATIONS,
   ORBIT_VALIDATION_MODEL_EXTENSION_PLAN,
+  optimizeObservedOrbitModels,
   scoreObservedOrbits
 } from './orbitalValidationModel.js';
 
@@ -49,4 +50,34 @@ test('observed orbit score compares every model and rewards the Mercury GR perih
   assert.ok(Math.abs(relativity.mercuryPerihelionArcsecondsPerCentury - MERCURY_PERIHELION_REFERENCE.valueArcsecondsPerCentury) < 0.1);
   assert.ok(relativity.scorePoints < newtonian.scorePoints);
   assert.ok(gaussianRelativity.mercuryPerihelionArcsecondsPerCentury < relativity.mercuryPerihelionArcsecondsPerCentury);
+});
+
+test('model optimizer keeps only score-improving settings and leaves fixed models unchanged', async () => {
+  const modes = AMPLITUDE_GRAVITY_MODES.filter(({ value }) => ['default', 'general-relativity'].includes(value));
+  const baselineScores = [
+    { mode: 'default', scorePoints: (0.02 - 0.05) ** 2 },
+    { mode: 'general-relativity', scorePoints: 2 }
+  ];
+  const progress = [];
+  const optimized = await optimizeObservedOrbitModels({
+    modes,
+    configuration: { fieldSpinStrength: 0.02 },
+    baselineScores,
+    scoreEvaluator: ({ modes: candidateModes, configuration }) => candidateModes.map(({ value, label }) => ({
+      mode: value,
+      label,
+      scorePoints: value === 'default' ? (configuration.fieldSpinStrength - 0.05) ** 2 : 2
+    })),
+    onProgress: (update) => progress.push(update),
+    yieldControl: () => Promise.resolve()
+  });
+  const defaultResult = optimized.find(({ mode }) => mode === 'default');
+  const relativityResult = optimized.find(({ mode }) => mode === 'general-relativity');
+
+  assert.equal(defaultResult.configuration.fieldSpinStrength, 0.05);
+  assert.ok(defaultResult.improvementPoints > 0);
+  assert.deepEqual(defaultResult.parameterChanges.map(({ key }) => key), ['fieldSpinStrength']);
+  assert.equal(relativityResult.optimizedScorePoints, relativityResult.baselineScorePoints);
+  assert.deepEqual(relativityResult.parameterChanges, []);
+  assert.ok(progress.length > 0 && progress.at(-1).completed === progress.at(-1).total);
 });

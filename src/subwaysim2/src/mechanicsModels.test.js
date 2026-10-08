@@ -74,7 +74,51 @@ test('SQG quantum pressure regularizes the model core', () => {
   assert.ok(nearCore.quantumPressure > farField.quantumPressure);
   assert.ok(Number.isFinite(nearCore.radialAcceleration));
   assert.ok(Number.isFinite(nearCore.generalRelativityAcceleration));
-  assert.equal(nearCore.radialAcceleration, nearCore.generalRelativityAcceleration + nearCore.gpeResponse);
+  assert.equal(nearCore.radialAcceleration, nearCore.generalRelativityAcceleration + nearCore.sqgCorrection);
+});
+
+test('SQG phase/vorticity response follows the spin axis and DDF inherits it through mobility', () => {
+  const state = {
+    radius: 1,
+    speed: 0.5,
+    magnitude: 1,
+    rotation: 0,
+    spinAxis: [0, 0, 1],
+    phaseGradient: [0, 0, 1],
+    phaseVorticity: [0, 0, 0]
+  };
+  const withoutSpin = evaluateFieldModel('sqg', state, { ...DEFAULT_FIELD_MECHANICS, spinPhaseCoupling: 0 });
+  const sqg = evaluateFieldModel('sqg', state, { ...DEFAULT_FIELD_MECHANICS, spinPhaseCoupling: 0.4 });
+  const ddf = evaluateFieldModel('ddf', state, { ...DEFAULT_FIELD_MECHANICS, spinPhaseCoupling: 0.4, baseViscosity: 0.08 });
+  const oppositeAxis = evaluateFieldModel('sqg', { ...state, spinAxis: [0, 0, -1] }, { ...DEFAULT_FIELD_MECHANICS, spinPhaseCoupling: 0.4 });
+
+  assert.equal(withoutSpin.rotationalResponse, 0);
+  assert.ok(sqg.rotationalResponse > 0);
+  assert.ok(oppositeAxis.rotationalResponse < 0);
+  assert.ok(Math.abs(ddf.radialAcceleration - sqg.radialAcceleration) > 0);
+  assert.equal(ddf.rotationalResponse, sqg.rotationalResponse * ddf.mobility);
+  assert.ok(ddf.mobility < 1);
+});
+
+test('SQG correction stays bounded relative to Newtonian gravity at large source mass', () => {
+  const response = evaluateFieldModel('sqg', {
+    radius: 0.1,
+    speed: 8,
+    magnitude: 1e7,
+    spinAxis: [0, 1, 0],
+    phaseGradient: [0, 8, 0],
+    phaseVorticity: [0, 0, 1]
+  }, {
+    ...DEFAULT_FIELD_MECHANICS,
+    coreRadius: 0.05,
+    quantumPressure: 20,
+    compressibility: 4,
+    spinPhaseCoupling: 1,
+    grSpeedOfLight: 1e6
+  });
+  const inverseSquare = 1e7 / 0.1 ** 2;
+  assert.ok(Number.isFinite(response.radialAcceleration));
+  assert.ok(Math.abs(response.sqgCorrection) <= inverseSquare * 0.5);
 });
 
 test('SQG tensor-Gaussian keeps the GR baseline and localizes its GPE correction', () => {
@@ -123,6 +167,21 @@ test('Gr(2,4) amplituhedron field mechanics changes the Newtonian acceleration r
   assert.notEqual(geometry.radialAcceleration, classical.radialAcceleration);
   assert.ok(geometry.tensorGaussian > 0);
   assert.ok(geometry.mobility > 1 && geometry.mobility <= 1.25);
+});
+
+test('Gr(2,4) spin-axis tensor distinguishes axial and equatorial directions', () => {
+  const settings = { ...DEFAULT_FIELD_MECHANICS, geometryCoupling: 0, geometrySpinCoupling: 0.2 };
+  const axial = evaluateFieldModel('grassmannian-amplituhedron', {
+    radius: 1, magnitude: 1, spinAxis: [0, 1, 0], radialDirection: [0, 1, 0]
+  }, settings);
+  const equatorial = evaluateFieldModel('grassmannian-amplituhedron', {
+    radius: 1, magnitude: 1, spinAxis: [0, 1, 0], radialDirection: [1, 0, 0]
+  }, settings);
+
+  assert.notEqual(axial.spinAxisTensor, equatorial.spinAxisTensor);
+  assert.notEqual(axial.spinAxisCorrection, equatorial.spinAxisCorrection);
+  assert.ok(Math.abs(axial.geometricCorrection) <= 0.2);
+  assert.ok(Math.abs(equatorial.geometricCorrection) <= 0.2);
 });
 
 test('DDF mechanics return toward the SQG baseline outside the tensor-Gaussian waist', () => {

@@ -36,8 +36,19 @@ function countChangedPixels(beforeBuffer, afterBuffer) {
 }
 
 async function selectParam(page, label, value, scope = page) {
-  await scope.getByRole('combobox', { name: label }).click();
-  await page.locator(`[role="option"][data-value="${value}"]`).click();
+  const combobox = scope.getByRole('combobox', { name: label });
+  if (await combobox.getAttribute('aria-expanded') !== 'true') await combobox.press('Enter');
+  const option = page.locator(`[role="option"][data-value="${value}"]`);
+  await option.waitFor({ state: 'visible' });
+  const targetIndex = Number(await option.getAttribute('aria-posinset')) - 1;
+  await combobox.press('Home');
+  for (let index = 0; index < targetIndex; index += 1) await combobox.press('ArrowDown');
+  await combobox.press('Enter');
+  await page.waitForFunction(({ label: selectedLabel }) => {
+    const selected = [...document.querySelectorAll('.param-select-trigger')]
+      .find((trigger) => trigger.getAttribute('aria-label') === selectedLabel);
+    return selected?.getAttribute('aria-expanded') === 'false';
+  }, { label });
 }
 
 async function exerciseRangeSliders(container) {
@@ -345,7 +356,23 @@ test('double-slit experiment renders a detector and applies exposure and glow ti
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: /01 \/ LOAD FIELD/ }).click();
   await page.locator('.wave-panel').waitFor();
-  const canvas = page.locator('.wave-scene canvas');
+  const canvas = page.locator('.wave-scene');
+  await page.waitForFunction(() => document.querySelector('.wave-scene')?.dataset.detectorResolution === '48x48');
+  const detectorPhaseMode = page.getByRole('combobox', { name: 'Detector phase mode' });
+  const detectorPhaseValue = page.locator('.wave-range-control').filter({ hasText: 'Detector phase value' }).locator('input[type="range"]');
+  const unfilteredFieldDetector = await canvas.screenshot();
+  await page.locator('.wave-run-toggle').click();
+  await selectParam(page, 'Detector phase mode', 'Inverted');
+  await detectorPhaseValue.fill('2.1');
+  await page.waitForTimeout(100);
+  const matchedFieldDetector = await canvas.screenshot();
+  assert.ok(countChangedPixels(unfilteredFieldDetector, matchedFieldDetector) > 50, 'paused field detector should refresh when its phase mode changes');
+  await detectorPhaseValue.fill('2.8');
+  await page.waitForTimeout(100);
+  assert.ok(countChangedPixels(matchedFieldDetector, await canvas.screenshot()) > 50, 'paused field detector should refresh when its phase value excludes the source');
+  await detectorPhaseValue.fill('0');
+  await selectParam(page, 'Detector phase mode', 'all');
+  await page.locator('.wave-run-toggle').click();
   const beforeExperiment = await canvas.screenshot();
   await selectParam(page, 'Experiment mode', 'double-slit');
   await page.waitForTimeout(500);
@@ -358,6 +385,57 @@ test('double-slit experiment renders a detector and applies exposure and glow ti
   assert.equal(await page.locator('.wave-scene').getAttribute('data-detector-implementation'), 'classic');
   assert.equal(await page.locator('.wave-detector-notes summary').textContent(), 'Detector model notes');
   assert.match(await page.locator('.wave-detector-notes').textContent(), /Limitations[\s\S]*Opportunities/);
+  const detectorMechanics = page.getByRole('combobox', { name: 'Detector mechanics' });
+  assert.match(await detectorMechanics.textContent(), /Classical intensity/);
+  const compareDetectorModels = page.getByLabel('Compare detector models');
+  assert.equal(await compareDetectorModels.isChecked(), false);
+  await compareDetectorModels.check();
+  const classicalGlowTime = page.locator('.wave-range-control').filter({ hasText: 'Classical glow time' }).locator('input[type="range"]');
+  const classicalBrightness = page.locator('.wave-range-control').filter({ hasText: 'Classical brightness' }).locator('input[type="range"]');
+  const pilotGlowTime = page.locator('.wave-range-control').filter({ hasText: 'Pilot-wave glow time' }).locator('input[type="range"]');
+  assert.equal(await classicalGlowTime.inputValue(), '100');
+  assert.equal(await classicalBrightness.inputValue(), '1.8');
+  assert.equal(await pilotGlowTime.inputValue(), '3');
+  assert.equal(await page.getByRole('slider', { name: 'Detection time', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('slider', { name: 'Detector brightness', exact: true }).count(), 0);
+  const referenceModel = page.getByRole('combobox', { name: 'Comparison reference model' });
+  await selectParam(page, 'Comparison reference model', 'pilot-wave');
+  const scoreTable = page.locator('.wave-detector-score-table');
+  await scoreTable.waitFor();
+  assert.match(await scoreTable.locator('caption').textContent(), /Pilot-wave current/);
+  const showDifference = page.getByLabel('Show model difference on detector');
+  const beforeClassicDifference = await canvas.screenshot();
+  await showDifference.check();
+  await page.waitForTimeout(150);
+  assert.ok(countChangedPixels(beforeClassicDifference, await canvas.screenshot()) > 50, 'reference-relative difference view should recolor the classic detector');
+  assert.equal(await scoreTable.locator('tbody tr').count(), 5);
+  await showDifference.uncheck();
+  await selectParam(page, 'Comparison reference model', 'classical');
+  await compareDetectorModels.uncheck();
+  await scoreTable.waitFor({ state: 'detached' });
+  assert.match(await detectorPhaseMode.textContent(), /All phase modes/);
+  assert.equal(await detectorPhaseValue.inputValue(), '0');
+  await selectParam(page, 'Detector phase mode', 'Standard');
+  const beforePhaseFilter = await canvas.screenshot();
+  await detectorPhaseValue.fill('1.5');
+  await page.waitForTimeout(800);
+  assert.ok(countChangedPixels(beforePhaseFilter, await canvas.screenshot()) > 50, 'phase value filter should remove sources that do not match its target');
+  await detectorPhaseValue.fill('0');
+  await selectParam(page, 'Detector phase mode', 'all');
+  await page.locator('.wave-run-toggle').click();
+  const beforeClassicPilotWave = await canvas.screenshot();
+  await selectParam(page, 'Detector mechanics', 'pilot-wave');
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator('[data-detector-mechanics]').getAttribute('data-detector-mechanics'), 'pilot-wave');
+  assert.ok(countChangedPixels(beforeClassicPilotWave, await canvas.screenshot()) > 50, 'pilot-wave mode should change classic detector response');
+  await selectParam(page, 'Detector mechanics', 'classical');
+  await page.locator('.wave-run-toggle').click();
+  const clearDetector = page.getByRole('button', { name: 'Clear detector' });
+  const beforeClassicClear = await canvas.screenshot();
+  await clearDetector.click();
+  await page.waitForTimeout(100);
+  assert.ok(countChangedPixels(beforeClassicClear, await canvas.screenshot()) > 50, 'clear detector should reset the classic response screen');
+  await page.locator('.wave-run-toggle').click();
   const detectorVisibility = page.getByLabel('Show detection screen');
   assert.equal(await detectorVisibility.isChecked(), true);
   const beforeClassicHidden = await canvas.screenshot();
@@ -366,6 +444,14 @@ test('double-slit experiment renders a detector and applies exposure and glow ti
   assert.ok(countChangedPixels(beforeClassicHidden, await canvas.screenshot()) > 50, 'visibility toggle should hide the classic detector');
   await detectorVisibility.check();
   await page.waitForTimeout(100);
+  const pixelDensity = page.locator('.wave-range-control').filter({ hasText: 'Detector pixel density' }).locator('input[type="range"]');
+  assert.equal(await pixelDensity.getAttribute('max'), '4');
+  await page.locator('.wave-run-toggle').click();
+  await pixelDensity.fill('2.5');
+  await page.waitForFunction(() => document.querySelector('.wave-scene')?.dataset.detectorResolution === '120x120');
+  await pixelDensity.fill('1');
+  await page.waitForFunction(() => document.querySelector('.wave-scene')?.dataset.detectorResolution === '48x48');
+  await page.locator('.wave-run-toggle').click();
   await selectParam(page, 'Detector implementation', 'native');
   await page.waitForFunction(() => document.querySelector('.wave-scene')?.dataset.detectorResolution === '128x128');
   assert.equal(await page.locator('.wave-scene').getAttribute('data-detector-implementation'), 'native');
@@ -375,9 +461,40 @@ test('double-slit experiment renders a detector and applies exposure and glow ti
   assert.ok(countChangedPixels(beforeNativeHidden, await canvas.screenshot()) > 50, 'visibility toggle should hide the native GPU detector');
   await detectorVisibility.check();
   await page.waitForTimeout(100);
+  const nativeRunToggle = page.locator('.wave-run-toggle');
+  if ((await nativeRunToggle.textContent()).trim() === 'Pause') await nativeRunToggle.click();
+  await compareDetectorModels.check();
+  await scoreTable.waitFor();
+  const beforeNativeDifference = await canvas.screenshot();
+  await showDifference.check();
+  let nativeDifferenceChanges = 0;
+  for (let attempt = 0; attempt < 12 && nativeDifferenceChanges <= 50; attempt += 1) {
+    await page.waitForTimeout(100);
+    nativeDifferenceChanges = countChangedPixels(beforeNativeDifference, await canvas.screenshot());
+  }
+  assert.ok(nativeDifferenceChanges > 50, `reference-relative difference view should recolor the native GPU detector, changed pixels: ${nativeDifferenceChanges}`);
+  await showDifference.uncheck();
+  await compareDetectorModels.uncheck();
+  await page.locator('.wave-run-toggle').click();
+  const beforeNativePilotWave = await canvas.screenshot();
+  await selectParam(page, 'Detector mechanics', 'pilot-wave');
+  await page.waitForTimeout(100);
+  assert.ok(countChangedPixels(beforeNativePilotWave, await canvas.screenshot()) > 50, 'pilot-wave mode should change native GPU detector response');
+  await selectParam(page, 'Detector mechanics', 'classical');
+  await page.locator('.wave-run-toggle').click();
+  const beforeNativeClear = await canvas.screenshot();
+  await clearDetector.click();
+  await page.waitForTimeout(100);
+  assert.ok(countChangedPixels(beforeNativeClear, await canvas.screenshot()) > 50, 'clear detector should reset the native GPU response screen');
+  await page.locator('.wave-run-toggle').click();
   const constructiveMode = page.locator('.wave-interference-mode input').first();
   assert.equal(await constructiveMode.isDisabled(), false);
   await page.locator('.wave-run-toggle').click();
+  const simulationSpeed = page.locator('.wave-range-control').filter({ hasText: 'Simulation speed' }).locator('input[type="range"]');
+  assert.equal(await simulationSpeed.inputValue(), '1');
+  await simulationSpeed.fill('2.5');
+  assert.equal(await page.locator('[data-simulation-speed]').getAttribute('data-simulation-speed'), '2.5');
+  await simulationSpeed.fill('1');
   const beforeConstructive = await canvas.screenshot();
   await constructiveMode.check();
   assert.equal(await constructiveMode.isChecked(), true);
@@ -460,12 +577,11 @@ test('double-slit experiment renders a detector and applies exposure and glow ti
   await page.waitForTimeout(100);
   assert.equal(await page.locator('.wave-scene').getAttribute('data-detector-mask'), 'true');
   assert.ok(countChangedPixels(beforeMask, await canvas.screenshot()) > 50, 'wall-band mask should cover detector pixels outside the wall height');
-  const pixelDensity = page.locator('.wave-range-control').filter({ hasText: 'Detector pixel density' }).locator('input[type="range"]');
-  await pixelDensity.fill('1.5');
-  await page.waitForFunction(() => document.querySelector('.wave-scene')?.dataset.detectorResolution === '192x192');
-  assert.equal(await page.locator('.wave-scene').getAttribute('data-detector-pixel-density'), '1.5');
+  await pixelDensity.fill('2.5');
+  await page.waitForFunction(() => document.querySelector('.wave-scene')?.dataset.detectorResolution === '320x320');
+  assert.equal(await page.locator('.wave-scene').getAttribute('data-detector-pixel-density'), '2.5');
   const beforePalette = await canvas.screenshot();
-  await page.getByRole('button', { name: 'Black & red' }).click();
+  await page.locator('.wave-palette-control').getByRole('button', { name: 'Black & red' }).click();
   await page.waitForTimeout(100);
   assert.equal(await page.locator('.wave-scene').getAttribute('data-detector-palette'), 'black-red');
   assert.ok(countChangedPixels(beforePalette, await canvas.screenshot()) > 50, 'black-and-red palette should recolor the detector while paused');
@@ -517,5 +633,32 @@ test('double-slit experiment renders a detector and applies exposure and glow ti
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(200);
   assert.ok(countParticlePixels(await canvas.screenshot()) > 50, 'double-slit field and detector should remain visible on mobile');
+  assert.deepEqual(pageErrors, [], `wave simulator reported page errors: ${pageErrors.join('; ')}`);
+});
+
+test('OAM states can be toggled on the detector', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => localStorage.clear());
+
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /01 \/ LOAD FIELD/ }).click();
+  await page.locator('.wave-panel').waitFor();
+  await selectParam(page, 'Experiment mode', 'double-slit');
+  const firstWave = page.locator('.wave-editor').first();
+  await selectParam(page, 'Phase mode', 'Helical-Left', firstWave);
+
+  const displayOamStates = page.getByLabel('Show OAM states on detector');
+  assert.equal(await displayOamStates.isChecked(), false);
+  const detectorReadout = page.locator('.wave-detector-oam-label');
+  assert.equal(await detectorReadout.count(), 0);
+  await displayOamStates.check();
+  await detectorReadout.waitFor();
+  assert.match(await detectorReadout.textContent(), /W1\s+ℓ=\+?\d+/);
+  await displayOamStates.uncheck();
+  await detectorReadout.waitFor({ state: 'detached' });
   assert.deepEqual(pageErrors, [], `wave simulator reported page errors: ${pageErrors.join('; ')}`);
 });

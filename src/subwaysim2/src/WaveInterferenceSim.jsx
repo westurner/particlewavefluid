@@ -10,6 +10,7 @@ import { buildParameterReplayJournal, DEFAULT_CAMERA_VIEWS, DEFAULT_SIMULATOR_3D
 import { evaluateGpeResponse, WAVE_EVOLUTION_OPTIONS } from './mechanicsModels.js';
 import { calculateDdfMobility, evaluateMechanicsResponse, SIMULATION_MECHANICS_REGIMES } from './lib/simulationMechanics.js';
 import { COLOR_PALETTES, sampleColorPalette } from './lib/color-palettes.js';
+import { summarizeModelDifference } from './lib/model-comparison.js';
 import PaletteParamControl from './lib/PaletteParamControl.jsx';
 
 const FIELD_SIZE = 18;
@@ -25,6 +26,7 @@ const DEFAULT_WAVE_MECHANICS = { model: 'linear', nonlinearCoupling: 0.08, dispe
 const DETECTOR_UPDATE_INTERVAL = 1 / 12;
 const CLASSIC_DETECTOR_BINS_PER_AXIS = 48;
 const DETECTOR_MAX_EMITTERS = 1400;
+const DETECTOR_SCORE_GRID_RESOLUTION = 24;
 const DetectorVisibilityContext = createContext(true);
 const DetectorOamReadoutContext = createContext({ enabled: false, states: [] });
 const DetectorMechanicsContext = createContext('classical');
@@ -40,8 +42,29 @@ const DETECTOR_MECHANICS_OPTIONS = [
   { value: 'classical', label: 'Classical intensity' },
   { value: 'pilot-wave', label: 'Pilot-wave probability current' }
 ];
+const DEFAULT_DETECTOR_MODEL_COMPARISON = {
+  enabled: false,
+  showDifference: false,
+  referenceModel: 'classical',
+  classical: { detectionTime: 1, glowTime: 100, brightness: 1.8 },
+  pilotWave: { detectionTime: 1, glowTime: 3, brightness: 1 }
+};
+const DetectorModelComparisonContext = createContext(DEFAULT_DETECTOR_MODEL_COMPARISON);
+const DetectorComparisonScoreContext = createContext({ scores: null, setScores: () => {} });
 const DETECTOR_PALETTES = COLOR_PALETTES;
 const DETECTOR_PALETTE_COLORS = Object.fromEntries(DETECTOR_PALETTES.map(({ value, stops }) => [value, stops.map((stop) => new Color(stop))]));
+
+function normalizeDetectorModelSettings(settings = {}, defaults) {
+  const finiteValue = (value, fallback, minimum, maximum) => {
+    const number = Number(value);
+    return Math.min(maximum, Math.max(minimum, Number.isFinite(number) ? number : fallback));
+  };
+  return {
+    detectionTime: finiteValue(settings.detectionTime, defaults.detectionTime, 0.1, 100),
+    glowTime: finiteValue(settings.glowTime, defaults.glowTime, 0.1, 100),
+    brightness: finiteValue(settings.brightness, defaults.brightness, 0.25, 2.5)
+  };
+}
 
 function normalizeWaveSnapshot(snapshot, defaults) {
   if (!Array.isArray(snapshot.waves) || snapshot.waves.length !== MAX_WAVES) {
@@ -53,6 +76,7 @@ function normalizeWaveSnapshot(snapshot, defaults) {
   const detectorMechanicsMode = DETECTOR_MECHANICS_OPTIONS.some((option) => option.value === snapshot.detectorMechanicsMode)
     ? snapshot.detectorMechanicsMode
     : defaults.detectorMechanicsMode;
+  const comparison = { ...defaults.detectorModelComparison, ...snapshot.detectorModelComparison };
   return {
     ...defaults,
     ...snapshot,
@@ -61,6 +85,13 @@ function normalizeWaveSnapshot(snapshot, defaults) {
     waveCount: Number.isFinite(waveCount) ? Math.min(MAX_WAVES, Math.max(1, Math.round(waveCount))) : defaults.waveCount,
     simulationSpeed: Number.isFinite(simulationSpeed) ? Math.min(4, Math.max(0.1, simulationSpeed)) : defaults.simulationSpeed,
     detectorMechanicsMode,
+    detectorModelComparison: {
+      enabled: Boolean(comparison.enabled),
+      showDifference: Boolean(comparison.showDifference),
+      referenceModel: comparison.referenceModel === 'pilot-wave' ? 'pilot-wave' : 'classical',
+      classical: normalizeDetectorModelSettings(comparison.classical, defaults.detectorModelComparison.classical),
+      pilotWave: normalizeDetectorModelSettings(comparison.pilotWave, defaults.detectorModelComparison.pilotWave)
+    },
     detectorPhaseMode: snapshot.detectorPhaseMode === 'all' || PHASE_MODES.includes(snapshot.detectorPhaseMode) ? snapshot.detectorPhaseMode : defaults.detectorPhaseMode,
     detectorPhaseValue: Number.isFinite(detectorPhaseValue) ? Math.min(Math.PI, Math.max(-Math.PI, detectorPhaseValue)) : defaults.detectorPhaseValue,
     interferenceModes: { ...defaults.interferenceModes, ...snapshot.interferenceModes },
@@ -86,6 +117,10 @@ const DETECTOR_RESPONSE_FRAGMENT_SHADER = `
   uniform float uIntensityScale;
   uniform float uPilotWave;
   uniform float uPilotReferenceWaveNumber;
+  uniform float uClassicalDetectionTime;
+  uniform float uClassicalGlowTime;
+  uniform float uPilotDetectionTime;
+  uniform float uPilotGlowTime;
   uniform float uTime;
   uniform float uElapsed;
   uniform float uDetectionTime;
@@ -136,11 +171,12 @@ const DETECTOR_RESPONSE_FRAGMENT_SHADER = `
     }
     float classicalIntensity = dot(electric, electric);
     float pilotCurrent = max(0.0, waveReal * derivativeImaginary - waveImaginary * derivativeReal) / max(uPilotReferenceWaveNumber, 0.000001);
-    float intensity = mix(classicalIntensity, pilotCurrent, uPilotWave) / uIntensityScale;
     vec4 previous = texture2D(uPreviousResponse, vUv);
-    float average = previous.r + (intensity - previous.r) * (1.0 - exp(-uElapsed / uDetectionTime));
-    float glow = max(average, previous.g * exp(-uElapsed / uGlowTime));
-    gl_FragColor = vec4(clamp(average, 0.0, 1.0), clamp(glow, 0.0, 1.0), 0.0, 1.0);
+    float classicalAverage = previous.r + (classicalIntensity / uIntensityScale - previous.r) * (1.0 - exp(-uElapsed / uClassicalDetectionTime));
+    float classicalGlow = max(classicalAverage, previous.g * exp(-uElapsed / uClassicalGlowTime));
+    float pilotAverage = previous.b + (pilotCurrent / uIntensityScale - previous.b) * (1.0 - exp(-uElapsed / uPilotDetectionTime));
+    float pilotGlow = max(pilotAverage, previous.a * exp(-uElapsed / uPilotGlowTime));
+    gl_FragColor = vec4(clamp(classicalAverage, 0.0, 1.0), clamp(classicalGlow, 0.0, 1.0), clamp(pilotAverage, 0.0, 1.0), clamp(pilotGlow, 0.0, 1.0));
   }
 `;
 const DETECTOR_DISPLAY_VERTEX_SHADER = `
@@ -159,6 +195,12 @@ const DETECTOR_DISPLAY_FRAGMENT_SHADER = `
   uniform bool uMaskEnabled;
   uniform float uMaskHeight;
   uniform float uDetectorBrightness;
+  uniform float uClassicalBrightness;
+  uniform float uPilotBrightness;
+  uniform bool uPilotWave;
+  uniform bool uComparisonEnabled;
+  uniform bool uDifferenceView;
+  uniform bool uReferencePilot;
   varying vec2 vUv;
   varying float vWorldY;
   void main() {
@@ -166,11 +208,19 @@ const DETECTOR_DISPLAY_FRAGMENT_SHADER = `
     if (uMaskEnabled && abs(vWorldY) > uMaskHeight * 0.5) {
       color = vec3(0.012, 0.016, 0.023);
     } else {
-      float glow = texture2D(uResponse, vUv).g;
-      float value = clamp(pow(glow, 0.65) * uDetectorBrightness, 0.0, 1.0) * 3.0;
-      if (value < 1.0) color = mix(uPaletteStops[0], uPaletteStops[1], value);
-      else if (value < 2.0) color = mix(uPaletteStops[1], uPaletteStops[2], value - 1.0);
-      else color = mix(uPaletteStops[2], uPaletteStops[3], value - 2.0);
+      vec4 response = texture2D(uResponse, vUv);
+      float classicalValue = clamp(pow(response.g, 0.65) * uClassicalBrightness, 0.0, 1.0);
+      float pilotValue = clamp(pow(response.a, 0.65) * uPilotBrightness, 0.0, 1.0);
+      if (uComparisonEnabled && uDifferenceView) {
+        float difference = uReferencePilot ? classicalValue - pilotValue : pilotValue - classicalValue;
+        vec3 differenceColor = difference >= 0.0 ? vec3(0.91, 0.31, 0.24) : vec3(0.22, 0.72, 0.77);
+        color = mix(vec3(0.012, 0.016, 0.023), differenceColor, clamp(abs(difference), 0.0, 1.0));
+      } else {
+        float value = (uPilotWave ? pilotValue : classicalValue) * 3.0;
+        if (value < 1.0) color = mix(uPaletteStops[0], uPaletteStops[1], value);
+        else if (value < 2.0) color = mix(uPaletteStops[1], uPaletteStops[2], value - 1.0);
+        else color = mix(uPaletteStops[2], uPaletteStops[3], value - 2.0);
+      }
     }
     gl_FragColor = vec4(color, 1.0);
     #include <tonemapping_fragment>
@@ -306,6 +356,10 @@ function createDetectorRenderResources(width, height) {
       uIntensityScale: { value: 1 },
       uPilotWave: { value: 0 },
       uPilotReferenceWaveNumber: { value: 1 },
+      uClassicalDetectionTime: { value: 1 },
+      uClassicalGlowTime: { value: 3 },
+      uPilotDetectionTime: { value: 1 },
+      uPilotGlowTime: { value: 3 },
       uTime: { value: 0 },
       uElapsed: { value: 0 },
       uDetectionTime: { value: 1 },
@@ -328,7 +382,13 @@ function createDetectorRenderResources(width, height) {
       uMaskEnabled: { value: false },
       uMaskHeight: { value: APERTURE_SCREEN_HEIGHT },
       uDetectorSpan: { value: DETECTOR_TRANSVERSE_SPAN },
-      uDetectorBrightness: { value: 1 }
+      uDetectorBrightness: { value: 1 },
+      uClassicalBrightness: { value: 1 },
+      uPilotBrightness: { value: 1 },
+      uPilotWave: { value: false },
+      uComparisonEnabled: { value: false },
+      uDifferenceView: { value: false },
+      uReferencePilot: { value: false }
     },
     vertexShader: DETECTOR_DISPLAY_VERTEX_SHADER,
     fragmentShader: DETECTOR_DISPLAY_FRAGMENT_SHADER,
@@ -392,8 +452,57 @@ function createClassicDetectorGeometry(resolution) {
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new BufferAttribute(positions, 3));
   geometry.setAttribute('color', new BufferAttribute(colors, 3));
-  geometry.userData.responses = Array.from({ length: binCount }, () => ({ average: 0, glow: 0 }));
+  geometry.userData.responses = Array.from({ length: binCount }, () => ({
+    average: 0,
+    glow: 0,
+    classical: { average: 0, glow: 0 },
+    pilotWave: { average: 0, glow: 0 }
+  }));
   return geometry;
+}
+
+function sampleDetectorModelIntensities({ waves, waveCount, interferenceModes, experimentMode, apertureField, x, y, z, time }) {
+  const activeWaves = waves.slice(0, waveCount);
+  const directFieldMode = experimentMode === 'field';
+  const classicalIntensity = directFieldMode
+    ? (() => {
+      const field = calculateWaveDisplacementAndTensorGaussian(activeWaves, x, z, time, interferenceModes, y).displacement;
+      return field.x ** 2 + field.y ** 2 + field.z ** 2;
+    })()
+    : sampleApertureField(apertureField, x, y, z, time).intensity;
+  const pilotWaveCurrent = samplePilotWaveCurrent(activeWaves, x, y, z, time, apertureField).forwardFlux;
+  const totalAmplitude = directFieldMode
+    ? activeWaves.reduce((total, wave) => total + (wave.enabled === false ? 0 : Math.abs(Number(wave.amplitude) || 0)), 0)
+    : apertureField?.emitters.reduce((total, emitter) => total + Math.abs(emitter.amplitude), 0) ?? 0;
+  const intensityScale = Math.max(0.001, 4 * totalAmplitude ** 2 / (directFieldMode ? 1 : DOUBLE_SLIT_DETECTOR_X ** 2));
+  return { classical: classicalIntensity / intensityScale, pilotWave: pilotWaveCurrent / intensityScale };
+}
+
+function scaleDetectorBrightness(glow, brightness) {
+  return Math.min(1, Math.pow(Math.min(1, glow), 0.65) * brightness);
+}
+
+function updateDetectorComparisonScores({ scoreResponses, waves, waveCount, interferenceModes, experimentMode, apertureField, time, elapsed, comparison, onScores }) {
+  const referenceModel = comparison.referenceModel;
+  const candidateModel = referenceModel === 'classical' ? 'pilot-wave' : 'classical';
+  const referenceValues = [];
+  const candidateValues = [];
+  for (let yIndex = 0; yIndex < DETECTOR_SCORE_GRID_RESOLUTION; yIndex += 1) {
+    const y = ((yIndex + 0.5) / DETECTOR_SCORE_GRID_RESOLUTION - 0.5) * DETECTOR_TRANSVERSE_SPAN;
+    for (let zIndex = 0; zIndex < DETECTOR_SCORE_GRID_RESOLUTION; zIndex += 1) {
+      const z = ((zIndex + 0.5) / DETECTOR_SCORE_GRID_RESOLUTION - 0.5) * DETECTOR_TRANSVERSE_SPAN;
+      const index = yIndex * DETECTOR_SCORE_GRID_RESOLUTION + zIndex;
+      const intensities = sampleDetectorModelIntensities({ waves, waveCount, interferenceModes, experimentMode, apertureField, x: DOUBLE_SLIT_DETECTOR_X, y, z, time });
+      const response = scoreResponses[index];
+      response.classical = advanceDetectorResponse(response.classical, intensities.classical, elapsed, comparison.classical.detectionTime, comparison.classical.glowTime);
+      response.pilotWave = advanceDetectorResponse(response.pilotWave, intensities.pilotWave, elapsed, comparison.pilotWave.detectionTime, comparison.pilotWave.glowTime);
+      const classicalValue = scaleDetectorBrightness(response.classical.glow, comparison.classical.brightness);
+      const pilotWaveValue = scaleDetectorBrightness(response.pilotWave.glow, comparison.pilotWave.brightness);
+      referenceValues.push(referenceModel === 'classical' ? classicalValue : pilotWaveValue);
+      candidateValues.push(candidateModel === 'classical' ? classicalValue : pilotWaveValue);
+    }
+  }
+  onScores({ ...summarizeModelDifference(referenceValues, candidateValues), referenceModel, candidateModel });
 }
 
 function clearDetectorResponses(gl, resources) {
@@ -484,7 +593,7 @@ function PinholeScreen() {
   </mesh>;
 }
 
-function NativeResolutionDetector({ apertureField, running, timeRef, detectionTime, glowTime, detectorBrightness, detectorPalette, detectorMechanicsMode, clearToken, maskEnabled, pixelDensity, onResolutionChange }) {
+function NativeResolutionDetector({ apertureField, waves, waveCount, interferenceModes, experimentMode, running, timeRef, detectionTime, glowTime, detectorBrightness, detectorPalette, detectorMechanicsMode, detectorModelComparison, clearToken, maskEnabled, pixelDensity, onResolutionChange, onComparisonScores }) {
   const simulationSpeed = useContext(SimulationSpeedContext);
   const { gl, size } = useThree();
   const baseWidth = E2E_MODE ? Math.min(size.width, E2E_DETECTOR_MAX_DIMENSION) : size.width;
@@ -494,9 +603,15 @@ function NativeResolutionDetector({ apertureField, running, timeRef, detectionTi
   const resources = useMemo(() => createDetectorRenderResources(resolutionWidth, resolutionHeight), [resolutionHeight, resolutionWidth]);
   const updateTime = useRef(0);
   const needsRefresh = useRef(true);
+  const comparisonScoreTimer = useRef(0);
+  const scoreResponses = useRef(Array.from({ length: DETECTOR_SCORE_GRID_RESOLUTION ** 2 }, () => ({
+    classical: { average: 0, glow: 0 },
+    pilotWave: { average: 0, glow: 0 }
+  })));
   useEffect(() => {
     needsRefresh.current = true;
-  }, [apertureField, detectionTime, detectorMechanicsMode, glowTime, resources]);
+    if (!detectorModelComparison.enabled) onComparisonScores(null);
+  }, [apertureField, detectionTime, detectorMechanicsMode, detectorModelComparison, glowTime, onComparisonScores, resources]);
 
   useEffect(() => {
     onResolutionChange(`${resolutionWidth}x${resolutionHeight}`);
@@ -513,9 +628,15 @@ function NativeResolutionDetector({ apertureField, running, timeRef, detectionTi
     if (clearToken === 0) return;
     clearDetectorResponses(gl, resources);
     resources.displayMaterial.uniforms.uResponse.value = resources.responseTargets[0].texture;
+    scoreResponses.current.forEach((response) => {
+      response.classical = { average: 0, glow: 0 };
+      response.pilotWave = { average: 0, glow: 0 };
+    });
     updateTime.current = 0;
+    comparisonScoreTimer.current = 0;
     needsRefresh.current = false;
-  }, [clearToken, gl, resources]);
+    onComparisonScores(null);
+  }, [clearToken, gl, onComparisonScores, resources]);
 
   useEffect(() => {
     const emitters = apertureField?.emitters ?? [];
@@ -565,9 +686,17 @@ function NativeResolutionDetector({ apertureField, running, timeRef, detectionTi
     uniforms.uPaletteStops.value = DETECTOR_PALETTE_COLORS[detectorPalette] ?? DETECTOR_PALETTE_COLORS.thermal;
     uniforms.uMaskEnabled.value = maskEnabled;
     uniforms.uDetectorBrightness.value = detectorBrightness;
-  }, [detectorBrightness, detectorPalette, maskEnabled, resources]);
+    uniforms.uClassicalBrightness.value = detectorModelComparison.enabled ? detectorModelComparison.classical.brightness : detectorBrightness;
+    uniforms.uPilotBrightness.value = detectorModelComparison.enabled ? detectorModelComparison.pilotWave.brightness : detectorBrightness;
+    uniforms.uPilotWave.value = detectorMechanicsMode === 'pilot-wave';
+    uniforms.uComparisonEnabled.value = detectorModelComparison.enabled;
+    uniforms.uDifferenceView.value = detectorModelComparison.enabled && detectorModelComparison.showDifference;
+    uniforms.uReferencePilot.value = detectorModelComparison.referenceModel === 'pilot-wave';
+  }, [detectorBrightness, detectorMechanicsMode, detectorModelComparison, detectorPalette, maskEnabled, resources]);
 
   useFrame((_, delta) => {
+    comparisonScoreTimer.current += delta;
+    const configurationRefresh = needsRefresh.current;
     let elapsed = 0;
     if (running) {
       updateTime.current += Math.min(delta, 0.1);
@@ -575,7 +704,9 @@ function NativeResolutionDetector({ apertureField, running, timeRef, detectionTi
       elapsed = updateTime.current * simulationSpeed;
       updateTime.current = 0;
     } else if (!needsRefresh.current) return;
-    else elapsed = Math.max(0.01, detectionTime) * 8;
+    else elapsed = Math.max(0.01, detectorModelComparison.enabled
+      ? Math.max(detectorModelComparison.classical.detectionTime, detectorModelComparison.pilotWave.detectionTime)
+      : detectionTime) * 8;
     needsRefresh.current = false;
     const totalAmplitude = apertureField?.emitters.reduce((total, emitter) => total + Math.abs(emitter.amplitude), 0) ?? 0;
     const uniforms = resources.responseMaterial.uniforms;
@@ -585,6 +716,10 @@ function NativeResolutionDetector({ apertureField, running, timeRef, detectionTi
     uniforms.uElapsed.value = elapsed;
     uniforms.uDetectionTime.value = Math.max(0.01, detectionTime);
     uniforms.uGlowTime.value = Math.max(0.01, glowTime);
+    uniforms.uClassicalDetectionTime.value = detectorModelComparison.enabled ? detectorModelComparison.classical.detectionTime : detectionTime;
+    uniforms.uClassicalGlowTime.value = detectorModelComparison.enabled ? detectorModelComparison.classical.glowTime : glowTime;
+    uniforms.uPilotDetectionTime.value = detectorModelComparison.enabled ? detectorModelComparison.pilotWave.detectionTime : detectionTime;
+    uniforms.uPilotGlowTime.value = detectorModelComparison.enabled ? detectorModelComparison.pilotWave.glowTime : glowTime;
     const destinationIndex = 1 - resources.historyIndex;
     const currentTarget = gl.getRenderTarget();
     const previousClearColor = gl.getClearColor(new Color());
@@ -600,6 +735,10 @@ function NativeResolutionDetector({ apertureField, running, timeRef, detectionTi
     }
     resources.historyIndex = destinationIndex;
     resources.displayMaterial.uniforms.uResponse.value = resources.responseTargets[destinationIndex].texture;
+    if (detectorModelComparison.enabled && (configurationRefresh || comparisonScoreTimer.current >= 0.5)) {
+      updateDetectorComparisonScores({ scoreResponses: scoreResponses.current, waves, waveCount, interferenceModes, experimentMode, apertureField, time: timeRef.current, elapsed, comparison: detectorModelComparison, onScores: onComparisonScores });
+      comparisonScoreTimer.current = 0;
+    }
   });
 
   return <mesh position={[DOUBLE_SLIT_DETECTOR_X - 0.025, 0, 0]} rotation={[0, -Math.PI / 2, 0]}>
@@ -608,13 +747,18 @@ function NativeResolutionDetector({ apertureField, running, timeRef, detectionTi
   </mesh>;
 }
 
-function ClassicExperimentDetector({ apertureField, waves, waveCount, interferenceModes, experimentMode, running, timeRef, detectionTime, glowTime, detectorBrightness, detectorPalette, detectorMechanicsMode, clearToken, maskEnabled, pixelDensity, onResolutionChange }) {
+function ClassicExperimentDetector({ apertureField, waves, waveCount, interferenceModes, experimentMode, running, timeRef, detectionTime, glowTime, detectorBrightness, detectorPalette, detectorMechanicsMode, detectorModelComparison, clearToken, maskEnabled, pixelDensity, onResolutionChange, onComparisonScores }) {
   const simulationSpeed = useContext(SimulationSpeedContext);
   const resolution = Math.max(1, Math.round(CLASSIC_DETECTOR_BINS_PER_AXIS * pixelDensity));
   const geometry = useMemo(() => createClassicDetectorGeometry(resolution), [resolution]);
   const color = useMemo(() => new Color(), []);
   const updateTime = useRef(0);
   const needsRefresh = useRef(true);
+  const comparisonScoreTimer = useRef(0);
+  const comparisonScoreResponses = useRef(Array.from({ length: DETECTOR_SCORE_GRID_RESOLUTION ** 2 }, () => ({
+    classical: { average: 0, glow: 0 },
+    pilotWave: { average: 0, glow: 0 }
+  })));
   useEffect(() => () => geometry.dispose(), [geometry]);
   useEffect(() => {
     needsRefresh.current = true;
@@ -623,13 +767,22 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
   }, [geometry, onResolutionChange, resolution]);
   useEffect(() => {
     needsRefresh.current = true;
-  }, [apertureField, detectorBrightness, detectorMechanicsMode, detectorPalette, detectionTime, experimentMode, glowTime, interferenceModes, maskEnabled, waveCount, waves]);
+    if (!detectorModelComparison.enabled) onComparisonScores(null);
+  }, [apertureField, detectorBrightness, detectorMechanicsMode, detectorModelComparison, detectorPalette, detectionTime, experimentMode, glowTime, interferenceModes, maskEnabled, onComparisonScores, waveCount, waves]);
 
   useEffect(() => {
     if (clearToken === 0) return;
     geometry.userData.responses.forEach((response) => {
       response.average = 0;
       response.glow = 0;
+      response.classical.average = 0;
+      response.classical.glow = 0;
+      response.pilotWave.average = 0;
+      response.pilotWave.glow = 0;
+    });
+    comparisonScoreResponses.current.forEach((response) => {
+      response.classical = { average: 0, glow: 0 };
+      response.pilotWave = { average: 0, glow: 0 };
     });
     const baseColor = DETECTOR_PALETTE_COLORS[detectorPalette]?.[0] ?? DETECTOR_PALETTE_COLORS.thermal[0];
     const colors = geometry.attributes.color.array;
@@ -641,9 +794,11 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
     geometry.attributes.color.needsUpdate = true;
     updateTime.current = 0;
     needsRefresh.current = false;
-  }, [clearToken, detectorPalette, geometry]);
+    onComparisonScores(null);
+  }, [clearToken, detectorPalette, geometry, onComparisonScores]);
 
   useFrame((_, delta) => {
+    comparisonScoreTimer.current += delta;
     let elapsed = 0;
     if (running) {
       updateTime.current += Math.min(delta, 0.1);
@@ -651,8 +806,13 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
       elapsed = updateTime.current * simulationSpeed;
       updateTime.current = 0;
     } else if (!needsRefresh.current) return;
-    else elapsed = Math.max(0.01, detectionTime) * 8;
+    else elapsed = Math.max(0.01, detectorModelComparison.enabled
+      ? Math.max(detectorModelComparison.classical.detectionTime, detectorModelComparison.pilotWave.detectionTime)
+      : detectionTime) * 8;
+    const configurationRefresh = needsRefresh.current;
     needsRefresh.current = false;
+    const comparisonReference = detectorModelComparison.referenceModel;
+    const comparisonCandidate = comparisonReference === 'classical' ? 'pilotWave' : 'classical';
     const directFieldMode = experimentMode === 'field';
     const totalAmplitude = directFieldMode
       ? waves.slice(0, waveCount).reduce((total, wave) => total + (wave.enabled === false ? 0 : Math.abs(Number(wave.amplitude) || 0)), 0)
@@ -666,19 +826,44 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
       for (let zBin = 0; zBin < resolution; zBin += 1) {
         const z = ((zBin + 0.5) / resolution - 0.5) * DETECTOR_TRANSVERSE_SPAN;
         const bin = yBin * resolution + zBin;
-        const intensity = detectorMechanicsMode === 'pilot-wave'
-          ? samplePilotWaveCurrent(waves.slice(0, waveCount), DOUBLE_SLIT_DETECTOR_X, y, z, timeRef.current, apertureField).forwardFlux
-          : directFieldMode
-            ? (() => {
-            const field = calculateWaveDisplacementAndTensorGaussian(waves.slice(0, waveCount), DOUBLE_SLIT_DETECTOR_X, z, timeRef.current, interferenceModes, y).displacement;
-            return field.x ** 2 + field.y ** 2 + field.z ** 2;
-          })()
-            : sampleApertureField(apertureField, DOUBLE_SLIT_DETECTOR_X, y, z, timeRef.current).intensity;
-        responses[bin] = advanceDetectorResponse(responses[bin], intensity / intensityScale, elapsed, detectionTime, glowTime);
+        const response = responses[bin];
+        if (detectorModelComparison.enabled) {
+          const intensities = sampleDetectorModelIntensities({ waves, waveCount, interferenceModes, experimentMode, apertureField, x: DOUBLE_SLIT_DETECTOR_X, y, z, time: timeRef.current });
+          response.classical = advanceDetectorResponse(response.classical, intensities.classical, elapsed, detectorModelComparison.classical.detectionTime, detectorModelComparison.classical.glowTime);
+          response.pilotWave = advanceDetectorResponse(response.pilotWave, intensities.pilotWave, elapsed, detectorModelComparison.pilotWave.detectionTime, detectorModelComparison.pilotWave.glowTime);
+          const classicalValue = scaleDetectorBrightness(response.classical.glow, detectorModelComparison.classical.brightness);
+          const pilotValue = scaleDetectorBrightness(response.pilotWave.glow, detectorModelComparison.pilotWave.brightness);
+        } else {
+          const intensity = detectorMechanicsMode === 'pilot-wave'
+            ? samplePilotWaveCurrent(waves.slice(0, waveCount), DOUBLE_SLIT_DETECTOR_X, y, z, timeRef.current, apertureField).forwardFlux
+            : directFieldMode
+              ? (() => {
+                const field = calculateWaveDisplacementAndTensorGaussian(waves.slice(0, waveCount), DOUBLE_SLIT_DETECTOR_X, z, timeRef.current, interferenceModes, y).displacement;
+                return field.x ** 2 + field.y ** 2 + field.z ** 2;
+              })()
+              : sampleApertureField(apertureField, DOUBLE_SLIT_DETECTOR_X, y, z, timeRef.current).intensity;
+          const nextResponse = advanceDetectorResponse(response, intensity / intensityScale, elapsed, detectionTime, glowTime);
+          response.average = nextResponse.average;
+          response.glow = nextResponse.glow;
+        }
         if (maskEnabled && Math.abs(y) > APERTURE_SCREEN_HEIGHT / 2) {
           color.set('#030509');
+        } else if (detectorModelComparison.enabled && detectorModelComparison.showDifference) {
+          const referenceValue = comparisonReference === 'classical'
+            ? scaleDetectorBrightness(response.classical.glow, detectorModelComparison.classical.brightness)
+            : scaleDetectorBrightness(response.pilotWave.glow, detectorModelComparison.pilotWave.brightness);
+          const candidateValue = comparisonCandidate === 'classical'
+            ? scaleDetectorBrightness(response.classical.glow, detectorModelComparison.classical.brightness)
+            : scaleDetectorBrightness(response.pilotWave.glow, detectorModelComparison.pilotWave.brightness);
+          const difference = candidateValue - referenceValue;
+          color.set(difference >= 0 ? '#e95042' : '#38b8c0').lerp(stops[0], 1 - Math.min(1, Math.abs(difference)));
         } else {
-          const brightness = Math.min(1, Math.pow(Math.min(1, responses[bin].glow), 0.65) * detectorBrightness);
+          const glow = detectorModelComparison.enabled
+            ? detectorMechanicsMode === 'pilot-wave' ? response.pilotWave.glow : response.classical.glow
+            : response.glow;
+          const brightness = scaleDetectorBrightness(glow, detectorModelComparison.enabled
+            ? detectorMechanicsMode === 'pilot-wave' ? detectorModelComparison.pilotWave.brightness : detectorModelComparison.classical.brightness
+            : detectorBrightness);
           const palettePosition = brightness * (stops.length - 1);
           const lowerStop = Math.floor(palettePosition);
           color.copy(stops[lowerStop]).lerp(stops[Math.min(lowerStop + 1, stops.length - 1)], palettePosition - lowerStop);
@@ -692,6 +877,10 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
       }
     }
     geometry.attributes.color.needsUpdate = true;
+    if (detectorModelComparison.enabled && (configurationRefresh || comparisonScoreTimer.current >= 0.5)) {
+      updateDetectorComparisonScores({ scoreResponses: comparisonScoreResponses.current, waves, waveCount, interferenceModes, experimentMode, apertureField, time: timeRef.current, elapsed, comparison: detectorModelComparison, onScores: onComparisonScores });
+      comparisonScoreTimer.current = 0;
+    }
   });
 
   return <group position={[DOUBLE_SLIT_DETECTOR_X, 0, 0]}>
@@ -702,9 +891,12 @@ function ClassicExperimentDetector({ apertureField, waves, waveCount, interferen
 }
 
 function ExperimentDetector({ implementation, experimentMode, ...props }) {
+  const detectorModelComparison = useContext(DetectorModelComparisonContext);
+  const { setScores } = useContext(DetectorComparisonScoreContext);
+  const detectorProps = { ...props, detectorModelComparison, onComparisonScores: setScores };
   return implementation === 'native' && experimentMode !== 'field'
-    ? <NativeResolutionDetector {...props} />
-    : <ClassicExperimentDetector {...props} experimentMode={experimentMode} />;
+    ? <NativeResolutionDetector {...detectorProps} />
+    : <ClassicExperimentDetector {...detectorProps} experimentMode={experimentMode} />;
 }
 
 function DetectorOamReadout({ states }) {
@@ -1090,10 +1282,14 @@ function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate
 
 function WavePanel({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, orbitControlsVisible, sourceVectorsVisible, sourcePreset, occlusionPreset, stateOptions, selectedState, stateDescription, stateName, stateMessage, paramsVisible, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation, onExperimentModeChange, onDetectionTime, onGlowTime, onApertureSettingsChange, onDetectorVisible, onDetectorBrightness, onDetectorPalette, onDetectorMaskEnabled, onDetectorPixelDensity, onDetectorImplementation, onSourcePreset, onOcclusionPreset, onStateChange, onStateName, onSaveState, onChange, onWaveCountChange, onInterferenceChange, onRunning, onReset, onDuplicate, onRemove, onDoubleSided, onParticleCount, onParticleSize, onParticleOpacity, onParticleShape, onParticleDerivativeOrder, onOrbitControls, onSourceVectors, showWaveRepresentation = true, showTensorGaussianSplatters = true, classicalWavePalette = 'native', superpositionPalette = 'native', oamSplatterPalette = 'native', onVisualizationChange = () => {}, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {}, isDefault = () => true, onResetPath = () => {}, simulatorPresets = {}, currentSimulatorPreset = 'Default', simulatorPresetName = '', onSimulatorPresetName = () => {}, onApplySimulatorPreset = () => {}, onSaveSimulatorPreset = () => {}, currentValue = {}, jsonText = '', onJsonText = () => {}, onLoadJson = () => {}, onExport = () => {}, onDeleteSimulatorPresets = () => {}, showEditLog = false, onShowEditLog = () => {}, editLogYaml = '[]\n', onReplayLog = () => {}, replayMessage = '', replaying = false, journal = [], recording = false, onRecording = () => {}, playing = false, onTogglePlayback = () => {}, onStop = () => {}, playbackTime = 0, onPlaybackTime = () => {}, playbackSpeed = 1, onPlaybackSpeed = () => {} }) {
   const detectorClear = useContext(DetectorClearContext);
+  const detectorModelComparison = useContext(DetectorModelComparisonContext);
+  const { scores: detectorComparisonScores } = useContext(DetectorComparisonScoreContext);
   const enabledCount = waves.slice(0, waveCount).filter((wave) => wave.enabled).length;
   const activeModeLabels = Object.entries(INTERFERENCE_MODES).filter(([mode]) => interferenceModes[mode]).map(([, details]) => details.label);
   const defaultSlitCount = experimentMode === 'single-slit' ? 1 : experimentMode === 'grating' ? GRATING_SLIT_CENTERS.length : DOUBLE_SLIT_CENTERS.length;
   const defaultSlitSpacing = experimentMode === 'grating' ? GRATING_SLIT_SPACING : Math.abs(DOUBLE_SLIT_CENTERS[1] - DOUBLE_SLIT_CENTERS[0]);
+  const updateModelComparison = (patch) => onVisualizationChange('detectorModelComparison', { ...detectorModelComparison, ...patch });
+  const updateModelSettings = (model, patch) => updateModelComparison({ [model]: { ...detectorModelComparison[model], ...patch } });
   const updateSlitScreenPosition = (axis, value) => {
     const field = `slitScreenPosition${axis.toUpperCase()}`;
     const position = {
@@ -1202,13 +1398,45 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={detectorVisible} onChange={(event) => onDetectorVisible(event.target.checked)} /><span>Show detection screen</span></label>
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={currentValue.showOamStatesOnDetector ?? false} onChange={(event) => onVisualizationChange('showOamStatesOnDetector', event.target.checked)} /><span>Show OAM states on detector</span></label>
         <div data-detector-mechanics={currentValue.detectorMechanicsMode ?? 'classical'}><ParamSelect className="wave-select" label="Detector mechanics" value={currentValue.detectorMechanicsMode ?? 'classical'} options={DETECTOR_MECHANICS_OPTIONS} onChange={(detectorMechanicsMode) => onVisualizationChange('detectorMechanicsMode', detectorMechanicsMode)} /></div>
+        <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={detectorModelComparison.enabled} onChange={(event) => updateModelComparison({ enabled: event.target.checked })} /><span>Compare detector models</span></label>
+        {detectorModelComparison.enabled && <>
+          <ParamSelect className="wave-select" label="Comparison reference model" value={detectorModelComparison.referenceModel} options={DETECTOR_MECHANICS_OPTIONS} onChange={(referenceModel) => updateModelComparison({ referenceModel })} />
+          <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={detectorModelComparison.showDifference} onChange={(event) => updateModelComparison({ showDifference: event.target.checked })} /><span>Show model difference on detector</span></label>
+          <details className="wave-detector-model-params" open>
+            <summary>Classical intensity parameters</summary>
+            <RangeControl label="Classical detection time" value={detectorModelComparison.classical.detectionTime} min={0.1} max={100} step={0.1} suffix=" s" editing={editing} onChange={(detectionTime) => updateModelSettings('classical', { detectionTime })} />
+            <RangeControl label="Classical glow time" value={detectorModelComparison.classical.glowTime} min={0.1} max={100} step={0.1} suffix=" s" editing={editing} onChange={(glowTime) => updateModelSettings('classical', { glowTime })} />
+            <RangeControl label="Classical brightness" value={detectorModelComparison.classical.brightness} min={0.25} max={2.5} step={0.05} editing={editing} onChange={(brightness) => updateModelSettings('classical', { brightness })} />
+          </details>
+          <details className="wave-detector-model-params">
+            <summary>Pilot-wave probability current parameters</summary>
+            <RangeControl label="Pilot-wave detection time" value={detectorModelComparison.pilotWave.detectionTime} min={0.1} max={100} step={0.1} suffix=" s" editing={editing} onChange={(detectionTime) => updateModelSettings('pilotWave', { detectionTime })} />
+            <RangeControl label="Pilot-wave glow time" value={detectorModelComparison.pilotWave.glowTime} min={0.1} max={100} step={0.1} suffix=" s" editing={editing} onChange={(glowTime) => updateModelSettings('pilotWave', { glowTime })} />
+            <RangeControl label="Pilot-wave brightness" value={detectorModelComparison.pilotWave.brightness} min={0.25} max={2.5} step={0.05} editing={editing} onChange={(brightness) => updateModelSettings('pilotWave', { brightness })} />
+          </details>
+          {detectorComparisonScores && <div className="wave-detector-score-table-wrap">
+            <table className="wave-detector-score-table">
+              <caption>Reference: {detectorComparisonScores.referenceModel === 'classical' ? 'Classical intensity' : 'Pilot-wave current'} · Compare: {detectorComparisonScores.candidateModel === 'classical' ? 'Classical intensity' : 'Pilot-wave current'}</caption>
+              <thead><tr><th>Difference score</th><th>Value</th></tr></thead>
+              <tbody>
+                <tr><th>RMS difference</th><td>{detectorComparisonScores.rmsDifference.toFixed(4)}</td></tr>
+                <tr><th>Mean absolute difference</th><td>{detectorComparisonScores.meanAbsoluteDifference.toFixed(4)}</td></tr>
+                <tr><th>Maximum absolute difference</th><td>{detectorComparisonScores.maximumAbsoluteDifference.toFixed(4)}</td></tr>
+                <tr><th>Relative difference score</th><td>{detectorComparisonScores.scorePoints.toFixed(1)}%</td></tr>
+                <tr><th>Detector samples</th><td>{detectorComparisonScores.sampleCount}</td></tr>
+              </tbody>
+            </table>
+          </div>}
+        </>}
         <ParamSelect className="wave-select" label="Detector phase mode" value={currentValue.detectorPhaseMode ?? 'all'} options={[{ value: 'all', label: 'All phase modes' }, ...PHASE_MODES]} onChange={(detectorPhaseMode) => onVisualizationChange('detectorPhaseMode', detectorPhaseMode)} />
         <RangeControl label="Detector phase value (offset)" value={currentValue.detectorPhaseValue ?? 0} min={-3.14} max={3.14} step={0.01} suffix=" rad" editing={editing} isDefault={isDefault('detectorPhaseValue')} onReset={() => onResetPath('detectorPhaseValue')} onChange={(detectorPhaseValue) => onVisualizationChange('detectorPhaseValue', detectorPhaseValue)} />
         <div className="wave-actions"><button type="button" onClick={detectorClear.clear}>Clear detector</button></div>
-        <RangeControl label="Detection time" value={detectionTime} min={0.1} max={100} step={0.1} suffix=" s" editing={editing} isDefault={isDefault('detectionTime')} onReset={() => onResetPath('detectionTime')} onChange={onDetectionTime} />
-        <RangeControl label="Glow time" value={glowTime} min={0.1} max={100} step={0.1} suffix=" s" editing={editing} isDefault={isDefault('glowTime')} onReset={() => onResetPath('glowTime')} onChange={onGlowTime} />
+        {!detectorModelComparison.enabled && <>
+          <RangeControl label="Detection time" value={detectionTime} min={0.1} max={100} step={0.1} suffix=" s" editing={editing} isDefault={isDefault('detectionTime')} onReset={() => onResetPath('detectionTime')} onChange={onDetectionTime} />
+          <RangeControl label="Glow time" value={glowTime} min={0.1} max={100} step={0.1} suffix=" s" editing={editing} isDefault={isDefault('glowTime')} onReset={() => onResetPath('glowTime')} onChange={onGlowTime} />
+        </>}
         <ParamSelect className="wave-select" label="Detector implementation" value={experimentMode === 'field' ? 'classic' : detectorImplementation} options={experimentMode === 'field' ? [DETECTOR_IMPLEMENTATION_OPTIONS[0]] : DETECTOR_IMPLEMENTATION_OPTIONS} onChange={onDetectorImplementation} />
-        <RangeControl label="Detector brightness" value={detectorBrightness} min={0.25} max={2.5} step={0.05} editing={editing} isDefault={isDefault('detectorBrightness')} onReset={() => onResetPath('detectorBrightness')} onChange={onDetectorBrightness} />
+        {!detectorModelComparison.enabled && <RangeControl label="Detector brightness" value={detectorBrightness} min={0.25} max={2.5} step={0.05} editing={editing} isDefault={isDefault('detectorBrightness')} onReset={() => onResetPath('detectorBrightness')} onChange={onDetectorBrightness} />}
         <label className="wave-toggle wave-visualization-toggle"><input type="checkbox" checked={detectorMaskEnabled} onChange={(event) => onDetectorMaskEnabled(event.target.checked)} /><span>Mask outside wall-height band</span></label>
         <RangeControl label="Detector pixel density" value={detectorPixelDensity} min={0.5} max={4} step={0.25} suffix="x" editing={editing} isDefault={isDefault('detectorPixelDensity')} onReset={() => onResetPath('detectorPixelDensity')} onChange={onDetectorPixelDensity} />
         <div className="wave-palette-control">
@@ -1302,6 +1530,11 @@ export default function WaveInterferenceSim({ onBack }) {
     detectorVisible: true,
     showOamStatesOnDetector: false,
     detectorMechanicsMode: 'classical',
+    detectorModelComparison: {
+      ...DEFAULT_DETECTOR_MODEL_COMPARISON,
+      classical: { ...DEFAULT_DETECTOR_MODEL_COMPARISON.classical },
+      pilotWave: { ...DEFAULT_DETECTOR_MODEL_COMPARISON.pilotWave }
+    },
     detectorPhaseMode: 'all',
     detectorPhaseValue: 0,
     detectorBrightness: 1,
@@ -1333,6 +1566,7 @@ export default function WaveInterferenceSim({ onBack }) {
   const [apertureSettings, setApertureSettings] = useState(() => ({ ...DEFAULT_APERTURE_SETTINGS }));
   const [detectorVisible, setDetectorVisible] = useState(initialSnapshot.detectorVisible);
   const [detectorClearToken, setDetectorClearToken] = useState(0);
+  const [detectorComparisonScores, setDetectorComparisonScores] = useState(null);
   const [detectorBrightness, setDetectorBrightness] = useState(1);
   const [detectorPalette, setDetectorPalette] = useState(initialSnapshot.detectorPalette);
   const [detectorMaskEnabled, setDetectorMaskEnabled] = useState(initialSnapshot.detectorMaskEnabled);
@@ -1616,6 +1850,8 @@ export default function WaveInterferenceSim({ onBack }) {
 
   return (
     <DetectorClearContext.Provider value={{ token: detectorClearToken, clear: () => setDetectorClearToken((token) => token + 1) }}>
+    <DetectorModelComparisonContext.Provider value={waveEditor.value.detectorModelComparison ?? DEFAULT_DETECTOR_MODEL_COMPARISON}>
+    <DetectorComparisonScoreContext.Provider value={{ scores: detectorComparisonScores, setScores: setDetectorComparisonScores }}>
     <DetectorMechanicsContext.Provider value={waveEditor.value.detectorMechanicsMode ?? 'classical'}>
     <DetectorPhaseFilterContext.Provider value={{ mode: waveEditor.value.detectorPhaseMode ?? 'all', value: waveEditor.value.detectorPhaseValue ?? 0 }}>
     <SimulationSpeedContext.Provider value={waveEditor.value.simulationSpeed ?? 1}>
@@ -1747,6 +1983,8 @@ export default function WaveInterferenceSim({ onBack }) {
     </SimulationSpeedContext.Provider>
     </DetectorPhaseFilterContext.Provider>
     </DetectorMechanicsContext.Provider>
+    </DetectorComparisonScoreContext.Provider>
+    </DetectorModelComparisonContext.Provider>
     </DetectorClearContext.Provider>
   );
 }

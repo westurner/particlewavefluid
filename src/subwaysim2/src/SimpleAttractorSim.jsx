@@ -196,6 +196,8 @@ const MIXED_VELOCITY_SHADER = `
   uniform float uTensorGaussianWaist;
   uniform float uGrassmannianPoleWeight;
   uniform float uGeometryCoupling;
+  uniform float uSpinPhaseCoupling;
+  uniform float uSpinAxisCoupling;
 
   const float GRAVITY_CONSTANT = 6.67e-11;
 
@@ -226,14 +228,14 @@ const MIXED_VELOCITY_SHADER = `
         float attractorMagnitude = uAttractorMass * uAttractorMagnitudes[index] * uSimpleMassMultipliers[index];
         float rotation = uSpinningStrength * uSimpleSpinMultipliers[index];
         if (uMechanicsEnabled && uFieldModel > 0.5) {
-          vec4 response = fieldResponse(uFieldModel, distanceToAttractor, length(particleVelocity), attractorMagnitude, rotation);
+          vec4 response = fieldResponse(uFieldModel, distanceToAttractor, particleVelocity, attractorMagnitude, rotation, direction, uAttractorRotationAxes[index]);
           float gravityScale = particleMass * GRAVITY_CONSTANT;
           force += direction * (-response.x * gravityScale);
           vec3 tangentDirection = normalize(cross(uAttractorRotationAxes[index], direction) + vec3(0.0001, 0.0, 0.0));
           force += tangentDirection * response.y * gravityScale * 0.12;
           ddfViscosity = max(ddfViscosity, response.z);
           if (uComparisonEnabled) {
-            vec4 comparison = fieldResponse(uComparisonModel, distanceToAttractor, length(particleVelocity), attractorMagnitude, rotation);
+            vec4 comparison = fieldResponse(uComparisonModel, distanceToAttractor, particleVelocity, attractorMagnitude, rotation, direction, uAttractorRotationAxes[index]);
             float absoluteDifference = length(response.xy - comparison.xy);
             float referenceAcceleration = max(length(comparison.xy), 0.000001);
             modelDifference = max(modelDifference, clamp(absoluteDifference / referenceAcceleration * uDifferenceScale, 0.0, 1.0));
@@ -245,8 +247,8 @@ const MIXED_VELOCITY_SHADER = `
           vec3 spinningForce = uAttractorRotationAxes[index] * gravityStrength * rotation;
           force += cross(spinningForce, toAttractor);
           if (uComparisonEnabled) {
-            vec4 baseline = fieldResponse(0.0, distanceToAttractor, length(particleVelocity), attractorMagnitude, rotation);
-            vec4 comparison = fieldResponse(uComparisonModel, distanceToAttractor, length(particleVelocity), attractorMagnitude, rotation);
+            vec4 baseline = fieldResponse(0.0, distanceToAttractor, particleVelocity, attractorMagnitude, rotation, direction, uAttractorRotationAxes[index]);
+            vec4 comparison = fieldResponse(uComparisonModel, distanceToAttractor, particleVelocity, attractorMagnitude, rotation, direction, uAttractorRotationAxes[index]);
             float absoluteDifference = length(baseline.xy - comparison.xy);
             float referenceAcceleration = max(length(comparison.xy), 0.000001);
             modelDifference = max(modelDifference, clamp(absoluteDifference / referenceAcceleration * uDifferenceScale, 0.0, 1.0));
@@ -278,9 +280,11 @@ const MIXED_VELOCITY_SHADER = `
         vec4 response = fieldResponse(
           selectedModel,
           radius,
-          length(particleVelocity),
+          particleVelocity,
           shear * uAttractorMagnitudes[index],
-          uBlackHoleRotationSpeed[index]
+          uBlackHoleRotationSpeed[index],
+          radial,
+          uAttractorRotationAxes[index]
         );
         force += radial * response.x * 0.035;
         force += tangent * response.y * 0.12;
@@ -290,9 +294,11 @@ const MIXED_VELOCITY_SHADER = `
           vec4 comparison = fieldResponse(
             comparisonModel,
             radius,
-            length(particleVelocity),
+            particleVelocity,
             shear * uAttractorMagnitudes[index],
-            uBlackHoleRotationSpeed[index]
+            uBlackHoleRotationSpeed[index],
+            radial,
+            uAttractorRotationAxes[index]
           );
           float absoluteDifference = length(response.xy - comparison.xy);
           float referenceAcceleration = max(length(comparison.xy), 0.000001);
@@ -1031,6 +1037,8 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount,
       velocityUniforms.uTensorGaussianWaist = { value: configurationRef.current.fieldMechanics.tensorGaussianWaist };
       velocityUniforms.uGrassmannianPoleWeight = { value: configurationRef.current.fieldMechanics.grassmannianPoleWeight };
       velocityUniforms.uGeometryCoupling = { value: configurationRef.current.fieldMechanics.geometryCoupling };
+      velocityUniforms.uSpinPhaseCoupling = { value: configurationRef.current.fieldMechanics.spinPhaseCoupling };
+      velocityUniforms.uSpinAxisCoupling = { value: configurationRef.current.fieldMechanics.geometrySpinCoupling };
       velocityUniforms.uTime = { value: 0 };
       const initializationError = gpuCompute.init();
       if (initializationError) throw new Error(initializationError);
@@ -1080,6 +1088,8 @@ function AttractorParticles({ configuration, onGpuError, variant, particleCount,
     velocityUniforms.uTensorGaussianWaist.value = current.fieldMechanics.tensorGaussianWaist;
     velocityUniforms.uGrassmannianPoleWeight.value = current.fieldMechanics.grassmannianPoleWeight;
     velocityUniforms.uGeometryCoupling.value = current.fieldMechanics.geometryCoupling;
+    velocityUniforms.uSpinPhaseCoupling.value = current.fieldMechanics.spinPhaseCoupling;
+    velocityUniforms.uSpinAxisCoupling.value = current.fieldMechanics.geometrySpinCoupling;
     velocityUniforms.uAttractorCount.value = current.attractors.length;
     velocityUniforms.uBlackHoleStarMassFractions.value.fill(0);
     current.attractors.forEach((attractor, index) => {
@@ -1608,7 +1618,7 @@ function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing,
       <pointLight color="#ff885e" intensity={2.2} distance={18} position={[0, 0, 0]} /> */}
       <gridHelper args={[fieldHalfExtent * 2, 16, '#31515b', '#172830']} position={[0, -fieldHalfExtent - 2, 0]} />
       <axesHelper ref={axesRef} args={[3]} visible={configuration.axesVisible} />
-      {!E2E_MODE && <AttractorParticles key={`${particleCount}:${configuration.particleFieldOrientation}:${particleResetVersion}`} configuration={configuration} onGpuError={onGpuError} variant={variant} particleCount={particleCount} blackHoleStarStateRef={blackHoleStarStateRef} simulationPlaying={simulationPlaying} />}
+      <AttractorParticles key={`${particleCount}:${configuration.particleFieldOrientation}:${particleResetVersion}`} configuration={configuration} onGpuError={onGpuError} variant={variant} particleCount={particleCount} blackHoleStarStateRef={blackHoleStarStateRef} simulationPlaying={simulationPlaying} />
       <BlackHoleEffects configuration={configuration} starStateRef={blackHoleStarStateRef} simulationPlaying={simulationPlaying} />
       <AttractorPaths configuration={configuration} simulationPlaying={simulationPlaying} />
       {configuration.attractors.map((attractor, index) => (

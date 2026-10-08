@@ -1,4 +1,4 @@
-import { calculateDdfMobility, calculateTensorGaussianWeight, evaluateMechanicsResponse, evaluateGpeResponse, evaluateRadialGeneralRelativity, evaluateSqgGpeResponse, GRAVITY_MODEL_LIBRARY } from './lib/simulationMechanics.js';
+import { calculateDdfMobility, calculateTensorGaussianWeight, evaluateMechanicsResponse, evaluateGpeResponse, evaluateRadialGeneralRelativity, evaluateSpinPhaseResponse, evaluateSqgGpeResponse, GRAVITY_MODEL_LIBRARY } from './lib/simulationMechanics.js';
 
 export { evaluateGpeResponse } from './lib/simulationMechanics.js';
 
@@ -43,32 +43,32 @@ export const FIELD_MODEL_DETAILS = Object.freeze({
   },
   sqg: {
     status: 'Speculative SQG / GR + GPE hypothesis',
-    description: 'Combines a pairwise 1PN-inspired radial GR response with a local Gross-Pitaevskii field response. The reduced scalar field does not solve the full Einstein or GPE systems.',
-    equation: '1PN GR radial response + GPE field term',
+    description: 'Combines a pairwise 1PN-inspired radial GR response and GPE term with a bounded spin-axis projection of the order-parameter phase gradient and vorticity. GPU velocity and rigid-spin 2Ω are proxies; scalar-only CPU inputs use +Y for phase-gradient direction. This does not solve a complex GPE.',
+    equation: '1PN GR + GPE + k_phi [s·g/(1+|g|) + s·w/(1+|w|)]',
     solver: SHARED_FIELD_SOLVER_DESCRIPTION
   },
   'sqg-tensor-gaussian': {
     status: 'Speculative SQG / normed tensor-Gaussian hypothesis',
-    description: 'Applies a normalized tensor-Gaussian window to the GPE correction while retaining the GR baseline.',
-    equation: '1PN GR radial response + normed Gaussian × GPE',
+    description: 'Applies a normalized tensor-Gaussian window to both the GPE and its bounded phase/vorticity spin response while retaining the GR baseline.',
+    equation: '1PN GR radial response + normed Gaussian × (GPE + spin-phase term)',
     solver: SHARED_FIELD_SOLVER_DESCRIPTION
   },
   ddf: {
     status: 'Speculative DDF hypothesis',
-    description: 'Modulates the SQG / GR + GPE response with speed-dependent dilatant mobility; this is exploratory rather than experimentally validated.',
-    equation: 'SQG response / (1 + strain-dependent viscosity)',
+    description: 'Applies speed-dependent dilatant mobility to the entire SQG response, including its phase/vorticity spin term; this is exploratory rather than experimentally validated.',
+    equation: 'DDF mobility × (GR + GPE + spin-phase response)',
     solver: SHARED_FIELD_SOLVER_DESCRIPTION
   },
   'ddf-tensor-gaussian': {
     status: 'Speculative DDF / normed tensor-Gaussian hypothesis',
-    description: 'Localizes the speed-dependent DDF mobility around the SQG / GR + GPE response with a normalized tensor-Gaussian window.',
-    equation: 'SQG response × DDF mobility / normed tensor-Gaussian splat',
+    description: 'Localizes the DDF mobility modulation of the full SQG response, including phase/vorticity spin response, with a normalized tensor-Gaussian window.',
+    equation: '(GR + GPE + spin-phase response) × localized DDF mobility',
     solver: SHARED_FIELD_SOLVER_DESCRIPTION
   },
   'grassmannian-amplituhedron': {
     status: 'Exploratory geometric hypothesis',
-    description: 'Applies a bounded Gr(2,4)-motivated correction near a tensor-Gaussian splat; it is a visualization experiment, not a derivation from amplituhedron theory.',
-    equation: 'Newtonian baseline × [1 + bounded Gr(2,4) tensor-Gaussian splat]',
+    description: 'Adds the bounded quadrupole (3(s·rhat)^2 - 1)/2 to the Gr(2,4)-motivated correction near a tensor-Gaussian splat; this axis term is exploratory and is not derived from amplituhedron theory.',
+    equation: 'Newtonian × [1 + Gaussian × (Gr(2,4) weight + k_s(3(s·rhat)^2 - 1)/2)]',
     solver: SHARED_FIELD_SOLVER_DESCRIPTION
   }
 });
@@ -83,7 +83,9 @@ export const FIELD_MECHANICS_PARAMETER_FIELDS = Object.freeze({
   grSpeedOfLight: { label: 'Normalized speed of light', min: 5, max: 1000, step: 1 },
   tensorGaussianWaist: { label: 'Tensor-Gaussian waist', min: 0.1, max: 20, step: 0.1 },
   grassmannianPoleWeight: { label: 'Positive-cell pole weight', min: 0, max: 1, step: 0.01 },
-  geometryCoupling: { label: 'Amplituhedron acceleration coupling', min: 0, max: 0.25, step: 0.005 }
+  geometryCoupling: { label: 'Amplituhedron acceleration coupling', min: 0, max: 0.25, step: 0.005 },
+  spinPhaseCoupling: { label: 'SQG phase/vorticity spin coupling', min: 0, max: 1, step: 0.01 },
+  geometrySpinCoupling: { label: 'Gr(2,4) spin-axis coupling', min: 0, max: 0.25, step: 0.005 }
 });
 
 export const FIELD_MODEL_PARAMETER_DEPENDENCIES = Object.freeze({
@@ -91,11 +93,11 @@ export const FIELD_MODEL_PARAMETER_DEPENDENCIES = Object.freeze({
   newtonian: [],
   'ns-compressible': ['coreRadius', 'compressibility'],
   'ns-incompressible': [],
-  sqg: ['coreRadius', 'compressibility', 'quantumPressure', 'grSpeedOfLight'],
-  'sqg-tensor-gaussian': ['coreRadius', 'compressibility', 'quantumPressure', 'grSpeedOfLight', 'tensorGaussianWaist'],
-  ddf: ['coreRadius', 'compressibility', 'quantumPressure', 'grSpeedOfLight', 'baseViscosity', 'dilatancy', 'speedLimit'],
-  'ddf-tensor-gaussian': ['coreRadius', 'compressibility', 'quantumPressure', 'grSpeedOfLight', 'baseViscosity', 'dilatancy', 'speedLimit', 'tensorGaussianWaist'],
-  'grassmannian-amplituhedron': ['tensorGaussianWaist', 'grassmannianPoleWeight', 'geometryCoupling']
+  sqg: ['coreRadius', 'compressibility', 'quantumPressure', 'grSpeedOfLight', 'spinPhaseCoupling'],
+  'sqg-tensor-gaussian': ['coreRadius', 'compressibility', 'quantumPressure', 'grSpeedOfLight', 'tensorGaussianWaist', 'spinPhaseCoupling'],
+  ddf: ['coreRadius', 'compressibility', 'quantumPressure', 'grSpeedOfLight', 'baseViscosity', 'dilatancy', 'speedLimit', 'spinPhaseCoupling'],
+  'ddf-tensor-gaussian': ['coreRadius', 'compressibility', 'quantumPressure', 'grSpeedOfLight', 'baseViscosity', 'dilatancy', 'speedLimit', 'tensorGaussianWaist', 'spinPhaseCoupling'],
+  'grassmannian-amplituhedron': ['tensorGaussianWaist', 'grassmannianPoleWeight', 'geometryCoupling', 'geometrySpinCoupling']
 });
 
 export const FLUID_MODEL_OPTIONS = [
@@ -130,7 +132,9 @@ export const DEFAULT_FIELD_MECHANICS = Object.freeze({
   baseViscosity: 0.02,
   tensorGaussianWaist: 2.5,
   grassmannianPoleWeight: 0.72,
-  geometryCoupling: 0.15
+  geometryCoupling: 0.15,
+  spinPhaseCoupling: 0.15,
+  geometrySpinCoupling: 0.1
 });
 
 const MODEL_IDS = new Set(FIELD_MODEL_OPTIONS.map(({ value }) => value));
@@ -159,7 +163,9 @@ export function sanitizeFieldMechanics(value = {}, defaults = DEFAULT_FIELD_MECH
     baseViscosity: clamp(finiteOr(value.baseViscosity, defaults.baseViscosity), 0, 1),
     tensorGaussianWaist: clamp(finiteOr(value.tensorGaussianWaist, defaults.tensorGaussianWaist), 0.1, 100),
     grassmannianPoleWeight: clamp(finiteOr(value.grassmannianPoleWeight, defaults.grassmannianPoleWeight), 0, 1),
-    geometryCoupling: clamp(finiteOr(value.geometryCoupling, defaults.geometryCoupling), 0, 0.25)
+    geometryCoupling: clamp(finiteOr(value.geometryCoupling, defaults.geometryCoupling), 0, 0.25),
+    spinPhaseCoupling: clamp(finiteOr(value.spinPhaseCoupling, defaults.spinPhaseCoupling), 0, 1),
+    geometrySpinCoupling: clamp(finiteOr(value.geometrySpinCoupling, defaults.geometrySpinCoupling), 0, 0.25)
   };
 }
 
@@ -173,6 +179,17 @@ export function evaluateFieldModel(model, state = {}, mechanics = DEFAULT_FIELD_
   const speed = Math.max(0, finiteOr(state.speed, 0));
   const magnitude = Math.max(0, finiteOr(state.magnitude, 1));
   const rotation = finiteOr(state.rotation, 1);
+  const spinAxis = state.spinAxis ?? [0, 1, 0];
+  const spinAxisMagnitude = Math.hypot(...spinAxis);
+  const normalizedSpinAxis = spinAxisMagnitude > 1e-15 ? spinAxis.map((component) => component / spinAxisMagnitude) : [0, 1, 0];
+  const phaseGradient = state.phaseGradient ?? state.velocityVector ?? [0, speed, 0];
+  const phaseVorticity = state.phaseVorticity ?? normalizedSpinAxis.map((component) => 2 * rotation * component);
+  const spinPhase = evaluateSpinPhaseResponse({
+    phaseGradient,
+    phaseVorticity,
+    spinAxis,
+    coupling: settings.spinPhaseCoupling
+  });
   const inverseSquare = magnitude / (radius * radius);
   const coreRatio = radius / settings.coreRadius;
   const tangentialAcceleration = rotation * magnitude / radius;
@@ -220,7 +237,8 @@ export function evaluateFieldModel(model, state = {}, mechanics = DEFAULT_FIELD_
 
   if (model === 'sqg' || model === 'sqg-tensor-gaussian' || model === 'ddf' || model === 'ddf-tensor-gaussian') {
     const grAcceleration = evaluateRadialGeneralRelativity({ radius, speed, magnitude, grSpeedOfLight: settings.grSpeedOfLight });
-    const gpeAmplitude = Math.sqrt(magnitude) * Math.exp(-0.5 * coreRatio * coreRatio);
+    const boundedMagnitude = magnitude / (1 + magnitude);
+    const gpeAmplitude = Math.sqrt(boundedMagnitude) * Math.exp(-0.5 * coreRatio * coreRatio);
     const gpeLaplacian = gpeAmplitude * (coreRatio * coreRatio - 3) / (settings.coreRadius ** 2);
     const sqgResponse = evaluateSqgGpeResponse({
       generalRelativityAcceleration: grAcceleration,
@@ -228,7 +246,10 @@ export function evaluateFieldModel(model, state = {}, mechanics = DEFAULT_FIELD_
       laplacian: gpeLaplacian,
       nonlinearCoupling: settings.compressibility,
       dispersion: settings.quantumPressure,
-      tensorGaussianWeight: model === 'sqg-tensor-gaussian' ? gaussianWeight : 1
+      tensorGaussianWeight: model === 'sqg-tensor-gaussian' ? gaussianWeight : 1,
+      rotationalResponse: spinPhase.response,
+      responseScale: inverseSquare,
+      maximumResponse: 0.5
     });
     if (model === 'sqg' || model === 'sqg-tensor-gaussian') {
       return {
@@ -236,6 +257,10 @@ export function evaluateFieldModel(model, state = {}, mechanics = DEFAULT_FIELD_
         tangentialAcceleration,
         generalRelativityAcceleration: grAcceleration,
         gpeResponse: sqgResponse.gpeResponse,
+        sqgCorrection: sqgResponse.correction,
+        rotationalResponse: sqgResponse.rotationalResponse * sqgResponse.tensorGaussianWeight,
+        phaseAlignment: spinPhase.phaseAlignment,
+        vorticityAlignment: spinPhase.vorticityAlignment,
         quantumPressure: sqgResponse.gpeResponse,
         effectiveViscosity: 0,
         mobility: 1,
@@ -256,6 +281,10 @@ export function evaluateFieldModel(model, state = {}, mechanics = DEFAULT_FIELD_
       tangentialAcceleration: tangentialAcceleration * response.accelerationScale,
       generalRelativityAcceleration: grAcceleration,
       gpeResponse: sqgResponse.gpeResponse,
+      sqgCorrection: sqgResponse.correction,
+      rotationalResponse: sqgResponse.rotationalResponse * response.accelerationScale,
+      phaseAlignment: spinPhase.phaseAlignment,
+      vorticityAlignment: spinPhase.vorticityAlignment,
       quantumPressure: sqgResponse.gpeResponse,
       effectiveViscosity,
       mobility: response.accelerationScale,
@@ -270,7 +299,10 @@ export function evaluateFieldModel(model, state = {}, mechanics = DEFAULT_FIELD_
     regime: 'grassmannian-amplituhedron',
     gaussianWeight,
     grassmannianWeight: settings.grassmannianPoleWeight,
-    geometryCoupling: settings.geometryCoupling
+    geometryCoupling: settings.geometryCoupling,
+    spinAxis,
+    radialDirection: state.radialDirection ?? [1, 0, 0],
+    spinAxisCoupling: settings.geometrySpinCoupling
   });
   return {
     radialAcceleration: -inverseSquare * geometry.accelerationScale,
@@ -281,7 +313,9 @@ export function evaluateFieldModel(model, state = {}, mechanics = DEFAULT_FIELD_
     divergence: null,
     volumeChangeRate: null,
     tensorGaussian: geometry.splatWeight,
-    geometricCorrection: geometry.geometricCorrection
+    geometricCorrection: geometry.geometricCorrection,
+    spinAxisTensor: geometry.axisTensor,
+    spinAxisCorrection: geometry.spinAxisCorrection
   };
 }
 

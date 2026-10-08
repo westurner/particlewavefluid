@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  AMPLITUDE_GRAVITY_MODES,
   AMPLITUDE_GRAVITY_PATH_HISTORY_CAPACITY,
   AMPLITUDE_GRAVITY_STREAMLINE_SEGMENTS,
   AMPLITUDE_GRAVITY_STREAMLINES_PER_BODY,
@@ -97,6 +98,58 @@ test('Newtonian mode matches the spin-2 reference kernel', () => {
   assert.ok(channels.photonExchange < 0);
 });
 
+test('AmplitudeGravitySim evaluates every SimpleAttractorSim field model as a pair force', () => {
+  const fieldModels = [
+    'default', 'newtonian', 'ns-compressible', 'ns-incompressible',
+    'sqg', 'sqg-tensor-gaussian', 'ddf', 'ddf-tensor-gaussian', 'grassmannian-amplituhedron'
+  ];
+  const registeredModes = new Set(AMPLITUDE_GRAVITY_MODES.map(({ value }) => value));
+  fieldModels.forEach((model) => assert.ok(registeredModes.has(model), `${model} is selectable`));
+
+  const configuration = {
+    gravitationalConstant: 1,
+    softening: 1e-6,
+    fieldCoreRadius: 0.8,
+    quantumPressure: 0.35,
+    compressibility: 0.45,
+    grSpeedOfLight: 100,
+    tensorGaussianWaist: 2,
+    geometryCoupling: 0.2,
+    spinPhaseCoupling: 0.2,
+    geometrySpinCoupling: 0.1
+  };
+  const bodies = [
+    { position: [0, 0, 0], velocity: [0, 0.1, 0], mass: 2, spinAxis: [0, 0, 1], spinAngularVelocity: [0, 0, 0.02] },
+    { position: [1.2, 0.3, 0], velocity: [0, -0.2, 0], mass: 1, spinAxis: [0, 1, 0], spinAngularVelocity: [0, 0.01, 0] }
+  ];
+  const newtonian = evaluateNBodyAmplitudeGravity(bodies, { ...configuration, mode: 'newtonian' });
+
+  for (const mode of fieldModels) {
+    const result = evaluateNBodyAmplitudeGravity(bodies, { ...configuration, mode });
+    assert.ok(result.accelerations.flat().every(Number.isFinite), `${mode} acceleration is finite`);
+    result.forceResidual.forEach((component) => assert.ok(Math.abs(component) < 1e-12, `${mode} conserves pair momentum`));
+    const channels = evaluateAmplitudeChannels({
+      distance: 1.2,
+      massProduct: 2,
+      reducedMass: 2 / 3,
+      fieldMagnitude: 3,
+      speedMS: 0.3,
+      radialDirection: [1, 0, 0],
+      spinAxis: [0, 0, 1],
+      phaseGradient: [0, 0, 0.3],
+      phaseVorticity: [0, 0, 0.5]
+    }, { ...configuration, mode });
+    assert.ok(Number.isFinite(channels.selectedKernel), `${mode} channel is finite`);
+  }
+
+  const defaultMechanics = evaluateNBodyAmplitudeGravity(bodies, { ...configuration, mode: 'default', fieldSpinStrength: 0.2 });
+  assert.notDeepEqual(defaultMechanics.accelerations, newtonian.accelerations);
+  const compressed = evaluateNBodyAmplitudeGravity(bodies, { ...configuration, mode: 'ns-compressible' });
+  const sqg = evaluateNBodyAmplitudeGravity(bodies, { ...configuration, mode: 'sqg' });
+  assert.notDeepEqual(compressed.accelerations, newtonian.accelerations);
+  assert.notDeepEqual(sqg.accelerations, newtonian.accelerations);
+});
+
 test('GR pair acceleration has the Newtonian limit and the standard 1PN circular correction', () => {
   const input = { positionFirst: [2, 0, 0], positionSecond: [0, 0, 0], velocityFirst: [0, 1, 0], velocitySecond: [0, 0, 0], massFirst: 1, massSecond: 0 };
   const newtonianLimit = evaluateGeneralRelativityPair(input, { mode: 'general-relativity', gravitationalConstant: 1, grSpeedOfLight: 1e9, softening: 1e-9 });
@@ -130,6 +183,30 @@ test('pairwise GR corrections preserve total momentum in the N-body model', () =
   ], { mode: 'general-relativity', gravitationalConstant: 1, grSpeedOfLight: 100 });
   result.forceResidual.forEach((component) => assert.ok(Math.abs(component) < 1e-12));
   assert.ok(result.maximumDifference > 0);
+});
+
+test('rotational forces are opt-in, finite, and conserve pair momentum', () => {
+  const bodies = [
+    {
+      position: [0, 0, 0], velocity: [0, 0.2, 0], mass: 1,
+      spinAngularMomentum: [0, 0, 0.02], spinAxis: [0, 0, 1], j2: 0.01, equatorialRadius: 0.1
+    },
+    {
+      position: [1, 0.2, 0], velocity: [0, -0.1, 0], mass: 0.1,
+      spinAngularMomentum: [0, 0.01, 0], spinAxis: [0, 1, 0], j2: 0.02, equatorialRadius: 0.08
+    }
+  ];
+  const configuration = { mode: 'general-relativity', gravitationalConstant: 1, grSpeedOfLight: 100, softening: 1e-6 };
+  const baseline = evaluateNBodyAmplitudeGravity(bodies, configuration);
+  const explicitlyDisabled = evaluateNBodyAmplitudeGravity(bodies, { ...configuration, includeRotationalEffects: false });
+  assert.deepEqual(explicitlyDisabled, baseline);
+
+  const rotational = evaluateNBodyAmplitudeGravity(bodies, { ...configuration, includeRotationalEffects: true });
+  assert.ok(rotational.accelerations.flat().every(Number.isFinite));
+  assert.ok(rotational.accelerations.some((acceleration, index) =>
+    Math.hypot(...acceleration.map((component, axis) => component - baseline.accelerations[index][axis])) > 0
+  ));
+  rotational.forceResidual.forEach((component) => assert.ok(Math.abs(component) < 1e-12));
 });
 
 test('substepped velocity-Verlet keeps a Newtonian circular orbit energy-bounded', () => {
@@ -209,22 +286,24 @@ test('gravituhedron hypothesis approaches the reference at long range', () => {
   assert.ok(near.relativeDifference > far.relativeDifference);
 });
 
-test('DDF tensor-Gaussian amplitude mode is normalized and reverts to the reference outside its waist', () => {
+test('DDF tensor-Gaussian amplitude mode is normalized and reverts to SQG outside its waist', () => {
   const configuration = { mode: 'ddf-tensor-gaussian', tensorGaussianWaist: 2, ddfStrength: 1, ddfSpeedLimitMS: 8, ddfBaseViscosity: 0.02 };
   const near = evaluateAmplitudeChannels({ distance: 0.5, speedMS: 7 }, configuration);
   const far = evaluateAmplitudeChannels({ distance: 20, speedMS: 7 }, configuration);
+  const sqgFar = evaluateAmplitudeChannels({ distance: 20, speedMS: 7 }, { ...configuration, mode: 'sqg' });
   assert.ok(near.tensorGaussian > far.tensorGaussian);
   assert.ok(near.ddfMobility < 1);
-  assert.equal(far.selectedKernel, far.spin2Tree);
+  assert.ok(Math.abs(far.selectedKernel - sqgFar.selectedKernel) < 1e-12);
   assert.ok(near.tensorGaussian <= 1);
 });
 
 test('DDF amplitude settings sanitize hypothesis inputs', () => {
-  const settings = sanitizeAmplitudeGravity({ mode: 'ddf-tensor-gaussian', tensorGaussianWaist: 0, ddfStrength: 100, ddfSpeedLimitMS: 0, ddfBaseViscosity: -2 });
+  const settings = sanitizeAmplitudeGravity({ mode: 'ddf-tensor-gaussian', tensorGaussianWaist: 0, ddfStrength: 100, ddfSpeedLimitMS: 0, ddfBaseViscosity: -2, fieldSpinStrength: 10 });
   assert.equal(settings.tensorGaussianWaist, 1e-6);
   assert.equal(settings.ddfStrength, 20);
   assert.equal(settings.ddfSpeedLimitMS, 0.1);
   assert.equal(settings.ddfBaseViscosity, 0);
+  assert.equal(settings.fieldSpinStrength, 1);
 });
 
 test('N-body pair forces conserve total momentum', () => {
