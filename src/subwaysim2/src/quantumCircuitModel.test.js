@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { sampleIntensityMeasurement, simulateIntensityCircuit } from './quantumCircuitModel.js';
+import {
+  compareQuantumCircuitModels,
+  DEFAULT_CLASSICAL_INTENSITY_SETTINGS,
+  normalizeClassicalIntensitySettings,
+  optimizeClassicalIntensitySettings,
+  sampleIntensityMeasurement,
+  simulateClassicalIntensityDetector,
+  simulateIntensityCircuit
+} from './quantumCircuitModel.js';
 
 test('Hadamard produces equal output intensities and interference recombines them', () => {
   const superposition = simulateIntensityCircuit({ gates: [{ type: 'H', target: 0 }] });
@@ -50,4 +58,70 @@ test('circuit validation rejects unsupported qubit counts and invalid gates', ()
   assert.throws(() => simulateIntensityCircuit({ qubitCount: 3 }), RangeError);
   assert.throws(() => simulateIntensityCircuit({ qubitCount: 2, initialState: '0' }), TypeError);
   assert.throws(() => simulateIntensityCircuit({ gates: [{ type: 'CNOT', target: 0, control: 0 }] }), RangeError);
+});
+
+test('Classical-intensity detector integrates Wave lab field intensity into output ports', () => {
+  const circuit = simulateIntensityCircuit({ qubitCount: 2, gates: [
+    { type: 'H', target: 0 },
+    { type: 'CNOT', control: 0, target: 1 }
+  ] });
+  const detector = simulateClassicalIntensityDetector(circuit);
+  assert.ok(detector.totalIntensity > 0);
+  assert.ok(detector.outcomes.every(({ intensity }) => Number.isFinite(intensity) && intensity >= 0));
+  assert.ok(Math.abs(detector.outcomes.reduce((sum, { intensity }) => sum + intensity, 0) - detector.totalIntensity) < 1e-12);
+  const comparison = compareQuantumCircuitModels(circuit, detector);
+  assert.equal(comparison.sampleCount, 4);
+  assert.ok(comparison.scorePoints > 1, 'finite classical detector should show port cross-talk for an entangled state');
+  assert.ok(Math.abs(detector.outcomes[0].amplitude.real - circuit.outcomes[0].amplitude.real) < 1e-12);
+});
+
+test('Classical detector parameter optimizer does not worsen the ideal-reference fit', async () => {
+  const circuit = simulateIntensityCircuit({ qubitCount: 2, gates: [
+    { type: 'H', target: 0 },
+    { type: 'CNOT', control: 0, target: 1 }
+  ] });
+  const progress = [];
+  const result = await optimizeClassicalIntensitySettings(circuit, DEFAULT_CLASSICAL_INTENSITY_SETTINGS, {
+    onProgress: (update) => progress.push(update),
+    yieldControl: async () => {}
+  });
+  assert.ok(result.evaluations > 16 && result.evaluations <= 66);
+  assert.equal(progress.length, result.evaluations);
+  assert.ok(result.optimizedScorePoints <= result.baselineScorePoints);
+  assert.equal(result.parameterChanges.length > 0, true);
+  assert.ok(result.settings.wavelength >= 0.25 && result.settings.wavelength <= 6);
+});
+
+test('classical detector settings are finite and bounded', () => {
+  assert.deepEqual(normalizeClassicalIntensitySettings({ wavelength: -1, railSpacing: 99, detectorDistance: 0, portWidth: -1, beamPhaseShift: 10, screenSamples: 21 }), {
+    wavelength: 0.25,
+    railSpacing: 4,
+    detectorDistance: 0.5,
+    portWidth: 0.1,
+    beamPhaseShift: Math.PI,
+    screenSamples: 32
+  });
+});
+
+test('narrow output ports reject more Bell-state cross-talk than full-width ports', () => {
+  const circuit = simulateIntensityCircuit({ qubitCount: 2, gates: [
+    { type: 'H', target: 0 },
+    { type: 'CNOT', control: 0, target: 1 }
+  ] });
+  const ideal = compareQuantumCircuitModels(circuit, circuit);
+  const broadDetector = simulateClassicalIntensityDetector(circuit, { ...DEFAULT_CLASSICAL_INTENSITY_SETTINGS, portWidth: 1.6 });
+  const narrowDetector = simulateClassicalIntensityDetector(circuit, { ...DEFAULT_CLASSICAL_INTENSITY_SETTINGS, portWidth: 0.2 });
+  assert.ok(compareQuantumCircuitModels(circuit, broadDetector).scorePoints > ideal.scorePoints);
+  assert.ok(compareQuantumCircuitModels(circuit, narrowDetector).scorePoints < compareQuantumCircuitModels(circuit, broadDetector).scorePoints);
+});
+
+test('beam-to-beam phase shift changes Classical detector output intensities', () => {
+  const circuit = simulateIntensityCircuit({ qubitCount: 2, gates: [
+    { type: 'H', target: 0 },
+    { type: 'CNOT', control: 0, target: 1 }
+  ] });
+  const baseline = simulateClassicalIntensityDetector(circuit);
+  const shifted = simulateClassicalIntensityDetector(circuit, { ...DEFAULT_CLASSICAL_INTENSITY_SETTINGS, beamPhaseShift: Math.PI / 2 });
+  const error = compareQuantumCircuitModels(baseline, shifted).rmsDifference;
+  assert.ok(error > 1e-4, 'relative emitter phase should change detector port intensities');
 });

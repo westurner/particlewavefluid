@@ -1038,6 +1038,14 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
 .qc-intensity-row code { overflow: hidden; color: rgb(var(--color-rgb-8da9a0)); font: 8px 'DM Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
 .qc-intensity-row small { grid-column: 2 / -1; color: rgb(var(--color-rgb-8da9a0)); font: 8px 'DM Mono', monospace; }
 .qc-measurement-section p { margin: 0 0 10px; color: rgb(var(--color-rgb-9bb9b2)); font-size: 10px; line-height: 1.45; }
+.qc-model-comparison { min-width: 0; margin-top: 2px; padding-top: 12px; border-top: 1px solid rgba(var(--color-rgb-92d4cc), 0.2); }
+.qc-model-comparison > p { margin: 0 0 8px; color: rgb(var(--color-rgb-9bb9b2)); font: 9px 'DM Mono', monospace; }
+.qc-comparison-table-wrap { max-width: 100%; overflow-x: auto; }
+.qc-comparison-table { width: 100%; border-collapse: collapse; color: rgb(var(--color-rgb-b9cdc6)); font: 9px 'DM Mono', monospace; }
+.qc-comparison-table th, .qc-comparison-table td { padding: 7px 8px; border-bottom: 1px solid rgba(var(--color-rgb-92d4cc), 0.12); text-align: right; white-space: nowrap; }
+.qc-comparison-table thead { color: rgb(var(--color-rgb-71d3c5)); background: rgba(var(--color-rgb-101b2c), 0.7); }
+.qc-comparison-table th:first-child, .qc-comparison-table tbody th { text-align: left; }
+.qc-comparison-table tbody th { color: rgb(var(--color-rgb-f1d4a0)); font-weight: 400; }
 .qc-measurement-actions, .qc-preset-row { display: flex; flex-wrap: wrap; gap: 7px; }
 .qc-workbench .qc-measurement-actions button { flex: 1 1 auto; min-height: 34px; padding: 7px 9px; border: 1px solid rgba(var(--color-rgb-72c7c0), 0.42); color: rgb(var(--color-rgb-e8f0eb)); background: rgba(var(--color-rgb-08181b), 0.72); font: 9px 'DM Mono', monospace; cursor: pointer; }
 .qc-workbench .qc-measurement-actions button:first-child, .signal-panel .qc-append-gate { color: rgb(var(--color-rgb-071b23)); background: rgb(var(--color-rgb-72c7c0)); }
@@ -1054,6 +1062,19 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
 .qc-gate-description { display: flex; align-items: center; gap: 10px; color: rgb(var(--color-rgb-8da9a0)); font: 9px 'DM Mono', monospace; }
 .qc-gate-description strong { display: grid; width: 28px; height: 24px; place-items: center; border: 1px solid rgba(var(--color-rgb-f0a23a), 0.45); color: rgb(var(--color-rgb-f1d4a0)); font-weight: 400; }
 .signal-panel .qc-reset-circuit { border-color: rgba(var(--color-rgb-e98567), 0.42); }
+.qc-comparison-toggle { margin-bottom: 8px; }
+.qc-detector-settings { display: grid; gap: 9px; }
+.qc-model-note { margin: 0; color: rgb(var(--color-rgb-9bb9b2)); font-size: 9px; line-height: 1.45; }
+.qc-parameter { display: grid; gap: 6px; margin-top: 8px; color: rgb(var(--color-rgb-afc9c2)); font-size: 9px; }
+.qc-parameter .param-control-label { display: flex; justify-content: space-between; gap: 10px; font: 9px 'DM Mono', monospace; }
+.qc-parameter .param-control-label strong { color: rgb(var(--color-rgb-f1d4a0)); font-weight: 400; }
+.qc-parameter input[type='range'] { width: 100%; accent-color: rgb(var(--color-rgb-72c7c0)); }
+.signal-panel .qc-optimize, .signal-panel .qc-apply-optimization { width: 100%; min-height: 35px; margin-top: 8px; border-color: rgba(var(--color-rgb-f0a23a), 0.52); color: rgb(var(--color-rgb-fff0ce)); }
+.signal-panel .qc-optimize:disabled { opacity: 0.65; cursor: progress; }
+.qc-optimization-result { display: grid; gap: 4px; margin-top: 8px; }
+.qc-optimization-result > div { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px solid rgba(var(--color-rgb-92d4cc), 0.12); color: rgb(var(--color-rgb-8da9a0)); font: 8px 'DM Mono', monospace; }
+.qc-optimization-result strong { color: rgb(var(--color-rgb-f1d4a0)); font-weight: 400; text-align: right; }
+.qc-optimization-result .qc-optimization-stale, .qc-optimization-error { margin: 8px 0; color: rgb(var(--color-rgb-e4a458)); font-size: 9px; line-height: 1.4; }
 .oam-app { background: radial-gradient(ellipse at 34% 55%, rgba(var(--color-rgb-0e232f), 0.55), var(--color-transparent) 55%), linear-gradient(120deg, rgb(var(--color-rgb-071316)), rgb(var(--color-rgb-0a1e26)) 55%, rgb(var(--color-rgb-17191b))); }
 .oam-3d-field { position: absolute; inset: 0; z-index: 0; }
 .oam-3d-field canvas { display: block; width: 100%; height: 100%; }
