@@ -927,6 +927,13 @@ export function sampleApertureField(preparedField, x, y, z, time) {
       polarizationY = emitter.side.y - sideAlongRay * propagationY;
       polarizationZ = emitter.side.z - sideAlongRay * propagationZ;
     }
+    const longitudinalFraction = Math.min(1, Math.max(0, Number(emitter.longitudinalFraction) || 0));
+    if (longitudinalFraction > 0) {
+      const sourcePolarizationMagnitude = Math.hypot(emitter.transverse.x, emitter.transverse.y, emitter.transverse.z);
+      polarizationX = polarizationX * (1 - longitudinalFraction) + propagationX * sourcePolarizationMagnitude * longitudinalFraction;
+      polarizationY = polarizationY * (1 - longitudinalFraction) + propagationY * sourcePolarizationMagnitude * longitudinalFraction;
+      polarizationZ = polarizationZ * (1 - longitudinalFraction) + propagationZ * sourcePolarizationMagnitude * longitudinalFraction;
+    }
     const phase = emitter.waveNumber * distance + emitter.phase - emitter.phaseRate * time;
     const fieldAmplitude = emitter.amplitude * Math.sin(phase) / distance;
     const constructiveAmplitude = Math.abs(fieldAmplitude);

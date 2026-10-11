@@ -4,6 +4,7 @@ import { SimulatorBase } from './lib/SimulatorBase.jsx';
 import {
   compareQuantumCircuitModels,
   DEFAULT_CLASSICAL_INTENSITY_SETTINGS,
+  LONGITUDINAL_FIELD_MODE_OPTIONS,
   normalizeClassicalIntensitySettings,
   optimizeClassicalIntensitySettings,
   QUANTUM_CIRCUIT_GATES,
@@ -15,7 +16,8 @@ import {
 
 const BELL_GATES = [{ type: 'H', target: 0 }, { type: 'CNOT', control: 0, target: 1 }];
 const INTERFERENCE_GATES = [{ type: 'H', target: 0 }, { type: 'S', target: 0 }, { type: 'H', target: 0 }];
-const DETECTOR_PARAMETER_LABELS = { wavelength: 'Wavelength', railSpacing: 'Basis rail spacing', detectorDistance: 'Detector distance', portWidth: 'Output port width', beamPhaseShift: 'Beam phase shift' };
+const DETECTOR_PARAMETER_LABELS = { wavelength: 'Wavelength', railSpacing: 'Basis rail spacing', detectorDistance: 'Detector distance', portWidth: 'Output port width', beamPhaseShift: 'Beam phase shift', coreIndex: 'Core refractive index', effectiveIndex: 'Effective index', plasmaFrequencyRatio: 'Plasma frequency ratio', thermalSpeedRatio: 'Thermal speed ratio' };
+const FIELD_MODE_LABELS = Object.fromEntries(LONGITUDINAL_FIELD_MODE_OPTIONS.map(({ value, label }) => [value, label]));
 
 function basisStateOptions(qubitCount) {
   return Array.from({ length: 1 << qubitCount }, (_, index) => {
@@ -62,9 +64,12 @@ function CircuitDiagram({ qubitCount, gates, onRemoveGate }) {
   </div>;
 }
 
-function IntensityReadout({ circuit, shotCounts, modelLabel }) {
+function IntensityReadout({ circuit, shotCounts, modelLabel, showFieldMode = false }) {
   return <section className="qc-intensity-section" aria-label="Measurement intensities">
     <div className="qc-section-heading"><span>{modelLabel}</span><strong>ΣI {circuit.totalIntensity.toFixed(3)}</strong></div>
+    {showFieldMode && <small className="qc-field-mode-readout" data-field-mode={circuit.detectorSettings.fieldMode} data-longitudinal-fraction={circuit.longitudinalFraction}>
+      {FIELD_MODE_LABELS[circuit.detectorSettings.fieldMode]} · longitudinal E {(circuit.longitudinalFraction * 100).toFixed(1)}%
+    </small>}
     <div className="qc-intensity-list">
       {circuit.outcomes.map(({ state, amplitude, intensity }) => {
         const probability = intensity / circuit.totalIntensity;
@@ -210,7 +215,7 @@ export default function QuantumCircuitSim({ onBack }) {
         <CircuitDiagram qubitCount={qubitCount} gates={gates} onRemoveGate={removeGate} />
       </section>
       <div className="qc-output-grid">
-        <IntensityReadout circuit={circuit} shotCounts={shotCounts} modelLabel={simulationModel === 'ideal' ? 'IDEAL STATE-VECTOR INTENSITY' : 'CLASSICAL DETECTOR INTENSITY'} />
+        <IntensityReadout circuit={circuit} shotCounts={shotCounts} modelLabel={simulationModel === 'ideal' ? 'IDEAL STATE-VECTOR INTENSITY' : 'CLASSICAL DETECTOR INTENSITY'} showFieldMode={simulationModel === 'classical-detector'} />
         <section className="qc-measurement-section" aria-label="Circuit measurement">
           <div className="qc-section-heading"><span>MEASUREMENT</span><strong>{lastMeasurement ? `|${lastMeasurement}⟩` : 'NO SHOT'}</strong></div>
           <p>Each shot samples an outcome according to its normalized intensity.</p>
@@ -254,11 +259,22 @@ export default function QuantumCircuitSim({ onBack }) {
       {(simulationModel === 'classical-detector' || comparisonEnabled) && <details className="qc-detector-settings" open>
         <summary>Wave detector parameters</summary>
         <p className="qc-model-note">Basis-state amplitudes become coherent rail emitters; the Wave lab Classical-intensity detector samples and integrates their propagated electric-field intensity through finite output ports. Port gaps reduce cross-talk. Optimization fits this circuit, not a universal gate model.</p>
+        <ParamSelect className="signal-select" label="Field polarization model" value={detectorSettings.fieldMode} options={LONGITUDINAL_FIELD_MODE_OPTIONS} onChange={(fieldMode) => updateDetectorSettings('fieldMode', fieldMode)} />
         <NumericParamControl className="qc-parameter" label="Wavelength" value={detectorSettings.wavelength} min={0.25} max={6} step={0.05} suffix=" λ" onChange={(value) => updateDetectorSettings('wavelength', value)} />
         <NumericParamControl className="qc-parameter" label="Basis rail spacing" value={detectorSettings.railSpacing} min={0.4} max={4} step={0.05} suffix=" u" onChange={(value) => updateDetectorSettings('railSpacing', value)} />
         <NumericParamControl className="qc-parameter" label="Detector distance" value={detectorSettings.detectorDistance} min={0.5} max={10} step={0.1} suffix=" u" onChange={(value) => updateDetectorSettings('detectorDistance', value)} />
         <NumericParamControl className="qc-parameter" label="Output port width" value={detectorSettings.portWidth} min={0.1} max={4} step={0.05} suffix=" u" onChange={(value) => updateDetectorSettings('portWidth', value)} />
         <NumericParamControl className="qc-parameter" label="Relative beam phase" value={detectorSettings.beamPhaseShift} min={-Math.PI} max={Math.PI} step={0.05} suffix=" rad" onChange={(value) => updateDetectorSettings('beamPhaseShift', value)} />
+        {detectorSettings.fieldMode === 'dielectric-guided' && <>
+          <NumericParamControl className="qc-parameter" label="Core refractive index" value={detectorSettings.coreIndex} min={1.01} max={4} step={0.01} onChange={(value) => updateDetectorSettings('coreIndex', value)} />
+          <NumericParamControl className="qc-parameter" label="Effective guided index" value={detectorSettings.effectiveIndex} min={1} max={detectorSettings.coreIndex} step={0.01} onChange={(value) => updateDetectorSettings('effectiveIndex', value)} />
+          <p className="qc-model-note">The longitudinal share is derived from the guided propagation ratio: √(1 − (n_eff / n_core)²). This is a scalar mode proxy, not a solved waveguide boundary-value mode.</p>
+        </>}
+        {detectorSettings.fieldMode === 'plasma-longitudinal' && <>
+          <NumericParamControl className="qc-parameter" label="Plasma frequency ratio ωp/ω₀" value={detectorSettings.plasmaFrequencyRatio} min={0.05} max={2} step={0.01} onChange={(value) => updateDetectorSettings('plasmaFrequencyRatio', value)} />
+          <NumericParamControl className="qc-parameter" label="Thermal speed ratio vth/c" value={detectorSettings.thermalSpeedRatio} min={0} max={0.3} step={0.005} onChange={(value) => updateDetectorSettings('thermalSpeedRatio', value)} />
+          <p className="qc-model-note">Uses a simplified warm Langmuir dispersion relation, ω² = ωp² + 3k²vth²; the electric field is parallel to the propagation ray.</p>
+        </>}
         <button className="qc-optimize" type="button" disabled={optimizationProgress !== null} onClick={optimizeDetectorSettings}>{optimizationProgress ? `Optimizing ${optimizationProgress.completed}/${optimizationProgress.total}` : 'Optimize detector parameters'}</button>
         {optimizationError && <p className="qc-optimization-error" role="alert">Optimization failed: {optimizationError}</p>}
         {optimizationResult && <div className="qc-optimization-result">

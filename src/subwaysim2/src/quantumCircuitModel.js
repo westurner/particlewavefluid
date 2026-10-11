@@ -12,7 +12,24 @@ export const QUANTUM_CIRCUIT_MODELS = Object.freeze([
   { value: 'ideal', label: 'Ideal state-vector intensity' },
   { value: 'classical-detector', label: 'Wave detector / Classical intensity' }
 ]);
-export const DEFAULT_CLASSICAL_INTENSITY_SETTINGS = Object.freeze({ wavelength: 1.5, railSpacing: 1.6, detectorDistance: 4, portWidth: 0.7, beamPhaseShift: 0, screenSamples: 128 });
+export const LONGITUDINAL_FIELD_MODE_OPTIONS = Object.freeze([
+  { value: 'transverse', label: 'Transverse / free-space' },
+  { value: 'dielectric-guided', label: 'Dielectric guided hybrid' },
+  { value: 'plasma-longitudinal', label: 'Plasma longitudinal' }
+]);
+export const DEFAULT_CLASSICAL_INTENSITY_SETTINGS = Object.freeze({
+  fieldMode: 'transverse',
+  wavelength: 1.5,
+  railSpacing: 1.6,
+  detectorDistance: 4,
+  portWidth: 0.7,
+  beamPhaseShift: 0,
+  coreIndex: 1.5,
+  effectiveIndex: 1.2,
+  plasmaFrequencyRatio: 0.8,
+  thermalSpeedRatio: 0.02,
+  screenSamples: 128
+});
 
 const GATE_IDS = new Set(QUANTUM_CIRCUIT_GATES.map(({ id }) => id));
 const SQRT_HALF = 1 / Math.sqrt(2);
@@ -24,21 +41,54 @@ const DETECTOR_OPTIMIZATION_CANDIDATES = Object.freeze({
   portWidth: [0.18, 0.3, 0.45, 0.65, 0.9, 1.2],
   beamPhaseShift: [-Math.PI, -Math.PI / 2, Math.PI / 2, Math.PI]
 });
+const GUIDED_MODE_OPTIMIZATION_CANDIDATES = Object.freeze({
+  coreIndex: [1.2, 1.5, 2, 3],
+  effectiveIndex: [1.05, 1.15, 1.3, 1.45, 1.8, 2.2, 2.8]
+});
+const PLASMA_MODE_OPTIMIZATION_CANDIDATES = Object.freeze({
+  plasmaFrequencyRatio: [0.4, 0.6, 0.9, 1.2, 1.6],
+  thermalSpeedRatio: [0.005, 0.015, 0.03, 0.06, 0.1]
+});
 const DETECTOR_OPTIMIZATION_MAX_PASSES = 3;
+const FIELD_MODE_IDS = new Set(LONGITUDINAL_FIELD_MODE_OPTIONS.map(({ value }) => value));
 
 export function normalizeClassicalIntensitySettings(settings = {}) {
   const bounded = (value, fallback, minimum, maximum) => {
     const number = Number(value);
     return Math.min(maximum, Math.max(minimum, Number.isFinite(number) ? number : fallback));
   };
+  const fieldMode = FIELD_MODE_IDS.has(settings.fieldMode) ? settings.fieldMode : DEFAULT_CLASSICAL_INTENSITY_SETTINGS.fieldMode;
+  const coreIndex = bounded(settings.coreIndex, DEFAULT_CLASSICAL_INTENSITY_SETTINGS.coreIndex, 1.01, 4);
   return {
+    fieldMode,
     wavelength: bounded(settings.wavelength, DEFAULT_CLASSICAL_INTENSITY_SETTINGS.wavelength, 0.25, 6),
     railSpacing: bounded(settings.railSpacing, DEFAULT_CLASSICAL_INTENSITY_SETTINGS.railSpacing, 0.4, 4),
     detectorDistance: bounded(settings.detectorDistance, DEFAULT_CLASSICAL_INTENSITY_SETTINGS.detectorDistance, 0.5, 10),
     portWidth: bounded(settings.portWidth, DEFAULT_CLASSICAL_INTENSITY_SETTINGS.portWidth, 0.1, 4),
     beamPhaseShift: bounded(settings.beamPhaseShift, DEFAULT_CLASSICAL_INTENSITY_SETTINGS.beamPhaseShift, -Math.PI, Math.PI),
+    coreIndex,
+    effectiveIndex: bounded(settings.effectiveIndex, DEFAULT_CLASSICAL_INTENSITY_SETTINGS.effectiveIndex, 1, coreIndex),
+    plasmaFrequencyRatio: bounded(settings.plasmaFrequencyRatio, DEFAULT_CLASSICAL_INTENSITY_SETTINGS.plasmaFrequencyRatio, 0.05, 2),
+    thermalSpeedRatio: bounded(settings.thermalSpeedRatio, DEFAULT_CLASSICAL_INTENSITY_SETTINGS.thermalSpeedRatio, 0, 0.3),
     screenSamples: Math.round(bounded(settings.screenSamples, DEFAULT_CLASSICAL_INTENSITY_SETTINGS.screenSamples, 32, 512))
   };
+}
+
+function classicalFieldParameters(settings) {
+  const carrierWaveNumber = 2 * Math.PI / settings.wavelength;
+  if (settings.fieldMode === 'plasma-longitudinal') {
+    const normalizedFrequency = Math.sqrt(settings.plasmaFrequencyRatio ** 2 + 3 * settings.thermalSpeedRatio ** 2);
+    return { waveNumber: carrierWaveNumber, phaseRate: carrierWaveNumber * normalizedFrequency, longitudinalFraction: 1 };
+  }
+  if (settings.fieldMode === 'dielectric-guided') {
+    const guidedRatio = Math.min(1, settings.effectiveIndex / settings.coreIndex);
+    return {
+      waveNumber: carrierWaveNumber * settings.effectiveIndex,
+      phaseRate: carrierWaveNumber,
+      longitudinalFraction: Math.sqrt(Math.max(0, 1 - guidedRatio ** 2))
+    };
+  }
+  return { waveNumber: carrierWaveNumber, phaseRate: carrierWaveNumber, longitudinalFraction: 0 };
 }
 
 function bitMask(qubitCount, qubit) {
@@ -127,19 +177,20 @@ export function simulateClassicalIntensityDetector(circuit, detectorSettings = D
   const settings = normalizeClassicalIntensitySettings(detectorSettings);
   const outcomeCount = circuit.outcomes.length;
   const detectorSpan = outcomeCount * settings.railSpacing;
-  const temporalPhaseRate = 2 * Math.PI / settings.wavelength;
+  const fieldParameters = classicalFieldParameters(settings);
   const field = {
     experimentMode: 'quantum-output-rails',
     emitters: circuit.outcomes.map(({ amplitude }, index) => ({
       x: 0,
       y: 0,
       z: (index - (outcomeCount - 1) / 2) * settings.railSpacing,
-      waveNumber: temporalPhaseRate,
-      phaseRate: temporalPhaseRate,
+      waveNumber: fieldParameters.waveNumber,
+      phaseRate: fieldParameters.phaseRate,
       phase: Math.atan2(amplitude.imaginary, amplitude.real) + index * settings.beamPhaseShift,
       amplitude: Math.hypot(amplitude.real, amplitude.imaginary),
       transverse: { x: 0, y: 1, z: 0 },
-      side: { x: 0, y: 0, z: 1 }
+      side: { x: 0, y: 0, z: 1 },
+      longitudinalFraction: fieldParameters.longitudinalFraction
     }))
   };
   const rawIntensities = new Array(outcomeCount).fill(0);
@@ -151,7 +202,7 @@ export function simulateClassicalIntensityDetector(circuit, detectorSettings = D
     for (let sample = 0; sample < samplesPerPort; sample += 1) {
       const screenZ = portCenter - portWidth / 2 + (sample + 0.5) * sampleWidth;
       for (let phaseSample = 0; phaseSample < FIELD_PERIOD_SAMPLES; phaseSample += 1) {
-        const time = (phaseSample + 0.5) / FIELD_PERIOD_SAMPLES * settings.wavelength;
+        const time = (phaseSample + 0.5) / FIELD_PERIOD_SAMPLES * 2 * Math.PI / fieldParameters.phaseRate;
         const detectorSample = sampleApertureField(field, settings.detectorDistance, 0, screenZ, time);
         rawIntensities[outputIndex] += detectorSample.intensity * sampleWidth / FIELD_PERIOD_SAMPLES;
       }
@@ -160,7 +211,15 @@ export function simulateClassicalIntensityDetector(circuit, detectorSettings = D
   const totalIntensity = rawIntensities.reduce((sum, intensity) => sum + intensity, 0);
   if (!(totalIntensity > 0) || !Number.isFinite(totalIntensity)) throw new RangeError('The classical detector produced no finite intensity.');
   const outcomes = circuit.outcomes.map((outcome, index) => ({ ...outcome, intensity: rawIntensities[index] }));
-  return { ...circuit, outcomes, totalIntensity, detectorSettings: settings };
+  return {
+    ...circuit,
+    outcomes,
+    totalIntensity,
+    detectorSettings: settings,
+    longitudinalFraction: fieldParameters.longitudinalFraction,
+    waveNumber: fieldParameters.waveNumber,
+    phaseRate: fieldParameters.phaseRate
+  };
 }
 
 export function compareQuantumCircuitModels(referenceCircuit, candidateCircuit) {
@@ -182,13 +241,18 @@ export async function optimizeClassicalIntensitySettings(circuit, configuration 
   let bestSettings = baseSettings;
   let bestScorePoints = baselineScorePoints;
   let evaluations = 0;
+  const modeCandidates = {
+    ...DETECTOR_OPTIMIZATION_CANDIDATES,
+    ...(baseSettings.fieldMode === 'dielectric-guided' ? GUIDED_MODE_OPTIMIZATION_CANDIDATES : {}),
+    ...(baseSettings.fieldMode === 'plasma-longitudinal' ? PLASMA_MODE_OPTIMIZATION_CANDIDATES : {})
+  };
   const totalEvaluations = DETECTOR_OPTIMIZATION_MAX_PASSES
-    * Object.values(DETECTOR_OPTIMIZATION_CANDIDATES).reduce((sum, values) => sum + values.length, 0);
-  const parameterNames = Object.keys(DETECTOR_OPTIMIZATION_CANDIDATES);
+    * Object.values(modeCandidates).reduce((sum, values) => sum + values.length, 0);
+  const parameterNames = Object.keys(modeCandidates);
   for (let pass = 0; pass < DETECTOR_OPTIMIZATION_MAX_PASSES; pass += 1) {
     let improved = false;
     for (const parameter of parameterNames) {
-      for (const value of DETECTOR_OPTIMIZATION_CANDIDATES[parameter]) {
+      for (const value of modeCandidates[parameter]) {
         if (Object.is(value, bestSettings[parameter])) continue;
         const candidateSettings = normalizeClassicalIntensitySettings({ ...bestSettings, [parameter]: value });
         const candidateDetector = simulateClassicalIntensityDetector(circuit, candidateSettings);
@@ -205,7 +269,7 @@ export async function optimizeClassicalIntensitySettings(circuit, configuration 
     }
     if (!improved) break;
   }
-  const parameterChanges = Object.keys(DETECTOR_OPTIMIZATION_CANDIDATES)
+  const parameterChanges = parameterNames
     .filter((parameter) => !Object.is(baseSettings[parameter], bestSettings[parameter]))
     .map((parameter) => ({ key: parameter, from: baseSettings[parameter], to: bestSettings[parameter] }));
   return {

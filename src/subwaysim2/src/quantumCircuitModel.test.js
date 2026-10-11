@@ -94,13 +94,34 @@ test('Classical detector parameter optimizer does not worsen the ideal-reference
 
 test('classical detector settings are finite and bounded', () => {
   assert.deepEqual(normalizeClassicalIntensitySettings({ wavelength: -1, railSpacing: 99, detectorDistance: 0, portWidth: -1, beamPhaseShift: 10, screenSamples: 21 }), {
+    fieldMode: 'transverse',
     wavelength: 0.25,
     railSpacing: 4,
     detectorDistance: 0.5,
     portWidth: 0.1,
     beamPhaseShift: Math.PI,
+    coreIndex: 1.5,
+    effectiveIndex: 1.2,
+    plasmaFrequencyRatio: 0.8,
+    thermalSpeedRatio: 0.02,
     screenSamples: 32
   });
+});
+
+test('guided dielectric mode derives a hybrid longitudinal share and plasma mode is longitudinal', () => {
+  const circuit = simulateIntensityCircuit({ qubitCount: 2, gates: [
+    { type: 'H', target: 0 },
+    { type: 'CNOT', control: 0, target: 1 }
+  ] });
+  const transverse = simulateClassicalIntensityDetector(circuit);
+  const guided = simulateClassicalIntensityDetector(circuit, { fieldMode: 'dielectric-guided', coreIndex: 2, effectiveIndex: 1.2 });
+  const plasma = simulateClassicalIntensityDetector(circuit, { fieldMode: 'plasma-longitudinal' });
+  assert.equal(transverse.longitudinalFraction, 0);
+  assert.ok(Math.abs(guided.longitudinalFraction - Math.sqrt(1 - (1.2 / 2) ** 2)) < 1e-12);
+  assert.equal(plasma.longitudinalFraction, 1);
+  assert.ok(plasma.phaseRate > 0);
+  assert.ok(compareQuantumCircuitModels(transverse, guided).rmsDifference > 0);
+  assert.ok(compareQuantumCircuitModels(transverse, plasma).rmsDifference > 0);
 });
 
 test('narrow output ports reject more Bell-state cross-talk than full-width ports', () => {

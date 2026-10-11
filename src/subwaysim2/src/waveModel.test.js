@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { sampleApertureField } from './waveModel.js';
 import { Euler, Vector3 } from 'three';
 import { DETECTOR_PHASE_VALUE_TOLERANCE, DOUBLE_SLIT_SCREEN_THICKNESS, filterWavesByPhase, getSlitScreenPlane, samplePilotWaveCurrent, sampleTransverseWignerFunction, sampleWignerMechanics, slitScreenPlaneDepth, WIGNER_MECHANICS_QUANTITIES, WIGNER_TRANSVERSE_INTEGRATION_RANGE } from './waveModel.js';
 import { advanceDetectorResponse, calculateDoubleSlitField, calculateElectromagneticField, calculateOcclusionTransmission, calculatePinholeField, calculateWaveDerivative, calculateWaveDisplacement, calculateWaveDisplacementAndTensorGaussian, calculateWaveEnvelope, calculateWaveFrame, calculateWaveOrbitalPhase, calculateWaveSample, calculateWaveTensorGaussian, cloneWaveState, combineWaves, createApertureSamplePoints, DEFAULT_APERTURE_SETTINGS, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_COUNT, DEFAULT_WAVE_STATES, DEFAULT_WAVES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, detectorDistanceForSlitScreenPosition, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, getSlitGeometry, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, SIGNAL_SOURCE_PRESETS, slitScreenLocalToWorld, slitScreenWorldToLocal } from './waveModel.js';
@@ -42,6 +43,27 @@ test('pilot-wave detector current follows forward phase flow', () => {
   const aperture = samplePilotWaveCurrent([], 1, 0, 0, 0, { emitters: [{ x: 0, y: 0, z: 0, waveNumber: Math.PI * 2, phase: 0, phaseRate: 1, amplitude: 1, transverse: { x: 0, y: 1, z: 0 }, side: { x: 0, y: 0, z: 1 } }] });
   assert.ok(aperture.currentX > 0);
   assert.ok(Math.abs(aperture.forwardFlux - aperture.density) < 1e-10);
+});
+
+test('aperture field supports transverse, longitudinal, and mixed guided polarization', () => {
+  const field = (longitudinalFraction) => sampleApertureField({ emitters: [{
+    x: 0,
+    y: 0,
+    z: 0,
+    waveNumber: 0,
+    phase: Math.PI / 2,
+    phaseRate: 0,
+    amplitude: 1,
+    transverse: { x: 0, y: 1, z: 0 },
+    side: { x: 0, y: 0, z: 1 },
+    longitudinalFraction
+  }] }, 1, 0, 0, 0).electric;
+  const transverse = field(0);
+  const longitudinal = field(1);
+  const hybrid = field(0.5);
+  assert.ok(Math.abs(transverse.x) < 1e-12 && transverse.y > 0);
+  assert.ok(longitudinal.x > 0 && Math.abs(longitudinal.y) < 1e-12);
+  assert.ok(hybrid.x > 0 && hybrid.y > 0);
 });
 
 test('Wigner mechanics reports position, phase momentum, rotation, shear, and received OAM', () => {

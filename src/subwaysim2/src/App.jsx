@@ -12,6 +12,7 @@ const ThermalLoopSim = lazy(() => import('./ThermalLoopSim.jsx'));
 const PhaseSignalSim = lazy(() => import('./PhaseSignalSim.jsx'));
 const OamSolitonSim = lazy(() => import('./OamSolitonSim.jsx'));
 const QuantumCircuitSim = lazy(() => import('./QuantumCircuitSim.jsx'));
+const TwistorSpinorTrainer = lazy(() => import('./TwistorSpinorTrainer.jsx'));
 const FrcFusionSim = lazy(() => import('./FrcFusionSim.jsx'));
 const SubwaySim = lazy(() => import('./SubwaySim.jsx').then(({ SubwaySim: component }) => ({ default: component })));
 const RailTieMaterialSim = lazy(() => import('./RailTieMaterialSim.jsx'));
@@ -181,6 +182,15 @@ const SIMULATION_MODES = [
     description: 'Build one- and two-qubit gate sequences and inspect complex amplitudes, output intensities, and measurement shots.',
     detail: 'QUBITS / GATES / INTENSITY',
     accent: 'teal'
+  },
+  {
+    id: 'twistorspinortrainer',
+    index: '19',
+    name: 'twistorspinortrainer',
+    label: 'Twistor + spinor trainer',
+    description: 'Construct one null twistor from a spacetime point and spinor, then inspect its expression, tensor, projective, and 3D forms.',
+    detail: 'INCIDENCE / SPINORS / AMPLITUDE GEOMETRY',
+    accent: 'orange'
   }
 ];
 
@@ -210,6 +220,7 @@ function SimulationLoader() {
   if (selectedSimulation === 'spacetieaccelerator') simulation = <SpaceTieAcceleratorSim onBack={onBack} />;
   if (selectedSimulation === 'halbachlinearmotor') simulation = <HalbachLinearMotorSim onBack={onBack} />;
   if (selectedSimulation === 'quantumcircuitsim') simulation = <QuantumCircuitSim onBack={onBack} />;
+  if (selectedSimulation === 'twistorspinortrainer') simulation = <TwistorSpinorTrainer onBack={onBack} />;
   if (simulation) return <Suspense fallback={<LoadingScreen />}>{simulation}</Suspense>;
 
   return (
