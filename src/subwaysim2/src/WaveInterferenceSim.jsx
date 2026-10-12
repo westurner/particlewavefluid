@@ -98,6 +98,7 @@ function normalizeWaveSnapshot(snapshot, defaults) {
     ...snapshot,
     waves: snapshot.waves,
     running: Boolean(snapshot.running ?? defaults.running),
+    showCurrentHertz: Boolean(snapshot.showCurrentHertz ?? defaults.showCurrentHertz),
     waveCount: Number.isFinite(waveCount) ? Math.min(MAX_WAVES, Math.max(1, Math.round(waveCount))) : defaults.waveCount,
     simulationSpeed: Number.isFinite(simulationSpeed) ? Math.min(4, Math.max(0.1, simulationSpeed)) : defaults.simulationSpeed,
     detectorMechanicsMode,
@@ -1832,7 +1833,17 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
       </section>
       <section className="wave-control-section" data-simulation-speed={currentValue.simulationSpeed ?? 1}>
         <span className="wave-section-label">FIELD RESPONSE</span>
-        <RangeControl label="Simulation speed" value={currentValue.simulationSpeed ?? 1} min={0.1} max={4} step={0.1} suffix="x" editing={editing} isDefault={isDefault('simulationSpeed')} onReset={() => onResetPath('simulationSpeed')} onChange={(value) => onVisualizationChange('simulationSpeed', value)} />
+        <div className="wave-frequency-controls">
+          <RangeControl label="Simulation speed" value={currentValue.simulationSpeed ?? 1} min={0.1} max={4} step={0.1} suffix="x" editing={editing} isDefault={isDefault('simulationSpeed')} onReset={() => onResetPath('simulationSpeed')} onChange={(value) => onVisualizationChange('simulationSpeed', value)} />
+          <label className="wave-toggle wave-current-hertz-toggle"><input type="checkbox" checked={currentValue.showCurrentHertz ?? false} onChange={(event) => onVisualizationChange('showCurrentHertz', event.target.checked)} /><span>Show current hertz</span></label>
+        </div>
+        {currentValue.showCurrentHertz && <div className="wave-current-hertz-readout" role="status" aria-label="Current wave frequencies">
+          {waves.slice(0, waveCount).map((wave, index) => ({ wave, index })).filter(({ wave }) => wave.enabled !== false).map(({ wave, index }) => {
+            const phaseRate = Number(wave.phaseRate) || 0;
+            const frequencyHz = Math.abs(phaseRate * (currentValue.simulationSpeed ?? 1)) / (2 * Math.PI);
+            return <div key={index}><span>Wave {index + 1}</span><strong>{frequencyHz.toFixed(3)} Hz{phaseRate < 0 ? ' · reverse phase' : ''}</strong></div>;
+          })}
+        </div>}
         <div className="wave-actions"><button type="button" onClick={onRunning}>{running ? 'Pause field' : 'Run field'}</button><button type="button" onClick={onReset}>Reset waves</button></div>
         <RangeControl label="Wave slots" value={waveCount} min={1} max={MAX_WAVES} step={1} editing={editing} isDefault={isDefault('waveCount')} onReset={() => onResetPath('waveCount')} onChange={onWaveCountChange} />
       </section>
@@ -1904,6 +1915,7 @@ export default function WaveInterferenceSim({ onBack }) {
     detectorPixelDensity: 1,
     detectorImplementation: 'classic',
     simulationSpeed: 1,
+    showCurrentHertz: false,
     running: true,
     waveMechanics: { ...DEFAULT_WAVE_MECHANICS },
     ...DEFAULT_SIMULATOR_3D_PARAMETERS

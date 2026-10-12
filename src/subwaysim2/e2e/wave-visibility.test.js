@@ -748,3 +748,34 @@ test('OAM states can be toggled on the detector', async (t) => {
   await detectorReadout.waitFor({ state: 'detached' });
   assert.deepEqual(pageErrors, [], `wave simulator reported page errors: ${pageErrors.join('; ')}`);
 });
+
+test('current hertz display follows enabled wave phase rates and simulation speed', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => localStorage.clear());
+  await page.goto(`${baseUrl}?e2e=1`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /01 \/ LOAD FIELD/ }).click();
+  await page.locator('.wave-panel').waitFor();
+  const firstWave = page.locator('.wave-editor').first();
+  await firstWave.getByRole('slider', { name: 'Phase rate' }).fill('1');
+  const simulationSpeed = page.getByRole('slider', { name: 'Simulation speed' });
+  const showHertz = page.getByLabel('Show current hertz');
+  assert.equal(await showHertz.isChecked(), false);
+  assert.equal(await page.locator('.wave-current-hertz-readout').count(), 0);
+  const speedBounds = await simulationSpeed.boundingBox();
+  const toggleBounds = await showHertz.boundingBox();
+  assert.ok(toggleBounds.x > speedBounds.x, 'hertz toggle should be beside the simulation speed control');
+  await showHertz.check();
+  const readout = page.locator('.wave-current-hertz-readout');
+  await readout.waitFor();
+  assert.match(await readout.locator('div').first().textContent(), /Wave 1\s*0\.159 Hz/);
+
+  await simulationSpeed.fill('2');
+  await page.waitForFunction(() => document.querySelector('.wave-current-hertz-readout')?.textContent.includes('0.318 Hz'));
+  await showHertz.uncheck();
+  await readout.waitFor({ state: 'detached' });
+  assert.deepEqual(pageErrors, [], `wave frequency display reported errors: ${pageErrors.join('; ')}`);
+});

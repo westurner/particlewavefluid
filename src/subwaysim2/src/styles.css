@@ -763,6 +763,13 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
 .wave-status span { display: flex; align-items: center; gap: 8px; }
 .wave-status strong { color: rgb(var(--color-rgb-d6e79d)); font-weight: 400; }
 .wave-control-section { margin-top: 18px; padding-top: 15px; border-top: 1px solid rgba(var(--color-rgb-7dcacf), 0.15); }
+.wave-frequency-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(112px, auto); align-items: end; gap: 12px; }
+.wave-frequency-controls .wave-range-control { min-width: 0; }
+.wave-current-hertz-toggle { min-height: 36px; margin: 0 0 1px; padding: 7px 9px; border: 1px solid rgba(var(--color-rgb-7dcacf), 0.2); background: rgba(var(--color-rgb-080d17), 0.42); }
+.wave-current-hertz-toggle input { accent-color: rgb(var(--color-rgb-72c7c0)); }
+.wave-current-hertz-readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 5px 14px; margin-top: 8px; padding: 8px 9px; border-left: 2px solid rgba(var(--color-rgb-72c7c0), 0.55); background: rgba(var(--color-rgb-0e232f), 0.4); }
+.wave-current-hertz-readout > div { display: flex; justify-content: space-between; gap: 8px; color: rgb(var(--color-rgb-8da9a0)); font: 8px 'DM Mono', monospace; }
+.wave-current-hertz-readout strong { color: rgb(var(--color-rgb-f1d4a0)); font-weight: 400; text-align: right; }
 .wave-range-control { display: grid; gap: 7px; margin-top: 14px; color: rgb(var(--color-rgb-abc0c2)); font-size: 10px; }
 .wave-range-control > span { display: flex; justify-content: space-between; }
 .wave-range-control strong { color: rgb(var(--color-rgb-e3eee7)); font: 10px 'DM Mono', monospace; font-weight: 400; }
