@@ -987,7 +987,8 @@ input[type='range'] { width: 100%; height: 3px; margin: 0; accent-color: rgb(var
 .amplitude-citation-list strong { color: rgb(var(--color-rgb-f1f5ec)); font-weight: 500; }
 .amplitude-citation-list p { margin: 5px 0; }
 .amplitude-about-sim h3 { margin: 17px 0 7px; color: rgb(var(--color-rgb-71d3c5)); font: 9px 'DM Mono', monospace; text-transform: uppercase; }
-.amplitude-panel details, .ftle-panel details, .quantum-panel details, .thermal-panel details, .signal-panel details { margin-top: 16px; padding-top: 13px; border-top: 1px solid rgba(var(--color-rgb-92d4cc), 0.16); }
+.amplitude-panel details, .ftle-panel details, .quantum-panel details, .quantum-control-group, .thermal-panel details, .signal-panel details { margin-top: 16px; padding-top: 13px; border-top: 1px solid rgba(var(--color-rgb-92d4cc), 0.16); }
+.quantum-control-group > :first-child { margin-top: 0; }
 .amplitude-panel summary, .ftle-panel summary, .quantum-panel summary, .thermal-panel summary, .signal-panel summary { color: rgb(var(--color-rgb-71d3c5)); cursor: pointer; font: 9px 'DM Mono', monospace; letter-spacing: 0.08em; list-style-position: inside; text-transform: uppercase; }
 .amplitude-panel details[open] summary, .ftle-panel details[open] summary, .quantum-panel details[open] summary, .thermal-panel details[open] summary, .signal-panel details[open] summary { margin-bottom: 10px; }
 .amplitude-minors { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; margin-top: 10px; }

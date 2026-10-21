@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { BufferAttribute, BufferGeometry, Color } from 'three';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { BufferAttribute, BufferGeometry, Color, ShaderMaterial } from 'three';
 import {
   compareQuantumHydrodynamicDensity,
   createEulerKortewegState,
@@ -12,8 +12,8 @@ import {
   stepGrossPitaevskii
 } from './quantumFluidModel.js';
 import { NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
-import { CameraPerspectiveToolbar, OrbitalTrackingParameters, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
-import { DEFAULT_CAMERA_VIEWS, DEFAULT_SIMULATOR_3D_PARAMETERS } from './lib/simulator-base.js';
+import { CameraPerspectiveToolbar, OrbitCameraSettings, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
+import { DEFAULT_CAMERA_VIEWS, DEFAULT_SIMULATOR_3D_PARAMETERS, DEFAULT_SIMULATOR_CAMERA_CONFIGURATION } from './lib/simulator-base.js';
 
 const VIEW_OPTIONS = [
   { value: 'side-by-side', label: 'GPE / Euler-Korteweg' },
@@ -29,10 +29,61 @@ const FIELD_OPTIONS = [
   { value: 'quantum-pressure', label: 'Quantum pressure' }
 ];
 
+const GRID_SIZE_OPTIONS = [16, 32, 64, 128, 256].map((size) => ({ value: size, label: `${size} x ${size}` }));
+const PARTICLE_SHAPE_IDS = { native: 0, circle: 1, square: 2, sphere: 3, vector: 4 };
+const VECTOR_DERIVATIVE_DESCRIPTION = 'For Vector shape, order 0 shows local current where available; orders 1-4 use periodic derivatives of the active scalar field to set arrow direction.';
+
+const PARTICLE_VERTEX_SHADER = `
+  uniform float uParticleSize;
+  uniform float uSizeScale;
+  uniform float uPixelScale;
+  attribute vec3 color;
+  attribute float aVectorAngle;
+  varying vec3 vColor;
+  varying float vVectorAngle;
+
+  void main() {
+    vColor = color;
+    vVectorAngle = aVectorAngle;
+    vec4 modelPosition = modelViewMatrix * vec4(position, 1.0);
+    gl_PointSize = max(1.0, uParticleSize * uSizeScale * uPixelScale / max(-modelPosition.z, 0.001));
+    gl_Position = projectionMatrix * modelPosition;
+  }
+`;
+
+const PARTICLE_FRAGMENT_SHADER = `
+  uniform float uOpacity;
+  uniform int uShape;
+  varying vec3 vColor;
+  varying float vVectorAngle;
+
+  void main() {
+    vec2 point = gl_PointCoord - 0.5;
+    float radius = length(point);
+    if ((uShape == 1 || uShape == 3) && radius > 0.5) discard;
+    if (uShape == 4) {
+      float cosine = cos(vVectorAngle);
+      float sine = sin(vVectorAngle);
+      point = vec2(cosine * point.x - sine * point.y, sine * point.x + cosine * point.y);
+      float shaft = step(abs(point.x), 0.08) * step(abs(point.y), 0.28);
+      float head = step(0.08, point.y) * step(abs(point.x), 0.24 - point.y * 0.25);
+      if (max(shaft, head) < 0.5) discard;
+    }
+    float opacity = uOpacity;
+    if (uShape == 0) opacity *= exp(-radius * radius * 8.0);
+    vec3 particleColor = vColor;
+    if (uShape == 3) particleColor *= 1.15 - radius * 0.7;
+    gl_FragColor = vec4(particleColor, opacity);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+  }
+`;
+
 function createGridGeometry(size, particleCount) {
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new BufferAttribute(new Float32Array(particleCount * 3), 3));
   geometry.setAttribute('color', new BufferAttribute(new Float32Array(particleCount * 3), 3));
+  geometry.setAttribute('aVectorAngle', new BufferAttribute(new Float32Array(particleCount), 1));
   return geometry;
 }
 
@@ -40,12 +91,77 @@ function getGridSampleCoordinates(index, size, columns, rows) {
   const column = index % columns;
   const row = Math.floor(index / columns);
   return {
-    x: Math.min(size - 1, Math.floor((column + 0.5) * size / columns)),
-    y: Math.min(size - 1, Math.floor((row + 0.5) * size / rows))
+    x: Math.min(size - 1, Math.max(0, (column + 0.5) * size / columns - 0.5)),
+    y: Math.min(size - 1, Math.max(0, (row + 0.5) * size / rows - 0.5))
   };
 }
 
-function updateFieldGeometry(geometry, size, observables, field, particleCount, width = 8) {
+function sampleGridValue(values, size, x, y) {
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const x1 = Math.min(size - 1, x0 + 1);
+  const y1 = Math.min(size - 1, y0 + 1);
+  const xFraction = x - x0;
+  const yFraction = y - y0;
+  const top = values[y0 * size + x0] * (1 - xFraction) + values[y0 * size + x1] * xFraction;
+  const bottom = values[y1 * size + x0] * (1 - xFraction) + values[y1 * size + x1] * xFraction;
+  return top * (1 - yFraction) + bottom * yFraction;
+}
+
+function finiteValues(values) {
+  return Float64Array.from(values, (value) => Number.isFinite(value) ? value : 0);
+}
+
+function maximumAbsoluteValue(values) {
+  let maximum = 1e-9;
+  for (const value of values) maximum = Math.max(maximum, Math.abs(value));
+  return maximum;
+}
+
+function createParticleDirections(values, size, derivativeOrder, currentX, currentY, spacing, wrapPhase = false) {
+  const order = Math.max(0, Math.min(4, Math.round(derivativeOrder ?? 1)));
+  if (order === 0 && currentX && currentY) return { x: currentX, y: currentY };
+
+  let xValues = Float64Array.from(values);
+  let yValues = Float64Array.from(values);
+  const passes = Math.max(1, order);
+  for (let pass = 0; pass < passes; pass += 1) {
+    const nextX = new Float64Array(values.length);
+    const nextY = new Float64Array(values.length);
+    for (let index = 0; index < values.length; index += 1) {
+      const x = index % size;
+      const y = Math.floor(index / size);
+      const left = y * size + (x + size - 1) % size;
+      const right = y * size + (x + 1) % size;
+      const down = ((y + size - 1) % size) * size + x;
+      const up = ((y + 1) % size) * size + x;
+      const differenceX = wrapPhase && pass === 0
+        ? Math.atan2(Math.sin(xValues[right] - xValues[left]), Math.cos(xValues[right] - xValues[left]))
+        : xValues[right] - xValues[left];
+      const differenceY = wrapPhase && pass === 0
+        ? Math.atan2(Math.sin(yValues[up] - yValues[down]), Math.cos(yValues[up] - yValues[down]))
+        : yValues[up] - yValues[down];
+      nextX[index] = differenceX / (2 * spacing);
+      nextY[index] = differenceY / (2 * spacing);
+    }
+    xValues = nextX;
+    yValues = nextY;
+  }
+  return { x: xValues, y: yValues };
+}
+
+function writeVectorAngles(attribute, directions, size, particleCount, columns, rows) {
+  const angles = attribute.array;
+  for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
+    const { x, y } = getGridSampleCoordinates(particleIndex, size, columns, rows);
+    const directionX = sampleGridValue(directions.x, size, x, y);
+    const directionY = sampleGridValue(directions.y, size, x, y);
+    angles[particleIndex] = Math.atan2(directionY, directionX) - Math.PI / 2;
+  }
+  attribute.needsUpdate = true;
+}
+
+function updateFieldGeometry(geometry, size, observables, field, particleCount, particleAppearance, domainSize, width = 8) {
   const positions = geometry.attributes.position.array;
   const colors = geometry.attributes.color.array;
   const color = new Color();
@@ -54,14 +170,16 @@ function updateFieldGeometry(geometry, size, observables, field, particleCount, 
   else if (field === 'current') values = Float64Array.from(observables.currentX, (value, index) => Math.hypot(value, observables.currentY[index]));
   else if (field === 'quantum-pressure') values = observables.quantumPressure;
   else values = observables.density;
-  const finiteValues = Array.from(values, (value) => Number.isFinite(value) ? value : 0);
-  const maximumMagnitude = Math.max(1e-9, ...finiteValues.map(Math.abs));
+  const samples = finiteValues(values);
+  const maximumMagnitude = maximumAbsoluteValue(samples);
   const columns = Math.ceil(Math.sqrt(particleCount));
   const rows = Math.ceil(particleCount / columns);
+  const directions = particleAppearance.shape === 'vector'
+    ? createParticleDirections(samples, size, particleAppearance.derivativeOrder, observables.currentX, observables.currentY, domainSize / size, field === 'phase')
+    : null;
   for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
     const { x, y } = getGridSampleCoordinates(particleIndex, size, columns, rows);
-    const sampleIndex = y * size + x;
-    const value = finiteValues[sampleIndex];
+    const value = sampleGridValue(samples, size, x, y);
     const normalized = field === 'phase'
       ? (value + Math.PI) / (2 * Math.PI)
       : Math.min(1, Math.abs(value) / maximumMagnitude);
@@ -75,21 +193,26 @@ function updateFieldGeometry(geometry, size, observables, field, particleCount, 
     colors[particleIndex * 3 + 1] = color.g;
     colors[particleIndex * 3 + 2] = color.b;
   }
+  if (directions) writeVectorAngles(geometry.attributes.aVectorAngle, directions, size, particleCount, columns, rows);
   geometry.attributes.position.needsUpdate = true;
   geometry.attributes.color.needsUpdate = true;
 }
 
-function updateHydrodynamicGeometry(geometry, state, particleCount, width = 8) {
+function updateHydrodynamicGeometry(geometry, state, particleCount, particleAppearance, width = 8) {
   const positions = geometry.attributes.position.array;
   const colors = geometry.attributes.color.array;
-  const maximumDensity = Math.max(1e-9, ...state.density);
+  const density = finiteValues(state.density);
+  const maximumDensity = maximumAbsoluteValue(density);
   const color = new Color();
   const columns = Math.ceil(Math.sqrt(particleCount));
   const rows = Math.ceil(particleCount / columns);
+  const directions = particleAppearance.shape === 'vector'
+    ? createParticleDirections(density, state.size, particleAppearance.derivativeOrder, state.velocityX, state.velocityY, state.domainSize / state.size)
+    : null;
   for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
     const { x, y } = getGridSampleCoordinates(particleIndex, state.size, columns, rows);
-    const sampleIndex = y * state.size + x;
-    const normalized = Math.min(1, state.density[sampleIndex] / maximumDensity);
+    const value = sampleGridValue(density, state.size, x, y);
+    const normalized = Math.min(1, value / maximumDensity);
     positions[particleIndex * 3] = (x / (state.size - 1) - 0.5) * width;
     positions[particleIndex * 3 + 1] = normalized * 1.7;
     positions[particleIndex * 3 + 2] = (y / (state.size - 1) - 0.5) * width;
@@ -98,21 +221,25 @@ function updateHydrodynamicGeometry(geometry, state, particleCount, width = 8) {
     colors[particleIndex * 3 + 1] = color.g;
     colors[particleIndex * 3 + 2] = color.b;
   }
+  if (directions) writeVectorAngles(geometry.attributes.aVectorAngle, directions, state.size, particleCount, columns, rows);
   geometry.attributes.position.needsUpdate = true;
   geometry.attributes.color.needsUpdate = true;
 }
 
-function updateDifferenceGeometry(geometry, size, comparison, particleCount, width = 9) {
+function updateDifferenceGeometry(geometry, size, comparison, particleCount, particleAppearance, domainSize, width = 9) {
   const positions = geometry.attributes.position.array;
   const colors = geometry.attributes.color.array;
   const scale = Math.max(comparison.maximumDifference, 1e-9);
+  const difference = finiteValues(comparison.difference);
   const color = new Color();
   const columns = Math.ceil(Math.sqrt(particleCount));
   const rows = Math.ceil(particleCount / columns);
+  const directions = particleAppearance.shape === 'vector'
+    ? createParticleDirections(difference, size, particleAppearance.derivativeOrder, null, null, domainSize / size)
+    : null;
   for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
     const { x, y } = getGridSampleCoordinates(particleIndex, size, columns, rows);
-    const sampleIndex = y * size + x;
-    const normalized = comparison.difference[sampleIndex] / scale;
+    const normalized = sampleGridValue(difference, size, x, y) / scale;
     positions[particleIndex * 3] = (x / (size - 1) - 0.5) * width;
     positions[particleIndex * 3 + 1] = Math.abs(normalized) * 1.8;
     positions[particleIndex * 3 + 2] = (y / (size - 1) - 0.5) * width;
@@ -121,12 +248,38 @@ function updateDifferenceGeometry(geometry, size, comparison, particleCount, wid
     colors[particleIndex * 3 + 1] = color.g;
     colors[particleIndex * 3 + 2] = color.b;
   }
+  if (directions) writeVectorAngles(geometry.attributes.aVectorAngle, directions, size, particleCount, columns, rows);
   geometry.attributes.position.needsUpdate = true;
   geometry.attributes.color.needsUpdate = true;
 }
 
 function FieldPoints({ geometry, position, visible, particleAppearance }) {
-  return <points geometry={geometry} position={position} visible={visible}><pointsMaterial size={0.13 * particleAppearance.sizeScale} vertexColors sizeAttenuation transparent opacity={0.94 * particleAppearance.opacity} /></points>;
+  const { gl, size } = useThree();
+  const uniforms = useMemo(() => ({
+    uParticleSize: { value: 0.13 },
+    uSizeScale: { value: 1 },
+    uPixelScale: { value: 1 },
+    uOpacity: { value: 0.94 },
+    uShape: { value: 0 }
+  }), []);
+  const material = useMemo(() => new ShaderMaterial({
+    uniforms,
+    vertexShader: PARTICLE_VERTEX_SHADER,
+    fragmentShader: PARTICLE_FRAGMENT_SHADER,
+    transparent: true,
+    depthWrite: false
+  }), [uniforms]);
+
+  useEffect(() => {
+    uniforms.uSizeScale.value = particleAppearance.sizeScale ?? 1;
+    uniforms.uPixelScale.value = size.height * gl.getPixelRatio() / 2;
+    uniforms.uOpacity.value = 0.94 * (particleAppearance.opacity ?? 1);
+    uniforms.uShape.value = PARTICLE_SHAPE_IDS[particleAppearance.shape] ?? PARTICLE_SHAPE_IDS.native;
+  }, [gl, particleAppearance.opacity, particleAppearance.shape, particleAppearance.sizeScale, size.height, uniforms]);
+
+  useEffect(() => () => material.dispose(), [material]);
+
+  return <points geometry={geometry} material={material} position={position} visible={visible} />;
 }
 
 function QuantumEvolution({ settings, running, resetToken, onTelemetry, particleAppearance }) {
@@ -168,9 +321,9 @@ function QuantumEvolution({ settings, running, resetToken, onTelemetry, particle
     }
     const diagnostics = quantumDiagnostics(state.quantum, initialDiagnosticsRef.current);
     const comparison = compareQuantumHydrodynamicDensity(state.quantum, state.hydrodynamic);
-    updateFieldGeometry(gpeGeometry, settings.size, diagnostics.observables, settings.field, settings.particleCount);
-    updateHydrodynamicGeometry(hydrodynamicGeometry, state.hydrodynamic, settings.particleCount);
-    updateDifferenceGeometry(differenceGeometry, settings.size, comparison, settings.particleCount);
+    updateFieldGeometry(gpeGeometry, settings.size, diagnostics.observables, settings.field, settings.particleCount, particleAppearance, settings.domainSize);
+    updateHydrodynamicGeometry(hydrodynamicGeometry, state.hydrodynamic, settings.particleCount, particleAppearance);
+    updateDifferenceGeometry(differenceGeometry, settings.size, comparison, settings.particleCount, particleAppearance, settings.domainSize);
     telemetryTimeRef.current += frameDelta;
     if (telemetryTimeRef.current >= 0.2) {
       telemetryTimeRef.current = 0;
@@ -202,6 +355,17 @@ function QuantumEvolution({ settings, running, resetToken, onTelemetry, particle
 }
 
 function QuantumScene({ viewMode, orbitPlaying, orbitSettings, particleAppearance, onUserInteraction, ...props }) {
+  const { camera } = useThree();
+  const cameraControlsRef = useRef(null);
+
+  useEffect(() => {
+    const target = [orbitSettings.cameraTargetX, orbitSettings.cameraTargetY, orbitSettings.cameraTargetZ];
+    camera.position.set(orbitSettings.cameraPosX, orbitSettings.cameraPosY, orbitSettings.cameraPosZ);
+    cameraControlsRef.current?.target.set(...target);
+    camera.lookAt(...target);
+    cameraControlsRef.current?.update();
+  }, [camera, orbitSettings.cameraPosX, orbitSettings.cameraPosY, orbitSettings.cameraPosZ, orbitSettings.cameraTargetX, orbitSettings.cameraTargetY, orbitSettings.cameraTargetZ]);
+
   return <>
     <color attach="background" args={['#071117']} />
     {/* <fog attach="fog" args={['#071117', 16, 34]} /> */}
@@ -209,7 +373,7 @@ function QuantumScene({ viewMode, orbitPlaying, orbitSettings, particleAppearanc
     <directionalLight intensity={1.3} position={[5, 10, 5]} color="#ffe8b5" />
     <gridHelper args={[20, 40, '#244d55', '#112b31']} position={[0, -0.08, 0]} />
     <QuantumEvolution {...props} particleAppearance={particleAppearance} />
-    <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={orbitSettings} cameraParams={{ minDistance: 8, maxDistance: 34, target: [0, 0.5, 0] }} onUserInteraction={onUserInteraction} />
+    <PerspectiveOrbitControls controlsRef={cameraControlsRef} viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={orbitSettings} cameraParams={{ minDistance: 8, maxDistance: 34, target: [orbitSettings.cameraTargetX, orbitSettings.cameraTargetY, orbitSettings.cameraTargetZ] }} onUserInteraction={onUserInteraction} />
   </>;
 }
 
@@ -218,7 +382,7 @@ function Slider({ label, value, min, max, step, onChange, path }) {
 }
 
 export default function QuantumFluidSim({ onBack }) {
-  const [presetSettings] = useState({ size: 32, particleCount: 1024, domainSize: 12, preset: 'vortex', view: 'side-by-side', field: 'density', interaction: 0.8, potentialStrength: 0, stepSize: 0.002, timeScale: 1, running: true, ...DEFAULT_SIMULATOR_3D_PARAMETERS });
+  const [presetSettings] = useState({ size: 32, particleCount: 1024, domainSize: 12, preset: 'vortex', view: 'side-by-side', field: 'density', interaction: 0.8, potentialStrength: 0, stepSize: 0.002, timeScale: 1, running: true, ...DEFAULT_SIMULATOR_CAMERA_CONFIGURATION, ...DEFAULT_SIMULATOR_3D_PARAMETERS, cameraPosX: 14, cameraPosY: 14, cameraPosZ: 20, cameraTargetX: 0, cameraTargetY: 0.5, cameraTargetZ: 0, cameraZoom: 1, cameraFov: 43, cameraNear: 0.1, cameraFar: 90 });
   const [settings, setSettings] = useState({
     size: 32,
     particleCount: 1024,
@@ -235,7 +399,7 @@ export default function QuantumFluidSim({ onBack }) {
   const [panelVisible, setPanelVisible] = useState(true);
   const [viewMode, setViewMode] = useState('ortho1');
   const [orbitPlaying, setOrbitPlaying] = useState(true);
-  const [viewSettings, setViewSettings] = useState(() => ({ ...DEFAULT_SIMULATOR_3D_PARAMETERS }));
+  const [viewSettings, setViewSettings] = useState(() => ({ ...DEFAULT_SIMULATOR_CAMERA_CONFIGURATION, ...DEFAULT_SIMULATOR_3D_PARAMETERS, cameraPosX: 14, cameraPosY: 14, cameraPosZ: 20, cameraTargetX: 0, cameraTargetY: 0.5, cameraTargetZ: 0, cameraZoom: 1, cameraFov: 43, cameraNear: 0.1, cameraFar: 90 }));
   const [resetToken, setResetToken] = useState(0);
   const [telemetry, setTelemetry] = useState({ time: 0, norm: 0, energy: 0, normDrift: 0, energyDrift: 0, vortexCount: 0, totalCharge: 0, phaseSlips: 0, rmsDifference: 0, maximumDifference: 0 });
   const update = (patch) => setSettings((current) => ({ ...current, ...patch }));
@@ -243,26 +407,32 @@ export default function QuantumFluidSim({ onBack }) {
   const updateParameterValue = (next) => {
     setSettings((current) => Object.fromEntries(Object.keys(current).map((key) => [key, next[key]])));
     setRunning(next.running);
-    setViewSettings(Object.fromEntries(Object.keys(DEFAULT_SIMULATOR_3D_PARAMETERS).map((key) => [key, next[key]])));
+    setViewSettings((current) => Object.fromEntries(Object.keys(current).map((key) => [key, next[key]])));
+  };
+  const updateViewParameter = (next, path) => {
+    if (path === 'size') next = { ...next, particleCount: Math.min(next.particleCount, next.size ** 2) };
+    updateParameterValue(next);
+    if (typeof path === 'string' && (path.startsWith('cameraPos') || path.startsWith('cameraTarget'))) setViewMode(null);
   };
 
-  return <SimulatorBase className="quantum-app" headerClassName="quantum-topbar" mark="QFL" markClassName="quantum-mark" title="QUANTUM FLUID LAB" subtitle="Gross-Pitaevskii / Euler-Korteweg" parameterValue={parameterValue} presetValue={presetSettings} onParameterChange={updateParameterValue} actions={<><button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button><button type="button" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></>} onHome={onBack}>
+  return <SimulatorBase className="quantum-app" headerClassName="quantum-topbar" mark="QFL" markClassName="quantum-mark" title="QUANTUM FLUID LAB" subtitle="Gross-Pitaevskii / Euler-Korteweg" parameterValue={parameterValue} presetValue={presetSettings} onParameterChange={updateViewParameter} actions={<><button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button><button type="button" onClick={() => setRunning((value) => !value)}>{running ? 'Pause' : 'Run'}</button></>} onHome={onBack}>
     <div className="quantum-scene"><Canvas camera={{ position: [11, 9, 13], fov: 43, near: 0.1, far: 90 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><QuantumScene settings={settings} running={running} resetToken={resetToken} onTelemetry={setTelemetry} viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={viewSettings} particleAppearance={viewSettings.particleAppearance} onUserInteraction={() => setViewMode(null)} /></Canvas></div>
     <CameraPerspectiveToolbar className="simulator-perspective-toolbar" modesClassName="simulator-perspective-modes" views={DEFAULT_CAMERA_VIEWS} viewMode={viewMode} orbitPlaying={orbitPlaying} onViewChange={setViewMode} onToggleOrbit={() => setOrbitPlaying((value) => !value)} />
     <section className="quantum-title"><span>ACTIVE FIELD / COMPLEX ORDER PARAMETER</span><h1>Evolve phase.<br />Measure conservation.</h1><p>Split-step Fourier GPE and finite-difference Euler-Korteweg states advance from identical initial conditions.</p></section>
     <aside className={`quantum-panel ${panelVisible ? '' : 'is-hidden'}`}>
       <div className="quantum-panel-heading"><div><span>PERIODIC GRID / ℏ = m = 1</span><h2>Quantum fluid</h2></div><button type="button" onClick={onBack}>Lab menu</button></div>
-      <OrbitalTrackingParameters configuration={parameterValue} className="quantum-control-group" />
-      <ParticleAppearanceSettings configuration={parameterValue} className="quantum-control-group" capabilities={{ shape: false, derivativeOrder: false, colorMode: false, color: false }} />
-      <Slider label="Particle count" value={settings.particleCount} min={64} max={1024} step={64} path="particleCount" onChange={(particleCount) => update({ particleCount })} />
-      <p className="quantum-warning">The hydrodynamic map is singular at vacuum nodes; this implementation uses a declared density floor for finite diagnostics.</p>
-      <ParamSelect className="quantum-select" label="Initial state" value={settings.preset} options={QUANTUM_FLUID_PRESETS} onChange={(preset) => update({ preset })} />
-      <ParamSelect className="quantum-select" label="View" value={settings.view} options={VIEW_OPTIONS} onChange={(view) => update({ view })} />
-      <ParamSelect className="quantum-select" label="GPE field" value={settings.field} options={FIELD_OPTIONS} onChange={(field) => update({ field })} />
-      <Slider label="Interaction g" value={settings.interaction} min={0} max={3} step={0.05} onChange={(interaction) => update({ interaction })} />
-      <Slider label="Harmonic potential" value={settings.potentialStrength} min={0} max={0.2} step={0.005} onChange={(potentialStrength) => update({ potentialStrength })} />
-      <Slider label="Time scale" value={settings.timeScale} min={0.1} max={2} step={0.05} onChange={(timeScale) => update({ timeScale })} />
-      <div className="quantum-actions"><button type="button" onClick={() => setResetToken((value) => value + 1)}>Reset identical states</button></div>
+      <div className="quantum-control-group">
+        <ParamSelect className="quantum-select" label="Grid size" path="size" value={settings.size} options={GRID_SIZE_OPTIONS} onChange={(size) => update({ size })} />
+        <Slider label="Particle count" value={settings.particleCount} min={64} max={settings.size ** 2} step={64} path="particleCount" onChange={(particleCount) => update({ particleCount })} />
+        <p className="quantum-warning">The hydrodynamic map is singular at vacuum nodes; this implementation uses a declared density floor for finite diagnostics.</p>
+        <ParamSelect className="quantum-select" label="Initial state" value={settings.preset} options={QUANTUM_FLUID_PRESETS} onChange={(preset) => update({ preset })} />
+        <ParamSelect className="quantum-select" label="View" value={settings.view} options={VIEW_OPTIONS} onChange={(view) => update({ view })} />
+        <ParamSelect className="quantum-select" label="GPE field" value={settings.field} options={FIELD_OPTIONS} onChange={(field) => update({ field })} />
+        <Slider label="Interaction g" value={settings.interaction} min={0} max={3} step={0.05} onChange={(interaction) => update({ interaction })} />
+        <Slider label="Harmonic potential" value={settings.potentialStrength} min={0} max={0.2} step={0.005} onChange={(potentialStrength) => update({ potentialStrength })} />
+        <Slider label="Time scale" value={settings.timeScale} min={0.1} max={2} step={0.05} onChange={(timeScale) => update({ timeScale })} />
+        <div className="quantum-actions"><button type="button" onClick={() => setResetToken((value) => value + 1)}>Reset identical states</button></div>
+      </div>
       <details open><summary>Conservation</summary>
         <div className="quantum-readout"><span>Simulation time</span><strong>{telemetry.time.toFixed(3)}</strong></div>
         <div className="quantum-readout"><span>Norm</span><strong>{telemetry.norm.toFixed(6)}</strong></div>
@@ -277,6 +447,8 @@ export default function QuantumFluidSim({ onBack }) {
         <div className="quantum-readout"><span>Density RMS delta</span><strong>{telemetry.rmsDifference.toExponential(2)}</strong></div>
         <div className="quantum-readout"><span>Maximum delta</span><strong>{telemetry.maximumDifference.toExponential(2)}</strong></div>
       </details>
+      <OrbitCameraSettings configuration={parameterValue} onChange={updateViewParameter} className="quantum-control-group" />
+      <ParticleAppearanceSettings configuration={parameterValue} onChange={updateViewParameter} className="quantum-control-group" capabilities={{ shape: true, derivativeOrder: true, colorMode: false, color: false }} descriptions={{ derivativeOrder: VECTOR_DERIVATIVE_DESCRIPTION }} />
     </aside>
   </SimulatorBase>;
 }

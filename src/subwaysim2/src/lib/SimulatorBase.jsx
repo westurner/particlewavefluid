@@ -213,21 +213,25 @@ export function OrbitalTrackingParameters({ configuration, onChange = () => {}, 
   ]} />;
 }
 
-export function ParticleAppearanceSettings({ configuration, onChange = () => {}, className = 'parameter-group', fields, pathPrefix = 'particleAppearance', capabilities = {} }) {
+export function ParticleAppearanceSettings({ configuration, onChange = () => {}, className = 'parameter-group', fields, pathPrefix = 'particleAppearance', capabilities = {}, descriptions = {} }) {
   const appearance = configuration?.[pathPrefix] ?? DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION;
   const support = { sizeScale: true, shape: true, derivativeOrder: true, colorMode: true, color: true, opacity: true, ...capabilities };
   const path = (field) => `${pathPrefix}.${field}`;
   const controls = (fields ?? [
-    { key: 'sizeScale', type: 'range', label: 'Particle size scale', min: 0.25, max: 3, step: 0.05, suffix: 'x' },
+    { key: 'sizeScale', type: 'range', label: 'Particle size scale', min: 0.25, max: 8, step: 0.05, suffix: 'x' },
     { key: 'shape', type: 'select', label: 'Particle shape', options: ['native', 'circle', 'square', 'sphere', 'vector'] },
     { key: 'derivativeOrder', type: 'range', label: 'Particle derivative order', min: 0, max: 4, step: 1 },
     { key: 'colorMode', type: 'select', label: 'Particle color mode', options: [{ value: 'native', label: 'Native / encoded' }, { value: 'custom', label: 'Custom color' }] },
     { key: 'color', type: 'color', label: 'Particle color', disabled: appearance.colorMode !== 'custom' },
     { key: 'opacity', type: 'range', label: 'Particle opacity', min: 0, max: 1, step: 0.01 }
-  ]).map((field) => {
+  ]).filter((field) => {
+    const key = field.key ?? field.path?.split('.').at(-1);
+    return !(['color', 'colorMode'].includes(key) && support[key] === false);
+  }).map((field) => {
     const fieldPath = field.path ?? path(field.key);
     const fieldValue = getAtPath(configuration, fieldPath) ?? field.defaultValue ?? DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION[field.key];
-    return { ...field, path: fieldPath, disabled: field.disabled || support[field.key] === false, value: field.value ?? fieldValue, checked: field.checked ?? fieldValue };
+    const description = descriptions[field.key] ?? field.description;
+    return { ...field, description, showDescription: field.showDescription ?? Boolean(descriptions[field.key]), path: fieldPath, disabled: field.disabled || support[field.key] === false, value: field.value ?? fieldValue, checked: field.checked ?? fieldValue };
   });
   return <SimulatorParameterControls title="Particle appearance" className={className} configuration={configuration} fields={controls} onChange={onChange} />;
 }
