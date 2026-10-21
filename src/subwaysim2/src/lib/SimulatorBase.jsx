@@ -16,7 +16,7 @@ export const OrbitCameraControls = forwardRef(function OrbitCameraControls({ cam
 
 export function CameraPerspectiveToolbar({ views = DEFAULT_CAMERA_VIEWS, viewMode, onViewChange, orbitPlaying = true, onToggleOrbit = () => {}, className = 'simulator-perspective-toolbar', modesClassName = 'simulator-perspective-modes', controls }) {
   const selectView = (id) => {
-    onViewChange(id);
+    onViewChange(id === viewMode && id !== 'orbital' ? 'previous' : id);
     if (id === 'orbital' && !orbitPlaying) onToggleOrbit();
   };
   return (
@@ -38,6 +38,7 @@ export function PerspectiveOrbitControls({ viewMode, orbitPlaying, views = DEFAU
   const focusTransitionRef = useRef(null);
   const focusClipRadiusRef = useRef(null);
   const cameraClipRangeRef = useRef(null);
+  const previousCameraParamsRef = useRef(null);
   const assignControlsRef = useCallback((instance) => {
     controlsRef.current = instance;
     if (typeof forwardedControlsRef === 'function') forwardedControlsRef(instance);
@@ -64,9 +65,40 @@ export function PerspectiveOrbitControls({ viewMode, orbitPlaying, views = DEFAU
   }, [camera]);
 
   useEffect(() => {
-    if (!viewMode || viewMode === 'orbital') return;
+    if (viewMode === 'previous') {
+      const previous = previousCameraParamsRef.current;
+      if (!previous) return;
+      focusTransitionRef.current = null;
+      focusClipRadiusRef.current = null;
+      camera.position.copy(previous.position);
+      camera.up.copy(previous.up);
+      controlsRef.current?.target.copy(previous.target);
+      if (camera.isPerspectiveCamera) camera.fov = previous.fov;
+      camera.zoom = previous.zoom;
+      camera.near = previous.near;
+      camera.far = previous.far;
+      camera.updateProjectionMatrix();
+      cameraClipRangeRef.current = { near: previous.near, far: previous.far };
+      controlsRef.current?.update();
+      return;
+    }
+    if (viewMode === 'orbital') {
+      camera.up.set(0, 1, 0);
+      controlsRef.current?.update();
+      return;
+    }
+    if (!viewMode) return;
     const view = stableViews.find((entry) => entry.id === viewMode);
     if (!view?.position) return;
+    previousCameraParamsRef.current = {
+      position: camera.position.clone(),
+      target: controlsRef.current?.target.clone() ?? new Vector3(...stableCameraParams.target),
+      up: camera.up.clone(),
+      zoom: camera.zoom,
+      fov: camera.fov,
+      near: camera.near,
+      far: camera.far
+    };
     focusTransitionRef.current = null;
     focusClipRadiusRef.current = null;
     if (cameraClipRangeRef.current) {
@@ -75,6 +107,7 @@ export function PerspectiveOrbitControls({ viewMode, orbitPlaying, views = DEFAU
       camera.updateProjectionMatrix();
     }
     camera.position.fromArray(view.position);
+    camera.up.fromArray(view.up ?? [0, 1, 0]);
     const target = view.target ?? stableCameraParams.target;
     controlsRef.current?.target.fromArray(target);
     camera.lookAt(...target);
@@ -215,10 +248,12 @@ export function OrbitalTrackingParameters({ configuration, onChange = () => {}, 
 
 export function ParticleAppearanceSettings({ configuration, onChange = () => {}, className = 'parameter-group', fields, pathPrefix = 'particleAppearance', capabilities = {}, descriptions = {} }) {
   const appearance = configuration?.[pathPrefix] ?? DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION;
-  const support = { sizeScale: true, shape: true, derivativeOrder: true, colorMode: true, color: true, opacity: true, ...capabilities };
+  const support = { sizeScale: true, zoomSizeEnabled: false, zoomSizeSensitivity: false, shape: true, derivativeOrder: true, colorMode: true, color: true, opacity: true, ...capabilities };
   const path = (field) => `${pathPrefix}.${field}`;
   const controls = (fields ?? [
     { key: 'sizeScale', type: 'range', label: 'Particle size scale', min: 0.25, max: 8, step: 0.05, suffix: 'x' },
+    { key: 'zoomSizeEnabled', type: 'toggle', label: 'Scale particle size with camera zoom' },
+    { key: 'zoomSizeSensitivity', type: 'range', label: 'Zoom size sensitivity', min: 0, max: 2, step: 0.05, suffix: 'x', disabled: !appearance.zoomSizeEnabled },
     { key: 'shape', type: 'select', label: 'Particle shape', options: ['native', 'circle', 'square', 'sphere', 'vector'] },
     { key: 'derivativeOrder', type: 'range', label: 'Particle derivative order', min: 0, max: 4, step: 1 },
     { key: 'colorMode', type: 'select', label: 'Particle color mode', options: [{ value: 'native', label: 'Native / encoded' }, { value: 'custom', label: 'Custom color' }] },
@@ -226,6 +261,7 @@ export function ParticleAppearanceSettings({ configuration, onChange = () => {},
     { key: 'opacity', type: 'range', label: 'Particle opacity', min: 0, max: 1, step: 0.01 }
   ]).filter((field) => {
     const key = field.key ?? field.path?.split('.').at(-1);
+    if (['zoomSizeEnabled', 'zoomSizeSensitivity'].includes(key) && support[key] === false) return false;
     return !(['color', 'colorMode'].includes(key) && support[key] === false);
   }).map((field) => {
     const fieldPath = field.path ?? path(field.key);

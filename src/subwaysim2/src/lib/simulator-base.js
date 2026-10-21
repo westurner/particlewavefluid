@@ -38,6 +38,8 @@ export const DEFAULT_ORBITAL_TRACKING_CONFIGURATION = Object.freeze({
 
 export const DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION = Object.freeze({
   sizeScale: 1,
+  zoomSizeEnabled: false,
+  zoomSizeSensitivity: 1,
   shape: 'native',
   derivativeOrder: 1,
   colorMode: 'native',
@@ -92,17 +94,21 @@ export function createCameraViews({ target = [0, 0, 0], distance = 24, frontDist
   const positions = {
     front: [0, 0, frontDistance * frontDirection],
     back: [0, 0, -frontDistance * frontDirection],
-    left: [-24, 0, 0],
-    right: [24, 0, 0],
-    ortho1: ortho1Offset ?? [14, 14, 20],
-    ortho2: ortho2Offset ?? [-14, 12, -20]
+    left: [-distance, 0, 0],
+    right: [distance, 0, 0],
+    top: [0, distance, 0],
+    bottom: [0, -distance, 0],
+    ortho1: ortho1Offset ?? [distance/2, distance/2, 5/6*distance],
+    ortho2: ortho2Offset ?? [-distance/2, distance/2, 5/6*-distance]
   };
+  const upVectors = { top: [0, 0, -1], bottom: [0, 0, 1] };
   return [
     ...Object.entries(positions).map(([id, offset]) => {
       const customOffset = id === 'ortho1' ? ortho1Offset : id === 'ortho2' ? ortho2Offset : null;
       return {
         id,
         label: id === 'ortho1' ? 'Ortho 1' : id === 'ortho2' ? 'Ortho 2' : `${id[0].toUpperCase()}${id.slice(1)}`,
+        up: upVectors[id] ?? [0, 1, 0],
         position: offset.map((value, axis) => target[axis] + value * (customOffset || id === 'front' || id === 'back' ? 1 : scale))
       };
     }),

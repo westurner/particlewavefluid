@@ -11,7 +11,7 @@ import {
   stepEulerKorteweg,
   stepGrossPitaevskii
 } from './quantumFluidModel.js';
-import { NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
+import { BooleanParamControl, NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
 import { CameraPerspectiveToolbar, OrbitCameraSettings, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
 import { DEFAULT_CAMERA_VIEWS, DEFAULT_SIMULATOR_3D_PARAMETERS, DEFAULT_SIMULATOR_CAMERA_CONFIGURATION } from './lib/simulator-base.js';
 
@@ -28,8 +28,16 @@ const FIELD_OPTIONS = [
   { value: 'current', label: 'Current magnitude' },
   { value: 'quantum-pressure', label: 'Quantum pressure' }
 ];
+const VORTEX_CHARGE_OPTIONS = [-3, -2, -1, 1, 2, 3].map((charge) => ({ value: charge, label: String(charge) }));
 
 const GRID_SIZE_OPTIONS = [16, 32, 64, 128, 256].map((size) => ({ value: size, label: `${size} x ${size}` }));
+const GRID_SHAPE_OPTIONS = [
+  { value: 'square', label: 'Square grid' },
+  { value: 'circle', label: 'Circle' },
+  { value: 'torus', label: 'Torus' }
+];
+const TORUS_MAJOR_RADIUS = 1.55;
+const TORUS_TUBE_RADIUS = 0.6;
 const PARTICLE_SHAPE_IDS = { native: 0, circle: 1, square: 2, sphere: 3, vector: 4 };
 const VECTOR_DERIVATIVE_DESCRIPTION = 'For Vector shape, order 0 shows local current where available; orders 1-4 use periodic derivatives of the active scalar field to set arrow direction.';
 
@@ -37,6 +45,7 @@ const PARTICLE_VERTEX_SHADER = `
   uniform float uParticleSize;
   uniform float uSizeScale;
   uniform float uPixelScale;
+  uniform float uZoomScale;
   attribute vec3 color;
   attribute float aVectorAngle;
   varying vec3 vColor;
@@ -46,7 +55,7 @@ const PARTICLE_VERTEX_SHADER = `
     vColor = color;
     vVectorAngle = aVectorAngle;
     vec4 modelPosition = modelViewMatrix * vec4(position, 1.0);
-    gl_PointSize = max(1.0, uParticleSize * uSizeScale * uPixelScale / max(-modelPosition.z, 0.001));
+    gl_PointSize = max(1.0, uParticleSize * uSizeScale * uPixelScale * uZoomScale / max(-modelPosition.z, 0.001));
     gl_Position = projectionMatrix * modelPosition;
   }
 `;
@@ -87,12 +96,61 @@ function createGridGeometry(size, particleCount) {
   return geometry;
 }
 
-function getGridSampleCoordinates(index, size, columns, rows) {
+function radicalInverse(value, base) {
+  let inverse = 1 / base;
+  let result = 0;
+  while (value > 0) {
+    result += (value % base) * inverse;
+    value = Math.floor(value / base);
+    inverse /= base;
+  }
+  return result;
+}
+
+function getGridSampleCoordinates(index, size, columns, rows, gridShape = 'square', particleCount = columns * rows, torusClosed = true) {
+  if (gridShape === 'torus') {
+    const sampleIndex = index + 1;
+    const majorFraction = radicalInverse(sampleIndex, 2);
+    return {
+      x: majorFraction * (size - 1),
+      y: radicalInverse(sampleIndex, 3) * (size - 1),
+      tubeFraction: Math.sqrt(radicalInverse(sampleIndex, 5)),
+      majorFraction: torusClosed ? majorFraction : 0.1 + majorFraction * 0.8
+    };
+  }
+  if (gridShape === 'circle') {
+    const radius = Math.sqrt((index + 0.5) / particleCount) * (size - 1) * 0.5;
+    const angle = index * 2.399963229728653;
+    return {
+      x: (size - 1) * 0.5 + Math.cos(angle) * radius,
+      y: (size - 1) * 0.5 + Math.sin(angle) * radius
+    };
+  }
   const column = index % columns;
   const row = Math.floor(index / columns);
   return {
     x: Math.min(size - 1, Math.max(0, (column + 0.5) * size / columns - 0.5)),
     y: Math.min(size - 1, Math.max(0, (row + 0.5) * size / rows - 0.5))
+  };
+}
+
+function getGridWorldPosition(gridShape, size, coordinates, elevation, width, majorRadius, tubeRadius) {
+  const { x, y, tubeFraction = 1, majorFraction = x / size } = coordinates;
+  if (gridShape === 'torus') {
+    const majorAngle = majorFraction * Math.PI * 2;
+    const tubeAngle = y / size * Math.PI * 2;
+    const sectionRadius = tubeRadius * tubeFraction;
+    const ringRadius = majorRadius + Math.cos(tubeAngle) * sectionRadius;
+    return {
+      x: Math.cos(majorAngle) * ringRadius,
+      y: elevation + Math.sin(tubeAngle) * sectionRadius,
+      z: Math.sin(majorAngle) * ringRadius
+    };
+  }
+  return {
+    x: (x / (size - 1) - 0.5) * width,
+    y: elevation,
+    z: (y / (size - 1) - 0.5) * width
   };
 }
 
@@ -150,10 +208,10 @@ function createParticleDirections(values, size, derivativeOrder, currentX, curre
   return { x: xValues, y: yValues };
 }
 
-function writeVectorAngles(attribute, directions, size, particleCount, columns, rows) {
+function writeVectorAngles(attribute, directions, size, particleCount, columns, rows, gridShape) {
   const angles = attribute.array;
   for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
-    const { x, y } = getGridSampleCoordinates(particleIndex, size, columns, rows);
+    const { x, y } = getGridSampleCoordinates(particleIndex, size, columns, rows, gridShape, particleCount);
     const directionX = sampleGridValue(directions.x, size, x, y);
     const directionY = sampleGridValue(directions.y, size, x, y);
     angles[particleIndex] = Math.atan2(directionY, directionX) - Math.PI / 2;
@@ -161,7 +219,7 @@ function writeVectorAngles(attribute, directions, size, particleCount, columns, 
   attribute.needsUpdate = true;
 }
 
-function updateFieldGeometry(geometry, size, observables, field, particleCount, particleAppearance, domainSize, width = 8) {
+function updateFieldGeometry(geometry, size, observables, field, particleCount, particleAppearance, domainSize, gridShape, torusMajorRadius, torusTubeRadius, torusClosed, width = 8) {
   const positions = geometry.attributes.position.array;
   const colors = geometry.attributes.color.array;
   const color = new Color();
@@ -178,14 +236,16 @@ function updateFieldGeometry(geometry, size, observables, field, particleCount, 
     ? createParticleDirections(samples, size, particleAppearance.derivativeOrder, observables.currentX, observables.currentY, domainSize / size, field === 'phase')
     : null;
   for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
-    const { x, y } = getGridSampleCoordinates(particleIndex, size, columns, rows);
+    const coordinates = getGridSampleCoordinates(particleIndex, size, columns, rows, gridShape, particleCount, torusClosed);
+    const { x, y } = coordinates;
     const value = sampleGridValue(samples, size, x, y);
     const normalized = field === 'phase'
       ? (value + Math.PI) / (2 * Math.PI)
       : Math.min(1, Math.abs(value) / maximumMagnitude);
-    positions[particleIndex * 3] = (x / (size - 1) - 0.5) * width;
-    positions[particleIndex * 3 + 1] = field === 'phase' ? 0.1 : normalized * 1.7;
-    positions[particleIndex * 3 + 2] = (y / (size - 1) - 0.5) * width;
+    const point = getGridWorldPosition(gridShape, size, coordinates, field === 'phase' ? 0.1 : normalized * 1.7, width, torusMajorRadius, torusTubeRadius);
+    positions[particleIndex * 3] = point.x;
+    positions[particleIndex * 3 + 1] = point.y;
+    positions[particleIndex * 3 + 2] = point.z;
     if (field === 'phase') color.setHSL(normalized, 0.8, 0.52);
     else if (field === 'quantum-pressure') color.setHSL(value >= 0 ? 0.08 : 0.55, 0.82, 0.3 + normalized * 0.35);
     else color.setHSL(0.58 - normalized * 0.5, 0.82, 0.32 + normalized * 0.3);
@@ -193,12 +253,12 @@ function updateFieldGeometry(geometry, size, observables, field, particleCount, 
     colors[particleIndex * 3 + 1] = color.g;
     colors[particleIndex * 3 + 2] = color.b;
   }
-  if (directions) writeVectorAngles(geometry.attributes.aVectorAngle, directions, size, particleCount, columns, rows);
+  if (directions) writeVectorAngles(geometry.attributes.aVectorAngle, directions, size, particleCount, columns, rows, gridShape);
   geometry.attributes.position.needsUpdate = true;
   geometry.attributes.color.needsUpdate = true;
 }
 
-function updateHydrodynamicGeometry(geometry, state, particleCount, particleAppearance, width = 8) {
+function updateHydrodynamicGeometry(geometry, state, particleCount, particleAppearance, gridShape, torusMajorRadius, torusTubeRadius, torusClosed, width = 8) {
   const positions = geometry.attributes.position.array;
   const colors = geometry.attributes.color.array;
   const density = finiteValues(state.density);
@@ -210,23 +270,25 @@ function updateHydrodynamicGeometry(geometry, state, particleCount, particleAppe
     ? createParticleDirections(density, state.size, particleAppearance.derivativeOrder, state.velocityX, state.velocityY, state.domainSize / state.size)
     : null;
   for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
-    const { x, y } = getGridSampleCoordinates(particleIndex, state.size, columns, rows);
+    const coordinates = getGridSampleCoordinates(particleIndex, state.size, columns, rows, gridShape, particleCount, torusClosed);
+    const { x, y } = coordinates;
     const value = sampleGridValue(density, state.size, x, y);
     const normalized = Math.min(1, value / maximumDensity);
-    positions[particleIndex * 3] = (x / (state.size - 1) - 0.5) * width;
-    positions[particleIndex * 3 + 1] = normalized * 1.7;
-    positions[particleIndex * 3 + 2] = (y / (state.size - 1) - 0.5) * width;
+    const point = getGridWorldPosition(gridShape, state.size, coordinates, normalized * 1.7, width, torusMajorRadius, torusTubeRadius);
+    positions[particleIndex * 3] = point.x;
+    positions[particleIndex * 3 + 1] = point.y;
+    positions[particleIndex * 3 + 2] = point.z;
     color.setHSL(0.32 - normalized * 0.24, 0.72, 0.3 + normalized * 0.32);
     colors[particleIndex * 3] = color.r;
     colors[particleIndex * 3 + 1] = color.g;
     colors[particleIndex * 3 + 2] = color.b;
   }
-  if (directions) writeVectorAngles(geometry.attributes.aVectorAngle, directions, state.size, particleCount, columns, rows);
+  if (directions) writeVectorAngles(geometry.attributes.aVectorAngle, directions, state.size, particleCount, columns, rows, gridShape);
   geometry.attributes.position.needsUpdate = true;
   geometry.attributes.color.needsUpdate = true;
 }
 
-function updateDifferenceGeometry(geometry, size, comparison, particleCount, particleAppearance, domainSize, width = 9) {
+function updateDifferenceGeometry(geometry, size, comparison, particleCount, particleAppearance, domainSize, gridShape, torusMajorRadius, torusTubeRadius, torusClosed, width = 9) {
   const positions = geometry.attributes.position.array;
   const colors = geometry.attributes.color.array;
   const scale = Math.max(comparison.maximumDifference, 1e-9);
@@ -238,27 +300,31 @@ function updateDifferenceGeometry(geometry, size, comparison, particleCount, par
     ? createParticleDirections(difference, size, particleAppearance.derivativeOrder, null, null, domainSize / size)
     : null;
   for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
-    const { x, y } = getGridSampleCoordinates(particleIndex, size, columns, rows);
+    const coordinates = getGridSampleCoordinates(particleIndex, size, columns, rows, gridShape, particleCount, torusClosed);
+    const { x, y } = coordinates;
     const normalized = sampleGridValue(difference, size, x, y) / scale;
-    positions[particleIndex * 3] = (x / (size - 1) - 0.5) * width;
-    positions[particleIndex * 3 + 1] = Math.abs(normalized) * 1.8;
-    positions[particleIndex * 3 + 2] = (y / (size - 1) - 0.5) * width;
+    const point = getGridWorldPosition(gridShape, size, coordinates, Math.abs(normalized) * 1.8, width, torusMajorRadius, torusTubeRadius);
+    positions[particleIndex * 3] = point.x;
+    positions[particleIndex * 3 + 1] = point.y;
+    positions[particleIndex * 3 + 2] = point.z;
     color.setHSL(normalized >= 0 ? 0.08 : 0.57, 0.88, 0.34 + Math.abs(normalized) * 0.3);
     colors[particleIndex * 3] = color.r;
     colors[particleIndex * 3 + 1] = color.g;
     colors[particleIndex * 3 + 2] = color.b;
   }
-  if (directions) writeVectorAngles(geometry.attributes.aVectorAngle, directions, size, particleCount, columns, rows);
+  if (directions) writeVectorAngles(geometry.attributes.aVectorAngle, directions, size, particleCount, columns, rows, gridShape);
   geometry.attributes.position.needsUpdate = true;
   geometry.attributes.color.needsUpdate = true;
 }
 
-function FieldPoints({ geometry, position, visible, particleAppearance }) {
+function FieldPoints({ geometry, position, visible, particleAppearance, controlsRef }) {
   const { gl, size } = useThree();
+  const baseZoomRef = useRef(null);
   const uniforms = useMemo(() => ({
     uParticleSize: { value: 0.13 },
     uSizeScale: { value: 1 },
     uPixelScale: { value: 1 },
+    uZoomScale: { value: 1 },
     uOpacity: { value: 0.94 },
     uShape: { value: 0 }
   }), []);
@@ -277,12 +343,23 @@ function FieldPoints({ geometry, position, visible, particleAppearance }) {
     uniforms.uShape.value = PARTICLE_SHAPE_IDS[particleAppearance.shape] ?? PARTICLE_SHAPE_IDS.native;
   }, [gl, particleAppearance.opacity, particleAppearance.shape, particleAppearance.sizeScale, size.height, uniforms]);
 
+  useFrame(({ camera }) => {
+    const controlTarget = controlsRef?.current?.target;
+    const distance = controlTarget ? camera.position.distanceTo(controlTarget) : camera.position.length();
+    if (!baseZoomRef.current) baseZoomRef.current = { distance, zoom: camera.zoom };
+    const zoomFactor = camera.zoom / baseZoomRef.current.zoom * baseZoomRef.current.distance / Math.max(distance, 1e-6);
+    const sensitivity = particleAppearance.zoomSizeSensitivity ?? 1;
+    uniforms.uZoomScale.value = particleAppearance.zoomSizeEnabled
+      ? Math.pow(Math.max(zoomFactor, 1e-6), sensitivity)
+      : 1;
+  });
+
   useEffect(() => () => material.dispose(), [material]);
 
   return <points geometry={geometry} material={material} position={position} visible={visible} />;
 }
 
-function QuantumEvolution({ settings, running, resetToken, onTelemetry, particleAppearance }) {
+function QuantumEvolution({ settings, running, resetToken, onTelemetry, particleAppearance, controlsRef }) {
   const gpeGeometry = useMemo(() => createGridGeometry(settings.size, settings.particleCount), [settings.particleCount, settings.size]);
   const hydrodynamicGeometry = useMemo(() => createGridGeometry(settings.size, settings.particleCount), [settings.particleCount, settings.size]);
   const differenceGeometry = useMemo(() => createGridGeometry(settings.size, settings.particleCount), [settings.particleCount, settings.size]);
@@ -293,14 +370,14 @@ function QuantumEvolution({ settings, running, resetToken, onTelemetry, particle
   const telemetryTimeRef = useRef(0);
 
   useEffect(() => {
-    const quantum = createQuantumState({ size: settings.size, domainSize: settings.domainSize, preset: settings.preset, interaction: settings.interaction });
+    const quantum = createQuantumState({ size: settings.size, domainSize: settings.domainSize, preset: settings.preset, interaction: settings.interaction, vortexCharge: settings.vortexCharge, vortexCoreRadius: settings.vortexCoreRadius, vortexCenterX: settings.vortexCenterX, vortexCenterY: settings.vortexCenterY });
     const hydrodynamic = createEulerKortewegState(quantum);
     const initial = quantumDiagnostics(quantum);
     stateRef.current = { quantum, hydrodynamic };
     initialDiagnosticsRef.current = initial;
     previousVortexCountRef.current = initial.vortices.length;
     phaseSlipsRef.current = 0;
-  }, [resetToken, settings.domainSize, settings.interaction, settings.preset, settings.size]);
+  }, [resetToken, settings.domainSize, settings.interaction, settings.preset, settings.size, settings.vortexCharge, settings.vortexCoreRadius, settings.vortexCenterX, settings.vortexCenterY]);
 
   useEffect(() => () => {
     gpeGeometry.dispose();
@@ -321,9 +398,9 @@ function QuantumEvolution({ settings, running, resetToken, onTelemetry, particle
     }
     const diagnostics = quantumDiagnostics(state.quantum, initialDiagnosticsRef.current);
     const comparison = compareQuantumHydrodynamicDensity(state.quantum, state.hydrodynamic);
-    updateFieldGeometry(gpeGeometry, settings.size, diagnostics.observables, settings.field, settings.particleCount, particleAppearance, settings.domainSize);
-    updateHydrodynamicGeometry(hydrodynamicGeometry, state.hydrodynamic, settings.particleCount, particleAppearance);
-    updateDifferenceGeometry(differenceGeometry, settings.size, comparison, settings.particleCount, particleAppearance, settings.domainSize);
+    updateFieldGeometry(gpeGeometry, settings.size, diagnostics.observables, settings.field, settings.particleCount, particleAppearance, settings.domainSize, settings.gridShape, settings.torusMajorRadius, settings.torusTubeRadius, settings.torusClosed);
+    updateHydrodynamicGeometry(hydrodynamicGeometry, state.hydrodynamic, settings.particleCount, particleAppearance, settings.gridShape, settings.torusMajorRadius, settings.torusTubeRadius, settings.torusClosed);
+    updateDifferenceGeometry(differenceGeometry, settings.size, comparison, settings.particleCount, particleAppearance, settings.domainSize, settings.gridShape, settings.torusMajorRadius, settings.torusTubeRadius, settings.torusClosed);
     telemetryTimeRef.current += frameDelta;
     if (telemetryTimeRef.current >= 0.2) {
       telemetryTimeRef.current = 0;
@@ -348,9 +425,9 @@ function QuantumEvolution({ settings, running, resetToken, onTelemetry, particle
 
   const sideBySide = settings.view === 'side-by-side';
   return <group>
-    <FieldPoints geometry={gpeGeometry} position={sideBySide ? [-4.6, 0, 0] : [0, 0, 0]} visible={sideBySide || settings.view === 'gpe'} particleAppearance={particleAppearance} />
-    <FieldPoints geometry={hydrodynamicGeometry} position={sideBySide ? [4.6, 0, 0] : [0, 0, 0]} visible={sideBySide || settings.view === 'euler-korteweg'} particleAppearance={particleAppearance} />
-    <FieldPoints geometry={differenceGeometry} position={[0, 0, 0]} visible={settings.view === 'difference'} particleAppearance={particleAppearance} />
+    <FieldPoints geometry={gpeGeometry} position={sideBySide ? [-4.6, 0, 0] : [0, 0, 0]} visible={sideBySide || settings.view === 'gpe'} particleAppearance={particleAppearance} controlsRef={controlsRef} />
+    <FieldPoints geometry={hydrodynamicGeometry} position={sideBySide ? [4.6, 0, 0] : [0, 0, 0]} visible={sideBySide || settings.view === 'euler-korteweg'} particleAppearance={particleAppearance} controlsRef={controlsRef} />
+    <FieldPoints geometry={differenceGeometry} position={[0, 0, 0]} visible={settings.view === 'difference'} particleAppearance={particleAppearance} controlsRef={controlsRef} />
   </group>;
 }
 
@@ -372,19 +449,27 @@ function QuantumScene({ viewMode, orbitPlaying, orbitSettings, particleAppearanc
     <ambientLight intensity={0.65} color="#b8dcd5" />
     <directionalLight intensity={1.3} position={[5, 10, 5]} color="#ffe8b5" />
     <gridHelper args={[20, 40, '#244d55', '#112b31']} position={[0, -0.08, 0]} />
-    <QuantumEvolution {...props} particleAppearance={particleAppearance} />
+    <QuantumEvolution {...props} particleAppearance={particleAppearance} controlsRef={cameraControlsRef} />
     <PerspectiveOrbitControls controlsRef={cameraControlsRef} viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={orbitSettings} cameraParams={{ minDistance: 8, maxDistance: 34, target: [orbitSettings.cameraTargetX, orbitSettings.cameraTargetY, orbitSettings.cameraTargetZ] }} onUserInteraction={onUserInteraction} />
   </>;
 }
 
-function Slider({ label, value, min, max, step, onChange, path }) {
-  return <NumericParamControl className="quantum-range" label={label} value={value} min={min} max={max} step={step} onChange={onChange} path={path} />;
+function Slider({ label, value, min, max, step, onChange, path, description }) {
+  return <NumericParamControl className="quantum-range" label={label} value={value} min={min} max={max} step={step} onChange={onChange} path={path} description={description} showDescription={Boolean(description)} />;
 }
 
 export default function QuantumFluidSim({ onBack }) {
-  const [presetSettings] = useState({ size: 32, particleCount: 1024, domainSize: 12, preset: 'vortex', view: 'side-by-side', field: 'density', interaction: 0.8, potentialStrength: 0, stepSize: 0.002, timeScale: 1, running: true, ...DEFAULT_SIMULATOR_CAMERA_CONFIGURATION, ...DEFAULT_SIMULATOR_3D_PARAMETERS, cameraPosX: 14, cameraPosY: 14, cameraPosZ: 20, cameraTargetX: 0, cameraTargetY: 0.5, cameraTargetZ: 0, cameraZoom: 1, cameraFov: 43, cameraNear: 0.1, cameraFar: 90 });
+  const [presetSettings] = useState({ size: 32, gridShape: 'square', torusMajorRadius: TORUS_MAJOR_RADIUS, torusTubeRadius: TORUS_TUBE_RADIUS, torusClosed: true, vortexCharge: 1, vortexCoreRadius: 0.75, vortexCenterX: 0, vortexCenterY: 0, particleCount: 1024, domainSize: 12, preset: 'vortex', view: 'side-by-side', field: 'density', interaction: 0.8, potentialStrength: 0, stepSize: 0.002, timeScale: 1, running: true, ...DEFAULT_SIMULATOR_CAMERA_CONFIGURATION, ...DEFAULT_SIMULATOR_3D_PARAMETERS, cameraPosX: 14, cameraPosY: 14, cameraPosZ: 20, cameraTargetX: 0, cameraTargetY: 0.5, cameraTargetZ: 0, cameraZoom: 1, cameraFov: 43, cameraNear: 0.1, cameraFar: 90 });
   const [settings, setSettings] = useState({
     size: 32,
+    gridShape: 'square',
+    torusMajorRadius: TORUS_MAJOR_RADIUS,
+    torusTubeRadius: TORUS_TUBE_RADIUS,
+    torusClosed: true,
+    vortexCharge: 1,
+    vortexCoreRadius: 0.75,
+    vortexCenterX: 0,
+    vortexCenterY: 0,
     particleCount: 1024,
     domainSize: 12,
     preset: 'vortex',
@@ -410,7 +495,13 @@ export default function QuantumFluidSim({ onBack }) {
     setViewSettings((current) => Object.fromEntries(Object.keys(current).map((key) => [key, next[key]])));
   };
   const updateViewParameter = (next, path) => {
+    const changedPaths = Array.isArray(path) ? path : [path];
+    if (changedPaths.length > 0 && changedPaths.every((changedPath) => typeof changedPath === 'string' && changedPath.startsWith('particleAppearance.'))) {
+      setViewSettings((current) => ({ ...current, particleAppearance: next.particleAppearance }));
+      return;
+    }
     if (path === 'size') next = { ...next, particleCount: Math.min(next.particleCount, next.size ** 2) };
+    if (path === 'torusMajorRadius') next = { ...next, torusTubeRadius: Math.min(next.torusTubeRadius, next.torusMajorRadius - 0.05) };
     updateParameterValue(next);
     if (typeof path === 'string' && (path.startsWith('cameraPos') || path.startsWith('cameraTarget'))) setViewMode(null);
   };
@@ -423,13 +514,29 @@ export default function QuantumFluidSim({ onBack }) {
       <div className="quantum-panel-heading"><div><span>PERIODIC GRID / ℏ = m = 1</span><h2>Quantum fluid</h2></div><button type="button" onClick={onBack}>Lab menu</button></div>
       <div className="quantum-control-group">
         <ParamSelect className="quantum-select" label="Grid size" path="size" value={settings.size} options={GRID_SIZE_OPTIONS} onChange={(size) => update({ size })} />
+        <ParamSelect className="quantum-select" label="Grid shape" path="gridShape" value={settings.gridShape} options={GRID_SHAPE_OPTIONS} onChange={(gridShape) => update({ gridShape })} />
+        {settings.gridShape === 'torus' && <>
+          <BooleanParamControl className="" label="Connect torus ends" checked={settings.torusClosed} path="torusClosed" onChange={(torusClosed) => update({ torusClosed })} />
+          <Slider label="Torus major radius" value={settings.torusMajorRadius} min={0.75} max={4} step={0.05} path="torusMajorRadius" onChange={(torusMajorRadius) => update({ torusMajorRadius })} />
+          <Slider label="Torus tube radius" value={settings.torusTubeRadius} min={0.1} max={Math.min(1.5, settings.torusMajorRadius - 0.05)} step={0.05} path="torusTubeRadius" onChange={(torusTubeRadius) => update({ torusTubeRadius })} />
+        </>}
         <Slider label="Particle count" value={settings.particleCount} min={64} max={settings.size ** 2} step={64} path="particleCount" onChange={(particleCount) => update({ particleCount })} />
         <p className="quantum-warning">The hydrodynamic map is singular at vacuum nodes; this implementation uses a declared density floor for finite diagnostics.</p>
         <ParamSelect className="quantum-select" label="Initial state" value={settings.preset} options={QUANTUM_FLUID_PRESETS} onChange={(preset) => update({ preset })} />
+        <details className="quantum-control-group" open>
+          <summary>GPE parameters</summary>
+          {settings.preset === 'vortex' && <>
+            <ParamSelect className="quantum-select" label="Vortex charge" path="vortexCharge" value={settings.vortexCharge} options={VORTEX_CHARGE_OPTIONS} onChange={(vortexCharge) => update({ vortexCharge })} />
+            <small className="parameter-description">Integer phase winding around the core; sign sets circulation direction and magnitude sets winding order.</small>
+            <Slider label="Vortex core radius" value={settings.vortexCoreRadius} min={0.1} max={3} step={0.05} path="vortexCoreRadius" onChange={(vortexCoreRadius) => update({ vortexCoreRadius })} description="Sets the radial scale over which density recovers from zero at the vortex core." />
+            <Slider label="Vortex center X" value={settings.vortexCenterX} min={-3} max={3} step={0.1} path="vortexCenterX" onChange={(vortexCenterX) => update({ vortexCenterX })} description="Offsets the vortex center horizontally from the grid center, in domain units." />
+            <Slider label="Vortex center Y" value={settings.vortexCenterY} min={-3} max={3} step={0.1} path="vortexCenterY" onChange={(vortexCenterY) => update({ vortexCenterY })} description="Offsets the vortex center vertically from the grid center, in domain units." />
+          </>}
+          <Slider label="Interaction g" value={settings.interaction} min={0} max={3} step={0.05} onChange={(interaction) => update({ interaction })} description="Nonlinear self-interaction strength; higher values make dense regions accumulate phase faster." />
+          <Slider label="Harmonic potential" value={settings.potentialStrength} min={0} max={0.2} step={0.005} onChange={(potentialStrength) => update({ potentialStrength })} description="Trap strength for the potential V(r) = 1/2 k r², centered on the grid origin." />
+        </details>
         <ParamSelect className="quantum-select" label="View" value={settings.view} options={VIEW_OPTIONS} onChange={(view) => update({ view })} />
         <ParamSelect className="quantum-select" label="GPE field" value={settings.field} options={FIELD_OPTIONS} onChange={(field) => update({ field })} />
-        <Slider label="Interaction g" value={settings.interaction} min={0} max={3} step={0.05} onChange={(interaction) => update({ interaction })} />
-        <Slider label="Harmonic potential" value={settings.potentialStrength} min={0} max={0.2} step={0.005} onChange={(potentialStrength) => update({ potentialStrength })} />
         <Slider label="Time scale" value={settings.timeScale} min={0.1} max={2} step={0.05} onChange={(timeScale) => update({ timeScale })} />
         <div className="quantum-actions"><button type="button" onClick={() => setResetToken((value) => value + 1)}>Reset identical states</button></div>
       </div>
@@ -448,7 +555,7 @@ export default function QuantumFluidSim({ onBack }) {
         <div className="quantum-readout"><span>Maximum delta</span><strong>{telemetry.maximumDifference.toExponential(2)}</strong></div>
       </details>
       <OrbitCameraSettings configuration={parameterValue} onChange={updateViewParameter} className="quantum-control-group" />
-      <ParticleAppearanceSettings configuration={parameterValue} onChange={updateViewParameter} className="quantum-control-group" capabilities={{ shape: true, derivativeOrder: true, colorMode: false, color: false }} descriptions={{ derivativeOrder: VECTOR_DERIVATIVE_DESCRIPTION }} />
+      <ParticleAppearanceSettings configuration={parameterValue} onChange={updateViewParameter} className="quantum-control-group" capabilities={{ zoomSizeEnabled: true, zoomSizeSensitivity: true, shape: true, derivativeOrder: true, colorMode: false, color: false }} descriptions={{ derivativeOrder: VECTOR_DERIVATIVE_DESCRIPTION }} />
     </aside>
   </SimulatorBase>;
 }

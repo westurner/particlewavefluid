@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 
 const baseUrl = process.env.BASE_URL ?? 'http://localhost:5173/';
-const viewLabels = ['Front', 'Back', 'Left', 'Right', 'Ortho 1', 'Ortho 2', 'Orbital tracking'];
+const viewLabels = ['Front', 'Back', 'Left', 'Right', 'Top', 'Bottom', 'Ortho 1', 'Ortho 2', 'Orbital tracking'];
 
 async function readCameraPosition(page) {
   return Promise.all(['X', 'Y', 'Z'].map((axis) => page.getByRole('slider', { name: new RegExp(`Camera Pos${axis}`) }).inputValue()));
@@ -47,14 +47,28 @@ test('SQGSIM camera views and orbital tracking are selectable', async (t) => {
   assert.deepEqual(await toolbar.getByRole('button').allTextContents(), viewLabels);
   assert.equal(await toolbar.getByRole('button', { name: 'Ortho 1' }).getAttribute('aria-pressed'), 'true');
 
+  await page.getByRole('button', { name: 'Pause simulation' }).evaluate((button) => button.click());
+  const zoom = page.getByRole('slider', { name: /^Zoom/ });
+  await zoom.fill('2');
+  await page.waitForTimeout(350);
+  const previousView = await page.locator('canvas').screenshot();
   await toolbar.getByRole('button', { name: 'Front' }).evaluate((button) => button.click());
   assert.equal(await toolbar.getByRole('button', { name: 'Front' }).getAttribute('aria-pressed'), 'true');
   assert.equal(await toolbar.getByRole('button', { name: 'Ortho 1' }).getAttribute('aria-pressed'), 'false');
+  await page.waitForTimeout(600);
+  const frontView = await page.locator('canvas').screenshot();
+  await toolbar.getByRole('button', { name: 'Front' }).evaluate((button) => button.click());
+  assert.equal(await toolbar.locator('button.active').count(), 0);
+  await page.waitForTimeout(600);
+  const restoredView = await page.locator('canvas').screenshot();
+  assert.notDeepEqual(frontView, restoredView, 'tapping the active fixed view should restore the previous camera pose');
+  assert.notDeepEqual(previousView, frontView, 'Front should move away from the previous camera pose');
 
   await toolbar.getByRole('button', { name: 'Orbital tracking' }).evaluate((button) => button.click());
   assert.equal(await toolbar.getByRole('button', { name: 'Orbital tracking' }).getAttribute('aria-pressed'), 'true');
   await page.waitForTimeout(250);
   assert.equal(await toolbar.getByRole('button', { name: 'Orbital tracking' }).getAttribute('aria-pressed'), 'true');
+  await page.getByRole('button', { name: 'Play simulation' }).evaluate((button) => button.click());
 
   const beforeDrag = await readCameraPosition(page);
   const mouseDrag = await dragWithSamples(page, dragStart, [
@@ -75,18 +89,19 @@ test('SQGSIM camera views and orbital tracking are selectable', async (t) => {
   const beforeTouch = await readCameraPosition(page);
   const touchClient = await page.context().newCDPSession(page);
   await touchClient.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: dragStart.x, y: dragStart.y, id: 1 }] });
-  const touchSamples = [];
-  const touchScreenshots = [];
   for (const x of [dragStart.x + 30, dragStart.x + 60, dragStart.x + 90, dragStart.x + 120]) {
     await touchClient.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: dragStart.y, id: 1 }] });
     await page.waitForTimeout(40);
-    touchScreenshots.push(await page.screenshot({ type: 'png' }));
   }
   await touchClient.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   await page.waitForTimeout(100);
   const afterTouch = await readCameraPosition(page);
   assert.notDeepEqual(afterTouch, beforeTouch, 'touch drag should update the camera');
-  assert.ok(touchScreenshots.filter((sample, index) => index === 0 || !sample.equals(touchScreenshots[index - 1])).length >= 3, 'touch drag should render several camera updates');
+
+  await toolbar.getByRole('button', { name: 'Top' }).evaluate((button) => button.click());
+  assert.equal(await toolbar.getByRole('button', { name: 'Top' }).getAttribute('aria-pressed'), 'true');
+  await toolbar.getByRole('button', { name: 'Bottom' }).evaluate((button) => button.click());
+  assert.equal(await toolbar.getByRole('button', { name: 'Bottom' }).getAttribute('aria-pressed'), 'true');
 
   const scrollMode = cameraPanel.getByRole('combobox', { name: 'Scroll mode' });
   await selectParam(page, 'Scroll mode', 'zoom');

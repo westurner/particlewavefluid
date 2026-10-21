@@ -97,11 +97,15 @@ function fft2d(real, imaginary, size, inverse = false) {
   }
 }
 
-export function createQuantumState({ size = 32, domainSize = 12, preset = 'vortex', interaction = 1 } = {}) {
+export function createQuantumState({ size = 32, domainSize = 12, preset = 'vortex', interaction = 1, vortexCharge = 1, vortexCoreRadius = 0.75, vortexCenterX = 0, vortexCenterY = 0 } = {}) {
   assertPowerOfTwo(size);
   const real = new Float64Array(size * size);
   const imaginary = new Float64Array(size * size);
   const spacing = domainSize / size;
+  const quantizedCharge = Number.isFinite(vortexCharge) ? Math.max(-3, Math.min(3, Math.round(vortexCharge))) : 1;
+  const coreRadius = Number.isFinite(vortexCoreRadius) ? Math.max(0.1, Math.abs(vortexCoreRadius)) : 0.75;
+  const centerX = Number.isFinite(vortexCenterX) ? vortexCenterX : 0;
+  const centerY = Number.isFinite(vortexCenterY) ? vortexCenterY : 0;
   for (let y = 0; y < size; y += 1) {
     const coordinateY = (y - size / 2) * spacing;
     for (let x = 0; x < size; x += 1) {
@@ -110,9 +114,11 @@ export function createQuantumState({ size = 32, domainSize = 12, preset = 'vorte
       let amplitude = 1;
       let phase = coordinateX * (2 * Math.PI / domainSize);
       if (preset === 'vortex') {
-        const radius = Math.hypot(coordinateX, coordinateY);
-        amplitude = Math.tanh(radius / 0.75);
-        phase = Math.atan2(coordinateY, coordinateX);
+        const relativeX = coordinateX - centerX;
+        const relativeY = coordinateY - centerY;
+        const radius = Math.hypot(relativeX, relativeY);
+        amplitude = Math.tanh(radius / coreRadius);
+        phase = Math.atan2(relativeY, relativeX) * quantizedCharge;
       } else if (preset === 'packet') {
         amplitude = Math.exp(-(coordinateX * coordinateX + coordinateY * coordinateY) / 2.2);
         phase = coordinateX * 1.2;

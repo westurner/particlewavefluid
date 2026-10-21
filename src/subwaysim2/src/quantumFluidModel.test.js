@@ -25,6 +25,21 @@ test('stationary vortex carries nonzero integer phase winding', () => {
   assert.ok(diagnostics.vortices.some(({ charge }) => Math.abs(charge) === 1));
 });
 
+test('vortex charge, core radius, and center change the initialized field', () => {
+  const defaultVortex = createQuantumState({ size: 32, preset: 'vortex' });
+  const doubleVortex = createQuantumState({ size: 32, preset: 'vortex', vortexCharge: 2 });
+  const counterVortex = createQuantumState({ size: 32, preset: 'vortex', vortexCharge: -1 });
+  const widerCore = createQuantumState({ size: 32, preset: 'vortex', vortexCoreRadius: 1.5 });
+  const offsetVortex = createQuantumState({ size: 32, preset: 'vortex', vortexCenterX: 1.5, vortexCenterY: -0.75 });
+  const sampleIndex = 18 * defaultVortex.size + 18;
+  const phaseAtSample = (state) => Math.atan2(state.imaginary[sampleIndex], state.real[sampleIndex]);
+
+  assert.notEqual(phaseAtSample(doubleVortex), phaseAtSample(defaultVortex));
+  assert.notEqual(phaseAtSample(counterVortex), phaseAtSample(defaultVortex));
+  assert.notDeepEqual(widerCore.real, defaultVortex.real);
+  assert.notDeepEqual(offsetVortex.imaginary, defaultVortex.imaginary);
+});
+
 test('free packet disperses while preserving norm', () => {
   const state = createQuantumState({ size: 32, preset: 'packet', interaction: 0 });
   const initial = quantumDiagnostics(state);

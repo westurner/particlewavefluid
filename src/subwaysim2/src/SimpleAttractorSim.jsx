@@ -1261,6 +1261,7 @@ function AttractorCamera({ configuration, onCameraChange, playing, paramsVisible
   const configurationRef = useRef(configuration);
   const destinationRef = useRef(new Vector3(...ATTRACTOR_CAMERA_VIEWS.find((view) => view.id === 'ortho1').position));
   const targetRef = useRef(new Vector3(...ATTRACTOR_CAMERA_TARGET));
+  const previousCameraPoseRef = useRef(null);
   const frameOffsetRef = useRef(new Vector3());
   const manualInteractionRef = useRef(false);
   const zoomWheelActiveRef = useRef(false);
@@ -1277,8 +1278,36 @@ function AttractorCamera({ configuration, onCameraChange, playing, paramsVisible
   useEffect(() => {
     if (viewMode === null && manualInteractionRef.current && lastCameraPoseKeyRef.current === cameraPoseKey) return;
     lastCameraPoseKeyRef.current = cameraPoseKey;
+    if (viewMode === 'previous') {
+      const previous = previousCameraPoseRef.current;
+      if (!previous) return;
+      manualInteractionRef.current = false;
+      camera.up.copy(previous.up);
+      camera.zoom = previous.zoom;
+      camera.fov = previous.fov;
+      camera.near = previous.near;
+      camera.far = previous.far;
+      zoomTargetRef.current = previous.zoom;
+      camera.updateProjectionMatrix();
+      destinationRef.current.copy(previous.position);
+      targetRef.current.copy(previous.target);
+      return;
+    }
     const view = ATTRACTOR_CAMERA_VIEWS.find((candidate) => candidate.id === viewMode);
     manualInteractionRef.current = false;
+    if (viewMode === 'orbital') camera.up.set(0, 1, 0);
+    if (view?.position) {
+      previousCameraPoseRef.current = {
+        position: camera.position.clone().sub(frameOffsetRef.current),
+        target: controlsRef.current?.target.clone() ?? targetRef.current.clone(),
+        up: camera.up.clone(),
+        zoom: camera.zoom,
+        fov: camera.fov,
+        near: camera.near,
+        far: camera.far
+      };
+    }
+    if (view?.position) camera.up.fromArray(view.up ?? [0, 1, 0]);
     const basePosition = new Vector3(...(view?.position ?? [configuration.cameraPosX, configuration.cameraPosY, configuration.cameraPosZ]));
     if (!view?.position) basePosition.sub(frameOffsetRef.current);
     const target = view?.target
