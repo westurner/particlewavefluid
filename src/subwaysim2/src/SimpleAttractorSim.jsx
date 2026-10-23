@@ -1658,8 +1658,8 @@ function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing,
   );
 }
 
-function RangeControl({ label, value, min, max, step, onChange, disabled = false, editing = false, isDefault = true, onReset }) {
-  return <NumericParamControl className="attractor-control" label={label} value={value} min={min} max={max} step={step} editing={editing} isDefault={isDefault} onReset={onReset} onChange={onChange} />;
+function RangeControl({ label, value, min, max, step, onChange, disabled = false, editing = false, isDefault = true, onReset, description }) {
+  return <NumericParamControl className="attractor-control" label={label} value={value} min={min} max={max} step={step} editing={editing} isDefault={isDefault} onReset={onReset} onChange={onChange} description={description} showDescription={Boolean(description)} />;
 }
 
 function ColorControl({ label, value, onChange }) {
@@ -1755,7 +1755,7 @@ function AttractorPanel({ variant, particleCount, configuration, presets, curren
         <p className="attractor-model-note"><strong>{modelDetails.status}</strong><br />{modelDetails.description}<br /><strong>Response:</strong> {modelDetails.equation}<br /><strong>Solver:</strong> {modelDetails.solver}</p>
         {mechanicsParameterKeys.map((key) => {
           const field = FIELD_MECHANICS_PARAMETER_FIELDS[key];
-          return <RangeControl key={key} label={field.label} value={mechanics[key]} min={field.min} max={field.max} step={field.step} onChange={(value) => updateMechanics(key, value)} />;
+          return <RangeControl key={key} label={field.label} value={mechanics[key]} min={field.min} max={field.max} step={field.step} onChange={(value) => updateMechanics(key, value)} description={field.description} />;
         })}
         {comparison.primary.volumeChangeRate !== null && <p className="attractor-model-difference">Reference volume rate at 2 core radii: <strong>{comparison.primary.volumeChangeRate.toFixed(4)} / step</strong></p>}
         {hasBlackHoles && <p className="attractor-model-note">GPU particles sample reduced response fields, not a full shock-capturing or pressure-Poisson NS solver. SQG and DDF remain phenomenological hypotheses with no claimed derivation from QED, amplituhedra, or general relativity.</p>}

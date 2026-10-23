@@ -393,6 +393,40 @@ test('quantum fluid lab evolves synchronized models and exposes conservation tel
   await initialState.click();
   await page.locator('[role="option"][data-value="vortex"]').click();
   assert.equal(await vortexCharge.count(), 1);
+  const hypothesisGroup = page.locator('details.quantum-control-group').filter({ has: page.locator('summary').filter({ hasText: /^SQG \/ DDF hypothesis$/ }) });
+  await hypothesisGroup.locator('summary').click();
+  const hypothesisModel = page.getByRole('combobox', { name: 'Hypothesis model' });
+  assert.match(await hypothesisModel.textContent(), /SQG \/ GR \+ GPE/);
+  for (const label of ['Core radius', 'Compressibility', 'Quantum pressure', 'Normalized speed of light', 'SQG phase/vorticity spin coupling']) {
+    assert.equal(await hypothesisGroup.getByRole('slider', { name: label, exact: true }).count(), 1);
+  }
+  assert.equal(await hypothesisGroup.getByText(/does not solve a complex GPE/).count(), 1);
+  await hypothesisModel.click();
+  await page.locator('[role="option"][data-value="ddf"]').click();
+  for (const label of ['Base viscosity', 'Dilatancy', 'Speed limit']) {
+    assert.equal(await hypothesisGroup.getByRole('slider', { name: label, exact: true }).count(), 1);
+  }
+  await hypothesisModel.click();
+  await page.locator('[role="option"][data-value="ddf-tensor-gaussian"]').click();
+  assert.equal(await hypothesisGroup.getByRole('slider', { name: 'Tensor-Gaussian waist', exact: true }).count(), 1);
+  const viewSelector = page.getByRole('combobox', { name: 'View' });
+  await viewSelector.click();
+  await page.locator('[role="option"][data-value="hypothesis"]').click();
+  assert.match(await viewSelector.textContent(), /SQG \/ DDF response/);
+  await page.waitForTimeout(200);
+  await page.getByRole('button', { name: 'Pause' }).click();
+  await page.waitForTimeout(150);
+  const hypothesisCanvas = page.locator('.quantum-scene canvas');
+  const densityResponse = await hypothesisCanvas.screenshot();
+  const gpeField = page.getByRole('combobox', { name: 'GPE field' });
+  await gpeField.click();
+  await page.locator('[role="option"][data-value="phase"]').click();
+  await page.waitForTimeout(150);
+  const phaseResponse = await hypothesisCanvas.screenshot();
+  assert.notDeepEqual(phaseResponse, densityResponse, 'the SQG/DDF response should use the selected GPE phase field');
+  await page.getByRole('button', { name: 'Run' }).click();
+  await viewSelector.click();
+  await page.locator('[role="option"][data-value="side-by-side"]').click();
   const particleCount = page.getByRole('slider', { name: 'Particle count' });
   await particleCount.press('ArrowLeft');
   assert.equal(await particleCount.inputValue(), '960');

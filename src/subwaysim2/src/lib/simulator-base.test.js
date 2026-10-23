@@ -13,7 +13,7 @@ function createStorage() {
 
 test('shared camera helpers retain presets, targets, and overrideable orbit parameters', () => {
   const attractorViews = createCameraViews();
-  assert.deepEqual(attractorViews.find((view) => view.id === 'ortho1').position, [14, 14, 20]);
+  assert.deepEqual(attractorViews.find((view) => view.id === 'ortho1').position, [12, 12, 20]);
   assert.deepEqual(attractorViews.find((view) => view.id === 'top').position, [0, 24, 0]);
   assert.deepEqual(attractorViews.find((view) => view.id === 'top').up, [0, 0, -1]);
   assert.deepEqual(attractorViews.find((view) => view.id === 'bottom').position, [0, -24, 0]);

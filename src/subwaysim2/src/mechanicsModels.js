@@ -74,17 +74,17 @@ export const FIELD_MODEL_DETAILS = Object.freeze({
 });
 
 export const FIELD_MECHANICS_PARAMETER_FIELDS = Object.freeze({
-  coreRadius: { label: 'Core radius', min: 0.05, max: 5, step: 0.05 },
-  quantumPressure: { label: 'Quantum pressure', min: 0, max: 5, step: 0.01 },
-  compressibility: { label: 'Compressibility', min: 0, max: 4, step: 0.01 },
-  baseViscosity: { label: 'Base viscosity', min: 0, max: 0.5, step: 0.005 },
-  dilatancy: { label: 'Dilatancy', min: 0, max: 10, step: 0.05 },
-  speedLimit: { label: 'Speed limit', min: 0.1, max: 10, step: 0.1 },
-  grSpeedOfLight: { label: 'Normalized speed of light', min: 5, max: 1000, step: 1 },
-  tensorGaussianWaist: { label: 'Tensor-Gaussian waist', min: 0.1, max: 20, step: 0.1 },
+  coreRadius: { label: 'Core radius', min: 0.05, max: 5, step: 0.05, description: 'Characteristic inner length scale; it regularizes radial response and sets how quickly the SQG GPE correction decays away from the core.' },
+  quantumPressure: { label: 'Quantum pressure', min: 0, max: 5, step: 0.01, description: 'Weights the Laplacian/dispersion term in the reduced GPE response. This is not a pressure-Poisson solve.' },
+  compressibility: { label: 'Compressibility', min: 0, max: 4, step: 0.01, description: 'Controls the nonlinear GPE coupling in SQG and the radial sink/divergence in the reduced compressible response.' },
+  baseViscosity: { label: 'Base viscosity', min: 0, max: 0.5, step: 0.005, description: 'Baseline viscosity used by reduced NS responses and DDF mobility; higher values lower DDF mobility.' },
+  dilatancy: { label: 'Dilatancy', min: 0, max: 10, step: 0.05, description: 'Scales the speed- and strain-dependent viscosity increase in the DDF mobility model.' },
+  speedLimit: { label: 'Speed limit', min: 0.1, max: 10, step: 0.1, description: 'Reference speed for DDF mobility; as particle speed approaches this value, the dilatant penalty rises sharply.' },
+  grSpeedOfLight: { label: 'Normalized speed of light', min: 5, max: 1000, step: 1, description: 'Speed scale used in the 1PN-inspired radial correction; increasing it weakens that relativistic correction.' },
+  tensorGaussianWaist: { label: 'Tensor-Gaussian waist', min: 0.1, max: 20, step: 0.1, description: 'Radial width of the Gaussian localization, exp(-r²/(2 waist²)), applied by tensor-Gaussian variants.' },
   grassmannianPoleWeight: { label: 'Positive-cell pole weight', min: 0, max: 1, step: 0.01 },
   geometryCoupling: { label: 'Amplituhedron acceleration coupling', min: 0, max: 0.25, step: 0.005 },
-  spinPhaseCoupling: { label: 'SQG phase/vorticity spin coupling', min: 0, max: 1, step: 0.01 },
+  spinPhaseCoupling: { label: 'SQG phase/vorticity spin coupling', min: 0, max: 1, step: 0.01, description: 'Scales the bounded spin-axis projection of phase-gradient and vorticity alignment in the SQG response.' },
   geometrySpinCoupling: { label: 'Gr(2,4) spin-axis coupling', min: 0, max: 0.25, step: 0.005 }
 });
 

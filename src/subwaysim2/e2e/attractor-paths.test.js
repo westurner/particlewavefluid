@@ -46,6 +46,43 @@ test('attractor paths render after motion and are available in simple, SQG, and 
     assert.equal(await page.getByRole('checkbox', { name: 'Show attractor paths' }).isChecked(), false, `${variant} paths should default off`);
     assert.equal(await page.getByRole('slider', { name: /^Attractor path duration/ }).inputValue(), '6', `${variant} should expose attractor path duration`);
 
+    if (variant === 'SQG') {
+      for (const [label, description] of [
+        ['Core radius', /Characteristic inner length scale/],
+        ['Compressibility', /nonlinear GPE coupling/],
+        ['Quantum pressure', /Laplacian\/dispersion term/],
+        ['Normalized speed of light', /1PN-inspired radial correction/],
+        ['SQG phase\/vorticity spin coupling', /spin-axis projection/]
+      ]) {
+        const slider = page.getByRole('slider', { name: label, exact: true });
+        assert.equal(await slider.count(), 1, `SQG should expose ${label}`);
+        assert.match(await slider.locator('..').locator('.parameter-description').textContent(), description, `SQG should explain ${label}`);
+      }
+      const activeModel = page.getByRole('combobox', { name: 'Active model' });
+      await activeModel.click();
+      await page.getByRole('option', { name: 'SQG / normed tensor-Gaussian splat' }).click();
+      assert.equal(await page.getByRole('slider', { name: 'Tensor-Gaussian waist', exact: true }).count(), 1);
+      assert.equal(await page.getByText(/Radial width of the Gaussian localization/).count(), 1);
+    }
+
+    if (variant === 'DDF') {
+      for (const [label, description] of [
+        ['Base viscosity', /Baseline viscosity used by reduced NS responses and DDF mobility/],
+        ['Dilatancy', /Scales the speed- and strain-dependent viscosity increase/],
+        ['Speed limit', /Reference speed for DDF mobility/],
+        ['SQG phase/vorticity spin coupling', /spin-axis projection/]
+      ]) {
+        const slider = page.getByRole('slider', { name: label, exact: true });
+        assert.equal(await slider.count(), 1, `DDF should expose ${label}`);
+        assert.match(await slider.locator('..').locator('.parameter-description').textContent(), description, `DDF should explain ${label}`);
+      }
+      const activeModel = page.getByRole('combobox', { name: 'Active model' });
+      await activeModel.click();
+      await page.getByRole('option', { name: 'DDF / normed tensor-Gaussian splat' }).click();
+      assert.equal(await page.getByRole('slider', { name: 'Tensor-Gaussian waist', exact: true }).count(), 1);
+      assert.equal(await page.getByText(/Radial width of the Gaussian localization/).count(), 1);
+    }
+
     if (variant === 'simple') {
       const pathToggle = page.getByRole('checkbox', { name: 'Show attractor paths' });
       await pathToggle.check();

@@ -205,8 +205,8 @@ function HeatScene({ settings, statesRef, running, resetToken, viewMode, orbitPl
     <color attach="background" args={['#0a1519']} />
     <fog attach="fog" args={['#0a1519', 13, 27]} />
     <ambientLight intensity={0.72} color="#d7e6df" />
-    <directionalLight intensity={1.4} position={[5, 9, 6]} color="#fff0d2" />
-    <pointLight intensity={16} distance={8} position={[0, 1, 0]} color="#e6a256" />
+    {/*<directionalLight intensity={1.4} position={[5, 9, 6]} color="#fff0d2" />
+    <pointLight intensity={16} distance={8} position={[0, 1, 0]} color="#e6a256" />*/}
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.16, 0]}><planeGeometry args={[12, 12]} /><meshStandardMaterial color="#19262a" roughness={1} /></mesh>
     {['fourier', 'cattaneo', 'ddf'].map((model) => <group key={model} visible={isVisible(model)}>
       <mesh position={[LANE_X[model], 0.04, 0]}><boxGeometry args={[0.82, 0.11, RAIL_LENGTH + 0.25]} /><meshStandardMaterial color="#394346" roughness={0.78} /></mesh>

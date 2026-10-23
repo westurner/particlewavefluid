@@ -14,10 +14,12 @@ import {
 import { BooleanParamControl, NumericParamControl, ParamSelect } from './lib/ParamControls.jsx';
 import { CameraPerspectiveToolbar, OrbitCameraSettings, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase } from './lib/SimulatorBase.jsx';
 import { DEFAULT_CAMERA_VIEWS, DEFAULT_SIMULATOR_3D_PARAMETERS, DEFAULT_SIMULATOR_CAMERA_CONFIGURATION } from './lib/simulator-base.js';
+import { DEFAULT_FIELD_MECHANICS, evaluateFieldModel, FIELD_MECHANICS_PARAMETER_FIELDS, FIELD_MODEL_DETAILS, FIELD_MODEL_PARAMETER_DEPENDENCIES, FIELD_MODEL_OPTIONS } from './mechanicsModels.js';
 
 const VIEW_OPTIONS = [
   { value: 'side-by-side', label: 'GPE / Euler-Korteweg' },
   { value: 'difference', label: 'Density difference' },
+  { value: 'hypothesis', label: 'SQG / DDF response' },
   { value: 'gpe', label: 'GPE only' },
   { value: 'euler-korteweg', label: 'Euler-Korteweg only' }
 ];
@@ -29,6 +31,7 @@ const FIELD_OPTIONS = [
   { value: 'quantum-pressure', label: 'Quantum pressure' }
 ];
 const VORTEX_CHARGE_OPTIONS = [-3, -2, -1, 1, 2, 3].map((charge) => ({ value: charge, label: String(charge) }));
+const HYPOTHESIS_MODEL_OPTIONS = FIELD_MODEL_OPTIONS.filter(({ value }) => ['sqg', 'sqg-tensor-gaussian', 'ddf', 'ddf-tensor-gaussian'].includes(value));
 
 const GRID_SIZE_OPTIONS = [16, 32, 64, 128, 256].map((size) => ({ value: size, label: `${size} x ${size}` }));
 const GRID_SHAPE_OPTIONS = [
@@ -164,6 +167,10 @@ function sampleGridValue(values, size, x, y) {
   const top = values[y0 * size + x0] * (1 - xFraction) + values[y0 * size + x1] * xFraction;
   const bottom = values[y1 * size + x0] * (1 - xFraction) + values[y1 * size + x1] * xFraction;
   return top * (1 - yFraction) + bottom * yFraction;
+}
+
+function wrappedPhaseDelta(value) {
+  return Math.atan2(Math.sin(value), Math.cos(value));
 }
 
 function finiteValues(values) {
@@ -317,6 +324,99 @@ function updateDifferenceGeometry(geometry, size, comparison, particleCount, par
   geometry.attributes.color.needsUpdate = true;
 }
 
+function updateHypothesisGeometry(geometry, size, observables, field, particleCount, particleAppearance, domainSize, gridShape, torusMajorRadius, torusTubeRadius, torusClosed, vortexCenterX, vortexCenterY, fieldMechanics, width = 8) {
+  const positions = geometry.attributes.position.array;
+  const colors = geometry.attributes.color.array;
+  const density = finiteValues(observables.density);
+  const maximumDensity = maximumAbsoluteValue(density);
+  const values = field === 'phase'
+    ? finiteValues(observables.phase)
+    : field === 'current'
+      ? finiteValues(Float64Array.from(observables.currentX, (value, index) => Math.hypot(value, observables.currentY[index])))
+      : field === 'quantum-pressure'
+        ? finiteValues(observables.quantumPressure)
+        : density;
+    const phaseGradientX = new Float64Array(density.length);
+    const phaseGradientY = new Float64Array(density.length);
+    const phaseGradientMagnitude = new Float64Array(density.length);
+    const spacing = domainSize / size;
+    let maximumPhaseGradient = 1e-9;
+    for (let gridY = 0; gridY < size; gridY += 1) {
+      for (let gridX = 0; gridX < size; gridX += 1) {
+        const sampleIndex = gridY * size + gridX;
+        const left = gridY * size + (gridX + size - 1) % size;
+        const right = gridY * size + (gridX + 1) % size;
+        const down = ((gridY + size - 1) % size) * size + gridX;
+        const up = ((gridY + 1) % size) * size + gridX;
+        phaseGradientX[sampleIndex] = wrappedPhaseDelta(observables.phase[right] - observables.phase[left]) / (2 * spacing);
+        phaseGradientY[sampleIndex] = wrappedPhaseDelta(observables.phase[up] - observables.phase[down]) / (2 * spacing);
+        phaseGradientMagnitude[sampleIndex] = Math.hypot(phaseGradientX[sampleIndex], phaseGradientY[sampleIndex]);
+        maximumPhaseGradient = Math.max(maximumPhaseGradient, phaseGradientMagnitude[sampleIndex]);
+      }
+    }
+    const maximumSelectedField = maximumAbsoluteValue(values);
+  const directions = particleAppearance.shape === 'vector'
+    ? createParticleDirections(values, size, particleAppearance.derivativeOrder, observables.currentX, observables.currentY, domainSize / size, field === 'phase')
+    : null;
+  const columns = Math.ceil(Math.sqrt(particleCount));
+  const rows = Math.ceil(particleCount / columns);
+  const responses = new Float64Array(particleCount);
+  let maximumResponse = 1e-9;
+  const velocityAt = (index, component) => {
+    const floorDensity = Math.max(density[index], 1e-8);
+    return (component === 'x' ? observables.currentX[index] : observables.currentY[index]) / floorDensity;
+  };
+
+  for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
+    const { x, y } = getGridSampleCoordinates(particleIndex, size, columns, rows, gridShape, particleCount, torusClosed);
+    const gridX = Math.max(0, Math.min(size - 1, Math.round(x)));
+    const gridY = Math.max(0, Math.min(size - 1, Math.round(y)));
+    const sampleIndex = gridY * size + gridX;
+    const left = gridY * size + (gridX + size - 1) % size;
+    const right = gridY * size + (gridX + 1) % size;
+    const down = ((gridY + size - 1) % size) * size + gridX;
+    const up = ((gridY + 1) % size) * size + gridX;
+    const velocityX = velocityAt(sampleIndex, 'x');
+    const velocityY = velocityAt(sampleIndex, 'y');
+    const selectedPhaseGradientX = field === 'phase' ? phaseGradientX[sampleIndex] : velocityX;
+    const selectedPhaseGradientY = field === 'phase' ? phaseGradientY[sampleIndex] : velocityY;
+    const vorticity = (velocityAt(right, 'y') - velocityAt(left, 'y') - velocityAt(up, 'x') + velocityAt(down, 'x')) / (2 * spacing);
+    const coordinateX = (gridX - size / 2) * spacing - (Number.isFinite(vortexCenterX) ? vortexCenterX : 0);
+    const coordinateY = (gridY - size / 2) * spacing - (Number.isFinite(vortexCenterY) ? vortexCenterY : 0);
+    const modelResponse = evaluateFieldModel(fieldMechanics.model, {
+      radius: Math.max(0.05, Math.hypot(coordinateX, coordinateY)),
+      speed: Math.hypot(velocityX, velocityY),
+      magnitude: field === 'phase'
+        ? Math.min(1, phaseGradientMagnitude[sampleIndex] / maximumPhaseGradient)
+        : Math.min(1, Math.abs(values[sampleIndex]) / maximumSelectedField),
+      rotation: vorticity * 0.5,
+      spinAxis: [0, 0, 1],
+      phaseGradient: [selectedPhaseGradientX, selectedPhaseGradientY, 0],
+      phaseVorticity: [0, 0, vorticity]
+    }, fieldMechanics);
+    const response = modelResponse.radialAcceleration + (modelResponse.tangentialAcceleration ?? 0) + (modelResponse.rotationalResponse ?? 0);
+    responses[particleIndex] = Number.isFinite(response) ? response : 0;
+    maximumResponse = Math.max(maximumResponse, Math.abs(responses[particleIndex]));
+  }
+
+  const color = new Color();
+  for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
+    const coordinates = getGridSampleCoordinates(particleIndex, size, columns, rows, gridShape, particleCount, torusClosed);
+    const normalized = responses[particleIndex] / maximumResponse;
+    const point = getGridWorldPosition(gridShape, size, coordinates, normalized * 1.8, width, torusMajorRadius, torusTubeRadius);
+    positions[particleIndex * 3] = point.x;
+    positions[particleIndex * 3 + 1] = point.y;
+    positions[particleIndex * 3 + 2] = point.z;
+    color.setHSL(normalized >= 0 ? 0.08 : 0.58, 0.86, 0.34 + Math.abs(normalized) * 0.34);
+    colors[particleIndex * 3] = color.r;
+    colors[particleIndex * 3 + 1] = color.g;
+    colors[particleIndex * 3 + 2] = color.b;
+  }
+  if (directions) writeVectorAngles(geometry.attributes.aVectorAngle, directions, size, particleCount, columns, rows, gridShape);
+  geometry.attributes.position.needsUpdate = true;
+  geometry.attributes.color.needsUpdate = true;
+}
+
 function FieldPoints({ geometry, position, visible, particleAppearance, controlsRef }) {
   const { gl, size } = useThree();
   const baseZoomRef = useRef(null);
@@ -363,6 +463,7 @@ function QuantumEvolution({ settings, running, resetToken, onTelemetry, particle
   const gpeGeometry = useMemo(() => createGridGeometry(settings.size, settings.particleCount), [settings.particleCount, settings.size]);
   const hydrodynamicGeometry = useMemo(() => createGridGeometry(settings.size, settings.particleCount), [settings.particleCount, settings.size]);
   const differenceGeometry = useMemo(() => createGridGeometry(settings.size, settings.particleCount), [settings.particleCount, settings.size]);
+  const hypothesisGeometry = useMemo(() => createGridGeometry(settings.size, settings.particleCount), [settings.particleCount, settings.size]);
   const stateRef = useRef(null);
   const initialDiagnosticsRef = useRef(null);
   const previousVortexCountRef = useRef(0);
@@ -383,7 +484,8 @@ function QuantumEvolution({ settings, running, resetToken, onTelemetry, particle
     gpeGeometry.dispose();
     hydrodynamicGeometry.dispose();
     differenceGeometry.dispose();
-  }, [differenceGeometry, gpeGeometry, hydrodynamicGeometry]);
+    hypothesisGeometry.dispose();
+  }, [differenceGeometry, gpeGeometry, hypothesisGeometry, hydrodynamicGeometry]);
 
   useFrame((_, frameDelta) => {
     const state = stateRef.current;
@@ -401,6 +503,9 @@ function QuantumEvolution({ settings, running, resetToken, onTelemetry, particle
     updateFieldGeometry(gpeGeometry, settings.size, diagnostics.observables, settings.field, settings.particleCount, particleAppearance, settings.domainSize, settings.gridShape, settings.torusMajorRadius, settings.torusTubeRadius, settings.torusClosed);
     updateHydrodynamicGeometry(hydrodynamicGeometry, state.hydrodynamic, settings.particleCount, particleAppearance, settings.gridShape, settings.torusMajorRadius, settings.torusTubeRadius, settings.torusClosed);
     updateDifferenceGeometry(differenceGeometry, settings.size, comparison, settings.particleCount, particleAppearance, settings.domainSize, settings.gridShape, settings.torusMajorRadius, settings.torusTubeRadius, settings.torusClosed);
+    if (settings.view === 'hypothesis') {
+      updateHypothesisGeometry(hypothesisGeometry, settings.size, diagnostics.observables, settings.field, settings.particleCount, particleAppearance, settings.domainSize, settings.gridShape, settings.torusMajorRadius, settings.torusTubeRadius, settings.torusClosed, settings.vortexCenterX, settings.vortexCenterY, settings.fieldMechanics);
+    }
     telemetryTimeRef.current += frameDelta;
     if (telemetryTimeRef.current >= 0.2) {
       telemetryTimeRef.current = 0;
@@ -428,6 +533,7 @@ function QuantumEvolution({ settings, running, resetToken, onTelemetry, particle
     <FieldPoints geometry={gpeGeometry} position={sideBySide ? [-4.6, 0, 0] : [0, 0, 0]} visible={sideBySide || settings.view === 'gpe'} particleAppearance={particleAppearance} controlsRef={controlsRef} />
     <FieldPoints geometry={hydrodynamicGeometry} position={sideBySide ? [4.6, 0, 0] : [0, 0, 0]} visible={sideBySide || settings.view === 'euler-korteweg'} particleAppearance={particleAppearance} controlsRef={controlsRef} />
     <FieldPoints geometry={differenceGeometry} position={[0, 0, 0]} visible={settings.view === 'difference'} particleAppearance={particleAppearance} controlsRef={controlsRef} />
+    <FieldPoints geometry={hypothesisGeometry} position={[0, 0, 0]} visible={settings.view === 'hypothesis'} particleAppearance={particleAppearance} controlsRef={controlsRef} />
   </group>;
 }
 
@@ -459,7 +565,7 @@ function Slider({ label, value, min, max, step, onChange, path, description }) {
 }
 
 export default function QuantumFluidSim({ onBack }) {
-  const [presetSettings] = useState({ size: 32, gridShape: 'square', torusMajorRadius: TORUS_MAJOR_RADIUS, torusTubeRadius: TORUS_TUBE_RADIUS, torusClosed: true, vortexCharge: 1, vortexCoreRadius: 0.75, vortexCenterX: 0, vortexCenterY: 0, particleCount: 1024, domainSize: 12, preset: 'vortex', view: 'side-by-side', field: 'density', interaction: 0.8, potentialStrength: 0, stepSize: 0.002, timeScale: 1, running: true, ...DEFAULT_SIMULATOR_CAMERA_CONFIGURATION, ...DEFAULT_SIMULATOR_3D_PARAMETERS, cameraPosX: 14, cameraPosY: 14, cameraPosZ: 20, cameraTargetX: 0, cameraTargetY: 0.5, cameraTargetZ: 0, cameraZoom: 1, cameraFov: 43, cameraNear: 0.1, cameraFar: 90 });
+  const [presetSettings] = useState({ size: 32, gridShape: 'square', torusMajorRadius: TORUS_MAJOR_RADIUS, torusTubeRadius: TORUS_TUBE_RADIUS, torusClosed: true, vortexCharge: 1, vortexCoreRadius: 0.75, vortexCenterX: 0, vortexCenterY: 0, particleCount: 1024, domainSize: 12, preset: 'vortex', view: 'side-by-side', field: 'density', interaction: 0.8, potentialStrength: 0, stepSize: 0.002, timeScale: 1, running: true, fieldMechanics: { ...DEFAULT_FIELD_MECHANICS, enabled: true, model: 'sqg', comparisonModel: 'ddf' }, ...DEFAULT_SIMULATOR_CAMERA_CONFIGURATION, ...DEFAULT_SIMULATOR_3D_PARAMETERS, cameraPosX: 14, cameraPosY: 14, cameraPosZ: 20, cameraTargetX: 0, cameraTargetY: 0.5, cameraTargetZ: 0, cameraZoom: 1, cameraFov: 43, cameraNear: 0.1, cameraFar: 90 });
   const [settings, setSettings] = useState({
     size: 32,
     gridShape: 'square',
@@ -478,7 +584,8 @@ export default function QuantumFluidSim({ onBack }) {
     interaction: 0.8,
     potentialStrength: 0,
     stepSize: 0.002,
-    timeScale: 1
+    timeScale: 1,
+    fieldMechanics: { ...DEFAULT_FIELD_MECHANICS, enabled: true, model: 'sqg', comparisonModel: 'ddf' }
   });
   const [running, setRunning] = useState(true);
   const [panelVisible, setPanelVisible] = useState(true);
@@ -540,6 +647,16 @@ export default function QuantumFluidSim({ onBack }) {
         <Slider label="Time scale" value={settings.timeScale} min={0.1} max={2} step={0.05} onChange={(timeScale) => update({ timeScale })} />
         <div className="quantum-actions"><button type="button" onClick={() => setResetToken((value) => value + 1)}>Reset identical states</button></div>
       </div>
+      <details className="quantum-control-group">
+        <summary>SQG / DDF hypothesis</summary>
+        <ParamSelect className="quantum-select" label="Hypothesis model" path="fieldMechanics.model" value={settings.fieldMechanics.model} options={HYPOTHESIS_MODEL_OPTIONS} onChange={(model) => update({ fieldMechanics: { ...settings.fieldMechanics, model } })} />
+        <p className="quantum-warning">This response is evaluated over the live quantum observables as a hypothesis overlay; it does not replace the GPE or Euler-Korteweg solvers.</p>
+        <p className="quantum-warning">{FIELD_MODEL_DETAILS[settings.fieldMechanics.model].description} {FIELD_MODEL_DETAILS[settings.fieldMechanics.model].solver}</p>
+        {FIELD_MODEL_PARAMETER_DEPENDENCIES[settings.fieldMechanics.model].map((key) => {
+          const field = FIELD_MECHANICS_PARAMETER_FIELDS[key];
+          return <Slider key={key} label={field.label} value={settings.fieldMechanics[key]} min={field.min} max={field.max} step={field.step} path={`fieldMechanics.${key}`} description={field.description} onChange={(value) => update({ fieldMechanics: { ...settings.fieldMechanics, [key]: value } })} />;
+        })}
+      </details>
       <details open><summary>Conservation</summary>
         <div className="quantum-readout"><span>Simulation time</span><strong>{telemetry.time.toFixed(3)}</strong></div>
         <div className="quantum-readout"><span>Norm</span><strong>{telemetry.norm.toFixed(6)}</strong></div>
