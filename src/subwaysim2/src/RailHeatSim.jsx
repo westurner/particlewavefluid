@@ -29,7 +29,7 @@ const INITIAL_CONFIGURATION = {
 };
 
 const MODEL_COLORS = { fourier: '#e5a653', cattaneo: '#67cad1', ddf: '#93cf8b' };
-const LANE_X = { fourier: -1.65, cattaneo: 0, ddf: 1.65 };
+const LANE_X = { fourier: -0.5, cattaneo: 0, ddf: 0.5 };
 const MODEL_NAMES = Object.fromEntries(RAIL_HEAT_MODELS.map(({ value, label }) => [value, label]));
 
 function makeInitialStates(ambientTemperature) {
