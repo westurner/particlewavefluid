@@ -5,7 +5,7 @@ import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DynamicDrawUs
 import { NumericParamControl, ParamSelect, SimulatorParameterControls } from './lib/ParamControls.jsx';
 import { CameraPerspectiveToolbar, PerspectiveOrbitControls, SimulatorBase, SimulatorPresetControls, SimulatorViewParameters } from './lib/SimulatorBase.jsx';
 import { createCameraViews, DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, DEFAULT_SIMULATOR_3D_PARAMETERS, readPresetLibrary, writePresetLibrary } from './lib/simulator-base.js';
-import { createRailHeatState, normalizedTensorGaussian, RAIL_HEAT_MODELS, stepRailHeatComparison, summarizeRailHeatState } from './railHeatModel.js';
+import { compareRailHeatStates, createRailHeatState, normalizedTensorGaussian, RAIL_HEAT_MODELS, stepRailHeatComparison, summarizeRailHeatState } from './railHeatModel.js';
 
 const PRESET_KEY = 'sqgsim-rail-heat-snapshots';
 const RAIL_LENGTH = 6;
@@ -25,6 +25,7 @@ const INITIAL_CONFIGURATION = {
   timeScale: 60,
   particleCount: 1536,
   displayModel: 'comparison',
+  showModelDifferences: true,
   gaussianSplatters: true
 };
 
@@ -71,6 +72,47 @@ function HeatRail({ model, statesRef, ambientTemperature, visible }) {
   return <instancedMesh ref={meshRef} args={[undefined, undefined, nodeCount]} visible={visible}>
     <boxGeometry args={[0.17, 0.17, segmentLength]} />
     <meshStandardMaterial color="#ffffff" metalness={0.62} roughness={0.36} emissive="#27120a" emissiveIntensity={0.14} />
+  </instancedMesh>;
+}
+
+function HeatDifference({ model, statesRef, visible }) {
+  const meshRef = useRef(null);
+  const marker = useMemo(() => new Object3D(), []);
+  const nodeCount = RAIL_NODES;
+
+  useFrame(() => {
+    const mesh = meshRef.current;
+    const states = statesRef.current;
+    if (!mesh || !states) return;
+    const reference = states.fourier.temperatures;
+    const candidate = states[model].temperatures;
+    let maximumDifference = 0;
+    for (const candidateModel of ['cattaneo', 'ddf']) {
+      const temperatures = states[candidateModel].temperatures;
+      for (let index = 0; index < nodeCount; index += 1) {
+        maximumDifference = Math.max(maximumDifference, Math.abs(temperatures[index] - reference[index]));
+      }
+    }
+    const scale = Math.max(maximumDifference, 1e-9);
+    const color = new Color();
+    for (let index = 0; index < nodeCount; index += 1) {
+      const difference = candidate[index] - reference[index];
+      const magnitude = Math.abs(difference);
+      const height = magnitude < 1e-8 ? 0.001 : 0.025 + (magnitude / scale) * 0.4;
+      marker.position.set(LANE_X[model], 0.42 + height / 2, (index / (nodeCount - 1) - 0.5) * RAIL_LENGTH);
+      marker.scale.set(0.2, height, 0.055);
+      marker.updateMatrix();
+      mesh.setMatrixAt(index, marker.matrix);
+      color.set(difference >= 0 ? '#e5a653' : '#67cad1');
+      mesh.setColorAt(index, color);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  });
+
+  return <instancedMesh ref={meshRef} args={[undefined, undefined, nodeCount]} visible={visible}>
+    <boxGeometry args={[1, 1, 1]} />
+    <meshStandardMaterial color="#ffffff" emissive="#24383a" emissiveIntensity={0.3} roughness={0.38} />
   </instancedMesh>;
 }
 
@@ -174,6 +216,7 @@ function HeatScene({ settings, statesRef, running, resetToken, viewMode, orbitPl
   const telemetryTime = useRef(0);
   const lastResetToken = useRef(resetToken);
   const ambientTemperatureRef = useRef(settings.ambientTemperature);
+  const comparisonEnabled = settings.showModelDifferences !== false;
   useEffect(() => {
     if (!statesRef.current || lastResetToken.current !== resetToken) {
       statesRef.current = makeInitialStates(settings.ambientTemperature);
@@ -192,15 +235,18 @@ function HeatScene({ settings, statesRef, running, resetToken, viewMode, orbitPl
     const delta = Math.min(0.05, frameDelta);
     if (running) {
       stepRailHeatComparison(statesRef.current, delta * settings.timeScale, settings);
-      telemetryTime.current += delta;
-      if (telemetryTime.current >= 0.2) {
-        telemetryTime.current = 0;
-        onTelemetry(Object.fromEntries(['fourier', 'cattaneo', 'ddf'].map((model) => [model, summarizeRailHeatState(statesRef.current[model], settings.ambientTemperature)])));
-      }
+    }
+    telemetryTime.current += delta;
+    if (telemetryTime.current >= 0.2) {
+      telemetryTime.current = 0;
+      onTelemetry({
+        models: Object.fromEntries(['fourier', 'cattaneo', 'ddf'].map((model) => [model, summarizeRailHeatState(statesRef.current[model], settings.ambientTemperature)])),
+        differences: Object.fromEntries(['cattaneo', 'ddf'].map((model) => [model, compareRailHeatStates(statesRef.current.fourier, statesRef.current[model])]))
+      });
     }
   });
 
-  const isVisible = (model) => settings.displayModel === 'comparison' || settings.displayModel === model;
+  const isVisible = (model) => settings.displayModel === 'comparison' || settings.displayModel === model || (comparisonEnabled && model === 'fourier');
   return <>
     <color attach="background" args={['#0a1519']} />
     <fog attach="fog" args={['#0a1519', 13, 27]} />
@@ -213,6 +259,7 @@ function HeatScene({ settings, statesRef, running, resetToken, viewMode, orbitPl
       {Array.from({ length: 13 }, (_, index) => <mesh key={index} position={[LANE_X[model], -0.035, (index / 12 - 0.5) * (RAIL_LENGTH + 0.25)]}><boxGeometry args={[1, 0.08, 0.16]} /><meshStandardMaterial color="#485047" roughness={0.92} /></mesh>)}
       <HeatRail model={model} statesRef={statesRef} ambientTemperature={settings.ambientTemperature} visible={isVisible(model)} />
       <ThermalSplatters model={model} statesRef={statesRef} settings={settings} visible={isVisible(model)} />
+      {comparisonEnabled && model !== 'fourier' && <HeatDifference model={model} statesRef={statesRef} visible={isVisible(model)} />}
     </group>)}
     <ContactShadows position={[0, -0.15, 0]} opacity={0.33} scale={13} blur={2.4} far={4} />
     <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={settings} views={cameraViews} cameraParams={{ minDistance: 7, maxDistance: 26, target: [0, -0.42, 0] }} onUserInteraction={onUserInteraction} />
@@ -264,7 +311,7 @@ export default function RailHeatSim({ onBack }) {
   };
   const currentPresetValue = presetLibrary[currentPreset] ?? INITIAL_CONFIGURATION;
   const parameterValue = configuration;
-  const maxTemperature = Math.max(...['fourier', 'cattaneo', 'ddf'].map((model) => telemetry[model]?.maximumTemperature ?? configuration.ambientTemperature));
+  const maxTemperature = Math.max(...['fourier', 'cattaneo', 'ddf'].map((model) => telemetry.models?.[model]?.maximumTemperature ?? configuration.ambientTemperature));
 
   useEffect(() => {
     if (cameraView !== configuration.cameraViewMode) update({ cameraViewMode: cameraView });
@@ -279,6 +326,9 @@ export default function RailHeatSim({ onBack }) {
       <div className="thermal-panel-heading"><div><span>STEEL RAIL / IDENTICAL INITIAL CONDITIONS</span><h2>Heat transport</h2></div></div>
       <details className="rail-heat-presets" open><summary>Saved configurations</summary><SimulatorPresetControls name={presetName} onNameChange={setPresetName} presets={presetLibrary} currentPreset={currentPreset} onApply={applyPreset} onSave={savePreset} onReset={() => applyPreset('Default')} /></details>
       <ParamSelect className="thermal-select" label="Field display" value={configuration.displayModel} options={[{ value: 'comparison', label: 'Compare all three' }, ...RAIL_HEAT_MODELS]} onChange={(displayModel) => update({ displayModel })} />
+      <details className="rail-heat-model-details"><summary>Heat model definitions</summary>
+        {RAIL_HEAT_MODELS.map(({ value, label, description }) => <div className="rail-heat-model-description" key={value}><strong>{label}</strong><p>{description}</p></div>)}
+      </details>
       <details open><summary>Heat source and transport</summary>
         <NumericParamControl className="thermal-range" label="Ambient temperature" value={configuration.ambientTemperature} min={-20} max={45} step={1} suffix="°C" onChange={(ambientTemperature) => update({ ambientTemperature })} />
         <NumericParamControl className="thermal-range" label="Wheel / brake heat input" value={configuration.heatPower} min={0} max={12000} step={100} suffix="W" onChange={(heatPower) => update({ heatPower })} />
@@ -290,8 +340,21 @@ export default function RailHeatSim({ onBack }) {
         <NumericParamControl className="thermal-range" label="Convective cooling" value={configuration.convection * 1000} min={0} max={3} step={0.05} suffix="×10⁻³ /s" onChange={(convection) => update({ convection: convection / 1000 })} />
         <NumericParamControl className="thermal-range" label="Simulation clock" value={configuration.timeScale} min={60} max={1800} step={30} suffix="sim s / s" onChange={(timeScale) => update({ timeScale })} />
         <div className="thermal-readout"><span>Maximum rail temperature</span><strong>{maxTemperature.toFixed(1)} °C</strong></div>
-        {['fourier', 'cattaneo', 'ddf'].map((model) => <div className="thermal-readout" key={model}><span>{MODEL_NAMES[model]}</span><strong>{(telemetry[model]?.maximumTemperature ?? configuration.ambientTemperature).toFixed(1)} °C</strong></div>)}
+        {['fourier', 'cattaneo', 'ddf'].map((model) => <div className="thermal-readout" key={model}><span>{MODEL_NAMES[model]}</span><strong>{(telemetry.models?.[model]?.maximumTemperature ?? configuration.ambientTemperature).toFixed(1)} °C</strong></div>)}
       </details>
+      <details open><summary>Model comparison</summary>
+        <label className="amplitude-toggle"><input type="checkbox" checked={configuration.showModelDifferences !== false} onChange={(event) => update({ showModelDifferences: event.target.checked })} /><span>Show temperature differences from Fourier</span></label>
+        {configuration.showModelDifferences !== false && <>
+          <div className="thermal-readout"><span>Reference model</span><strong>{MODEL_NAMES.fourier}</strong></div>
+          {['cattaneo', 'ddf'].map((model) => <div className="rail-heat-comparison-readout" key={model}>
+            <strong>{MODEL_NAMES[model]}</strong>
+            <span>Peak |ΔT| <b>{(telemetry.differences?.[model]?.maximumAbsoluteDifference ?? 0).toFixed(2)} °C</b></span>
+            <span>RMS ΔT <b>{(telemetry.differences?.[model]?.rootMeanSquareDifference ?? 0).toFixed(2)} °C</b></span>
+          </div>)}
+          <p className="thermal-citation">Bars show signed temperature offsets on a shared visual scale: orange is warmer and teal is cooler than Fourier.</p>
+        </>}
+      </details>
+        <div className="rail-heat-legend" aria-label="Model comparison key">{['fourier', 'cattaneo', 'ddf'].map((model, index) => <span key={model}><i style={{ background: MODEL_COLORS[model] }}>{String(index + 1).padStart(2, '0')}</i>{MODEL_NAMES[model]}</span>)}{configuration.showModelDifferences && <><span><i style={{ background: '#e5a653' }}>+</i>Warmer than Fourier</span><span><i style={{ background: '#67cad1' }}>−</i>Cooler than Fourier</span></>}</div>
       <details open><summary>Particles and field rendering</summary>
         <NumericParamControl className="thermal-range" label="Particle count" value={configuration.particleCount} min={384} max={6144} step={384} onChange={(particleCount) => update({ particleCount })} />
         <label className="amplitude-toggle"><input type="checkbox" checked={configuration.gaussianSplatters} onChange={(event) => update({ gaussianSplatters: event.target.checked })} /><span>Normalize tensor-Gaussian splatters</span></label>

@@ -1,7 +1,7 @@
 export const RAIL_HEAT_MODELS = [
-  { value: 'fourier', label: "Fourier's law" },
-  { value: 'cattaneo', label: 'Cattaneo-Vernotte' },
-  { value: 'ddf', label: 'DDF / Fedi hypothesis' }
+  { value: 'fourier', label: "Fourier's law", description: 'Baseline conduction model: heat flux follows the local temperature gradient immediately, q = -k grad(T), producing classical diffusion.' },
+  { value: 'cattaneo', label: 'Cattaneo-Vernotte', description: 'Finite-speed conduction model: heat flux relaxes toward the Fourier flux over the configured relaxation time, rather than responding instantly.' },
+  { value: 'ddf', label: 'DDF / Fedi hypothesis', description: 'Exploratory flux-limiting model: steep gradients reduce Fourier flux by a gradient-dependent factor. This phenomenological hypothesis is not a validated rail-steel material law.' }
 ];
 
 const DEFAULT_MATERIAL = {
@@ -116,4 +116,28 @@ export function summarizeRailHeatState(state, ambientTemperature = 20) {
     totalExcess += Math.max(0, temperature - ambientTemperature);
   }
   return { maximumTemperature, meanExcess: totalExcess / state.nodes, time: state.time };
+}
+
+export function compareRailHeatStates(referenceState, candidateState) {
+  if (referenceState.nodes !== candidateState.nodes) throw new RangeError('Rail heat states must have the same number of nodes to compare.');
+
+  const temperatureDifferences = new Float64Array(referenceState.nodes);
+  let maximumAbsoluteDifference = 0;
+  let totalAbsoluteDifference = 0;
+  let totalSquaredDifference = 0;
+  for (let index = 0; index < referenceState.nodes; index += 1) {
+    const difference = candidateState.temperatures[index] - referenceState.temperatures[index];
+    const absoluteDifference = Math.abs(difference);
+    temperatureDifferences[index] = difference;
+    maximumAbsoluteDifference = Math.max(maximumAbsoluteDifference, absoluteDifference);
+    totalAbsoluteDifference += absoluteDifference;
+    totalSquaredDifference += difference * difference;
+  }
+
+  return {
+    temperatureDifferences,
+    maximumAbsoluteDifference,
+    meanAbsoluteDifference: totalAbsoluteDifference / referenceState.nodes,
+    rootMeanSquareDifference: Math.sqrt(totalSquaredDifference / referenceState.nodes)
+  };
 }

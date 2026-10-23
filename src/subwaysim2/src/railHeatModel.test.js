@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRailHeatState, normalizedTensorGaussian, stepRailHeatComparison, stepRailHeatState, summarizeRailHeatState } from './railHeatModel.js';
+import { compareRailHeatStates, createRailHeatState, normalizedTensorGaussian, stepRailHeatComparison, stepRailHeatState, summarizeRailHeatState } from './railHeatModel.js';
 
 test('Fourier conduction spreads a hot spot and remains finite', () => {
   const state = createRailHeatState({ nodes: 41, length: 2, ambientTemperature: 0, initialTemperature: 0 });
@@ -57,4 +57,16 @@ test('normalized tensor Gaussian peaks at one and is anisotropic', () => {
   assert.equal(center, 1);
   assert.ok(alongRail > acrossRail);
   assert.ok(alongRail <= 1 && acrossRail >= 0);
+});
+
+test('rail heat comparison reports signed, peak, mean, and RMS temperature deltas', () => {
+  const reference = createRailHeatState({ nodes: 3, length: 2, ambientTemperature: 20 });
+  const candidate = createRailHeatState({ nodes: 3, length: 2, ambientTemperature: 20 });
+  candidate.temperatures.set([22, 18, 20]);
+
+  const comparison = compareRailHeatStates(reference, candidate);
+  assert.deepEqual(Array.from(comparison.temperatureDifferences), [2, -2, 0]);
+  assert.equal(comparison.maximumAbsoluteDifference, 2);
+  assert.ok(Math.abs(comparison.meanAbsoluteDifference - 4 / 3) < 1e-12);
+  assert.ok(Math.abs(comparison.rootMeanSquareDifference - Math.sqrt(8 / 3)) < 1e-12);
 });

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { AMPLITUDE_GRAVITY_MODES } from '../src/amplitudeGravityModel.js';
+import { PNG } from 'pngjs';
 
 const baseUrl = process.env.BASE_URL ?? 'http://localhost:5173/';
 
@@ -67,6 +68,56 @@ test('ParamSelect supports ArrowUp and ArrowDown option navigation and selection
   assert.match(await select.textContent(), new RegExp(upSelection.trim()));
   assert.equal(await select.getAttribute('aria-expanded'), 'false');
   assert.deepEqual(await page.locator('.param-select-menu').count(), 0);
+});
+
+test('rail heat lab documents and compares its three transport models', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+
+  await page.goto(`${baseUrl}?e2e=1`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /15 \/ LOAD FIELD/ }).evaluate((button) => button.click());
+  await page.locator('.rail-heat-panel').waitFor();
+  const definitions = page.locator('.rail-heat-model-details');
+  await definitions.locator('summary').click();
+  for (const model of ["Fourier's law", 'Cattaneo-Vernotte', 'DDF / Fedi hypothesis']) {
+    await definitions.getByText(model, { exact: false }).waitFor();
+  }
+  await definitions.getByText(/heat flux follows the local temperature gradient immediately/).waitFor();
+  await definitions.getByText(/relaxes toward the Fourier flux/).waitFor();
+  await definitions.getByText(/not a validated rail-steel material law/).waitFor();
+
+  const differenceToggle = page.getByRole('checkbox', { name: 'Show temperature differences from Fourier' });
+  assert.equal(await differenceToggle.isChecked(), true);
+  await page.waitForTimeout(350);
+  assert.equal(await page.locator('.rail-heat-comparison-readout').count(), 2);
+  for (const readout of await page.locator('.rail-heat-comparison-readout').all()) {
+    const peak = Number((await readout.locator('span').filter({ hasText: 'Peak |ΔT|' }).locator('b').textContent()).replace(' °C', ''));
+    const rms = Number((await readout.locator('span').filter({ hasText: 'RMS ΔT' }).locator('b').textContent()).replace(' °C', ''));
+    assert.ok(Number.isFinite(peak));
+    assert.ok(Number.isFinite(rms));
+  }
+
+  const canvas = page.locator('.rail-heat-scene canvas');
+  const assertCanvasHasRenderedPixels = async () => {
+    const image = PNG.sync.read(await canvas.screenshot());
+    const [red, green, blue] = image.data;
+    let changedPixels = 0;
+    for (let index = 0; index < image.data.length; index += 16) {
+      if (Math.abs(image.data[index] - red) + Math.abs(image.data[index + 1] - green) + Math.abs(image.data[index + 2] - blue) > 24) changedPixels += 1;
+    }
+    assert.ok(changedPixels > 100, 'the heat scene canvas should contain rendered geometry');
+  };
+  await assertCanvasHasRenderedPixels();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertCanvasHasRenderedPixels();
+
+  await differenceToggle.uncheck();
+  assert.equal(await page.locator('.rail-heat-comparison-readout').count(), 0);
+  assert.deepEqual(errors, []);
 });
 
 test('attractor defaults to its baseline model and separates field from display orientation', async (t) => {
