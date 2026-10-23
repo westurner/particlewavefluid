@@ -14,6 +14,7 @@ RUN --mount=type=cache,target=/var/lib/apt/lists,id=apt-cache-lists \
     apt-get update && apt-get install -y \
     curl \
     git \
+    ripgrep \
     build-essential \
     pkg-config \
     libssl-dev \
