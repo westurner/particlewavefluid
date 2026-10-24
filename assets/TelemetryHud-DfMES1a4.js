@@ -1,0 +1,1 @@
+import{j as s}from"./react-Bwx2ax-9.js";function d({label:l,items:r,className:a=""}){return s.jsx("div",{className:`telemetry-hud ${a}`.trim(),"aria-label":l,children:r.map(e=>s.jsxs("div",{children:[s.jsx("span",{children:e.label}),s.jsx("strong",{className:e.tone?`is-${e.tone}`:void 0,children:e.value})]},e.id??e.label))})}export{d as T};
