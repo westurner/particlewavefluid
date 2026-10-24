@@ -779,3 +779,57 @@ test('current hertz display follows enabled wave phase rates and simulation spee
   await readout.waitFor({ state: 'detached' });
   assert.deepEqual(pageErrors, [], `wave frequency display reported errors: ${pageErrors.join('; ')}`);
 });
+
+test('soliton and plasma wave lab supports pool fluids, HDL+LDL water, vector solitons, and 2D CFD', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => localStorage.clear());
+
+  await page.goto(`${baseUrl}?e2e=1`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /01 \/ LOAD FIELD/ }).click();
+  await page.locator('.wave-panel').waitFor();
+
+  const solitonSection = page.locator('.wave-soliton-section');
+  await solitonSection.waitFor();
+  assert.equal(await solitonSection.getAttribute('data-soliton-enabled'), 'false');
+
+  await solitonSection.getByRole('button', { name: 'Bilateral Pool Collision' }).click();
+  assert.equal(await solitonSection.getAttribute('data-soliton-enabled'), 'true');
+  assert.equal(await solitonSection.getAttribute('data-soliton-domain'), 'wave-pool');
+  assert.equal(await solitonSection.getAttribute('data-soliton-equation'), 'boussinesq');
+  assert.equal(await solitonSection.getAttribute('data-soliton-side'), 'both');
+
+  const telemetry = solitonSection.getByRole('region', { name: 'Soliton and plasma telemetry' });
+  await telemetry.waitFor();
+  assert.match(await telemetry.textContent(), /Shallow-water speed c0/);
+
+  await selectParam(page, 'Soliton fluid', 'water-hdl-ldl', solitonSection);
+  assert.equal(await solitonSection.getAttribute('data-soliton-fluid'), 'water-hdl-ldl');
+  assert.match(await telemetry.textContent(), /HDL.*LDL/);
+  assert.match(await telemetry.textContent(), /3 saddle points/);
+
+  await selectParam(page, 'HDL/LDL reaction pathway', 'ambient-1-saddle', solitonSection);
+  assert.match(await telemetry.textContent(), /1 saddle point/);
+
+  await selectParam(page, 'Soliton equation', 'vector-coupled', solitonSection);
+  assert.equal(await solitonSection.getAttribute('data-soliton-equation'), 'vector-coupled');
+  assert.equal(await solitonSection.getByRole('slider', { name: 'Vector cross-coupling' }).count(), 1);
+
+  await selectParam(page, 'Soliton domain', 'plasma-wave', solitonSection);
+  await selectParam(page, 'Soliton fluid', 'argon', solitonSection);
+  assert.equal(await solitonSection.getAttribute('data-soliton-domain'), 'plasma-wave');
+  assert.equal(await solitonSection.getAttribute('data-soliton-fluid'), 'argon');
+  assert.match(await telemetry.textContent(), /Ion sound speed cs/);
+  assert.match(await telemetry.textContent(), /Debye length/);
+
+  await selectParam(page, 'Soliton equation', 'cfd-2d', solitonSection);
+  assert.equal(await solitonSection.getAttribute('data-soliton-equation'), 'cfd-2d');
+  assert.match(await telemetry.textContent(), /2D CFD \(64x16\)/);
+
+  await solitonSection.getByRole('button', { name: 'Emit soliton pulse(s)' }).click();
+  await page.waitForTimeout(200);
+  assert.deepEqual(pageErrors, [], `soliton and plasma wave lab reported errors: ${pageErrors.join('; ')}`);
+});

@@ -3,6 +3,7 @@ import { Html } from '@react-three/drei';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DataTexture, DoubleSide, FloatType, FrontSide, Mesh, NearestFilter, NoBlending, OrthographicCamera, RGBAFormat, Scene, ShaderMaterial, UnsignedByteType, Vector3, WebGLRenderTarget } from 'three';
 import { advanceDetectorResponse, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacementAndTensorGaussian, calculateWaveFrame, calculateWaveOrbitalPhase, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_APERTURE_SETTINGS, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, DOUBLE_SLIT_SCREEN_THICKNESS, DOUBLE_SLIT_SCREEN_X, DOUBLE_SLIT_WIDTH, APERTURE_SCREEN_DEPTH, APERTURE_SCREEN_HEIGHT, DETECTOR_TRANSVERSE_SPAN, detectorDistanceForSlitScreenPosition, filterWavesByPhase, getOrbitalAngularMomentum, getSlitGeometry, getSlitScreenPlane, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, GRATING_SLIT_WIDTH, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, OAM_CHARGE_MAX, OAM_CHARGE_MIN, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, readSavedWaveStates, sampleApertureField, samplePilotWaveCurrent, sampleTransverseWignerFunction, sampleWignerMechanics, SIGNAL_SOURCE_PRESETS, SINGLE_SLIT_WIDTH, slitScreenPlaneDepth, TWO_SOURCE_CENTERS, WIGNER_MECHANICS_QUANTITIES, writeSavedWaveStates } from './waveModel.js';
+import { createSolitonSolverState, DEFAULT_SOLITON_CONFIG, deriveSolitonPhysicsParameters, getSolitonEquationDetails, getWaterHdlLdlPathwayDetails, normalizeSolitonConfig, sampleSolitonFieldAt, SOLITON_BOUNDARY_OPTIONS, SOLITON_DOMAIN_OPTIONS, SOLITON_DOMAIN_SPAN, SOLITON_EMISSION_SIDE_OPTIONS, SOLITON_EQUATION_DETAILS, SOLITON_EQUATION_OPTIONS, SOLITON_FLUID_OPTIONS, SOLITON_FLUIDS, stepSolitonSolver, triggerSolitonLauncherImpulse, WATER_HDL_LDL_PATHWAY_OPTIONS } from './solitonWaveModel.js';
 import { HistoryControls, NumericParamControl, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 import { CameraPerspectiveToolbar, OrbitalTrackingParameters, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase, SimulatorExportModal, SimulatorIOJournal, SimulatorPresetControls, useSimulatorJournal } from './lib/SimulatorBase.jsx';
@@ -34,6 +35,15 @@ const DetectorMechanicsContext = createContext('classical');
 const SimulationSpeedContext = createContext(1);
 const DetectorPhaseFilterContext = createContext({ mode: 'all', value: 0 });
 const DetectorClearContext = createContext({ token: 0, clear: () => {} });
+const SolitonSimulatorContext = createContext({
+  config: DEFAULT_SOLITON_CONFIG,
+  solverRef: null,
+  telemetry: null,
+  setTelemetry: () => {},
+  updateConfig: () => {},
+  emitPulse: () => {},
+  resetSolver: () => {}
+});
 const PerspectiveCameraContext = createContext({ viewMode: null, orbitPlaying: true, orbitControlsVisible: true, orbitSettings: DEFAULT_SIMULATOR_3D_PARAMETERS, particleAppearance: DEFAULT_SIMULATOR_3D_PARAMETERS.particleAppearance, onManualInteraction: () => {} });
 const DETECTOR_IMPLEMENTATION_OPTIONS = [
   { value: 'classic', label: 'Classic pixels' },
@@ -121,7 +131,8 @@ function normalizeWaveSnapshot(snapshot, defaults) {
     detectorPhaseValue: Number.isFinite(detectorPhaseValue) ? Math.min(Math.PI, Math.max(-Math.PI, detectorPhaseValue)) : defaults.detectorPhaseValue,
     interferenceModes: { ...defaults.interferenceModes, ...snapshot.interferenceModes },
     apertureSettings: normalizeApertureSettings({ ...defaults.apertureSettings, ...snapshot.apertureSettings }),
-    waveMechanics: { ...defaults.waveMechanics, ...snapshot.waveMechanics }
+    waveMechanics: { ...defaults.waveMechanics, ...snapshot.waveMechanics },
+    solitonConfig: normalizeSolitonConfig(snapshot.solitonConfig ?? defaults.solitonConfig, defaults.solitonConfig)
   };
 }
 
@@ -1229,12 +1240,167 @@ function WignerMechanicsReadout({ label, position, waves, waveCount, timeRef, ap
   </Html>;
 }
 
-function WaveField({ waves, waveCount, interferenceModes, running, timeRef, experimentMode, apertureField, apertureSettings, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, particleAppearance, occlusionPreset, waveMechanics, showWaveRepresentation, showTensorGaussianSplatters, classicalWavePalette, superpositionPalette, oamSplatterPalette }) {
+function SolitonChamberRig({ solitonConfig, solverStateRef }) {
+  const ribbonGeometry = useMemo(() => {
+    const count = 160;
+    const positions = new Float32Array(count * 6);
+    const colors = new Float32Array(count * 6);
+    const indices = [];
+    for (let i = 0; i < count; i += 1) {
+      const x = -SOLITON_DOMAIN_SPAN / 2 + (i / (count - 1)) * SOLITON_DOMAIN_SPAN;
+      positions[i * 6] = x;
+      positions[i * 6 + 1] = 0;
+      positions[i * 6 + 2] = -0.35;
+      positions[i * 6 + 3] = x;
+      positions[i * 6 + 4] = 0;
+      positions[i * 6 + 5] = 0.35;
+      if (i < count - 1) {
+        const a = i * 2;
+        const b = a + 1;
+        const c = a + 2;
+        const d = a + 3;
+        indices.push(a, b, c, b, d, c);
+      }
+    }
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new BufferAttribute(colors, 3));
+    geometry.setIndex(indices);
+    return geometry;
+  }, []);
+
+  const cfdCurtainGeometry = useMemo(() => {
+    const nx = 64;
+    const nz = 16;
+    const positions = new Float32Array(nx * nz * 3);
+    const colors = new Float32Array(nx * nz * 3);
+    const indices = [];
+    for (let iz = 0; iz < nz; iz += 1) {
+      for (let ix = 0; ix < nx; ix += 1) {
+        const idx = iz * nx + ix;
+        positions[idx * 3] = -SOLITON_DOMAIN_SPAN / 2 + (ix / (nx - 1)) * SOLITON_DOMAIN_SPAN;
+        positions[idx * 3 + 1] = -1.3 + (iz / (nz - 1)) * 1.25;
+        positions[idx * 3 + 2] = 0;
+        if (ix < nx - 1 && iz < nz - 1) {
+          const a = idx;
+          const b = idx + 1;
+          const c = idx + nx;
+          const d = idx + nx + 1;
+          indices.push(a, c, b, b, c, d);
+        }
+      }
+    }
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new BufferAttribute(colors, 3));
+    geometry.setIndex(indices);
+    return geometry;
+  }, []);
+
+  const primaryColor = useMemo(() => new Color(), []);
+  const secondaryColor = useMemo(() => new Color(), []);
+  const workColor = useMemo(() => new Color(), []);
+
+  useEffect(() => () => ribbonGeometry.dispose(), [ribbonGeometry]);
+  useEffect(() => () => cfdCurtainGeometry.dispose(), [cfdCurtainGeometry]);
+
+  useFrame(() => {
+    const state = solverStateRef.current;
+    if (!state || !solitonConfig?.enabled) return;
+    const fluid = SOLITON_FLUIDS[solitonConfig.fluidId] ?? SOLITON_FLUIDS.water;
+    primaryColor.set(fluid.colorHex);
+    secondaryColor.set(fluid.secondaryColorHex);
+
+    const ribbonPos = ribbonGeometry.attributes.position.array;
+    const ribbonCol = ribbonGeometry.attributes.color.array;
+    for (let i = 0; i < state.size; i += 1) {
+      const u1 = state.u1[i];
+      const u2 = state.u2[i];
+      const ldl = state.ldlFraction[i];
+      const y = u1 * 1.35;
+      const zShift = solitonConfig.equation === 'vector-coupled' ? u2 * 0.65 : 0;
+      ribbonPos[i * 6 + 1] = y;
+      ribbonPos[i * 6 + 2] = -0.38 + zShift;
+      ribbonPos[i * 6 + 4] = y;
+      ribbonPos[i * 6 + 5] = 0.38 + zShift;
+
+      if (solitonConfig.fluidId === 'water-hdl-ldl' && solitonConfig.showHdlLdlOverlay) {
+        workColor.set('#2ee6a8').lerp(secondaryColor.set('#3b82f6'), ldl);
+      } else {
+        const t = Math.min(1, Math.abs(u1));
+        workColor.copy(primaryColor).lerp(secondaryColor, t);
+      }
+      ribbonCol[i * 6] = workColor.r;
+      ribbonCol[i * 6 + 1] = workColor.g;
+      ribbonCol[i * 6 + 2] = workColor.b;
+      ribbonCol[i * 6 + 3] = workColor.r;
+      ribbonCol[i * 6 + 4] = workColor.g;
+      ribbonCol[i * 6 + 5] = workColor.b;
+    }
+    ribbonGeometry.attributes.position.needsUpdate = true;
+    ribbonGeometry.attributes.color.needsUpdate = true;
+
+    if (solitonConfig.equation === 'cfd-2d' || solitonConfig.showCfdVelocityOverlay) {
+      const { nx, nz, u, w, vorticity } = state.cfd;
+      const cfdPos = cfdCurtainGeometry.attributes.position.array;
+      const cfdCol = cfdCurtainGeometry.attributes.color.array;
+      for (let iz = 0; iz < nz; iz += 1) {
+        const zFrac = iz / (nz - 1);
+        for (let ix = 0; ix < nx; ix += 1) {
+          const idx = iz * nx + ix;
+          const i1d = Math.min(state.size - 1, Math.round((ix / (nx - 1)) * (state.size - 1)));
+          const topY = state.u1[i1d] * 1.25;
+          cfdPos[idx * 3 + 1] = -1.35 + zFrac * (1.35 + topY);
+          const speed = Math.hypot(u[idx], w[idx]);
+          const vort = Math.min(1, Math.abs(vorticity[idx]) * 0.45);
+          const normSpeed = Math.min(1, speed * 0.55);
+          workColor.set('#0a1b2a').lerp(primaryColor, normSpeed).lerp(new Color('#ff8552'), vort * 0.45);
+          cfdCol[idx * 3] = workColor.r;
+          cfdCol[idx * 3 + 1] = workColor.g;
+          cfdCol[idx * 3 + 2] = workColor.b;
+        }
+      }
+      cfdCurtainGeometry.attributes.position.needsUpdate = true;
+      cfdCurtainGeometry.attributes.color.needsUpdate = true;
+    }
+  });
+
+  if (!solitonConfig?.enabled) return null;
+  const leftActive = solitonConfig.emissionSide === 'left' || solitonConfig.emissionSide === 'both';
+  const rightActive = solitonConfig.emissionSide === 'right' || solitonConfig.emissionSide === 'both';
+  const isPlasma = solitonConfig.domain === 'plasma-wave';
+  const launcherColorActive = isPlasma ? '#ff8b5e' : '#4ad6e8';
+  const launcherColorIdle = '#1b3140';
+
+  return (
+    <group aria-label="Soliton wave pool and plasma chamber rig">
+      <mesh position={[-8.85, -0.25, 0]}>
+        <boxGeometry args={[0.32, 2.2, 14.4]} />
+        <meshBasicMaterial color={leftActive ? launcherColorActive : launcherColorIdle} transparent opacity={leftActive ? 0.42 : 0.18} />
+      </mesh>
+      <mesh position={[8.85, -0.25, 0]}>
+        <boxGeometry args={[0.32, 2.2, 14.4]} />
+        <meshBasicMaterial color={rightActive ? launcherColorActive : launcherColorIdle} transparent opacity={rightActive ? 0.42 : 0.18} />
+      </mesh>
+      <mesh geometry={ribbonGeometry}>
+        <meshBasicMaterial vertexColors transparent opacity={0.88} side={DoubleSide} toneMapped={false} />
+      </mesh>
+      {(solitonConfig.equation === 'cfd-2d' || solitonConfig.showCfdVelocityOverlay) && (
+        <mesh geometry={cfdCurtainGeometry}>
+          <meshBasicMaterial vertexColors transparent opacity={0.42} side={DoubleSide} depthWrite={false} toneMapped={false} />
+        </mesh>
+      )}
+    </group>
+  );
+}
+
+function WaveField({ waves, waveCount, interferenceModes, running, timeRef, experimentMode, apertureField, apertureSettings, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, particleAppearance, occlusionPreset, waveMechanics, solitonConfig, solitonSolverRef, onSolitonTelemetry, showWaveRepresentation, showTensorGaussianSplatters, classicalWavePalette, superpositionPalette, oamSplatterPalette }) {
   const simulationSpeed = useContext(SimulationSpeedContext);
   const geometry = useMemo(() => createFieldGeometry(particleCount), [particleCount]);
   const slitScreenPlane = useMemo(() => getSlitScreenPlane(apertureSettings), [apertureSettings]);
   const usesApertureExperiment = APERTURE_EXPERIMENT_MODES.includes(experimentMode);
   const fieldUpdateTime = useRef(0);
+  const solitonTelemetryTimer = useRef(0);
   const material = useMemo(() => new ShaderMaterial({
     uniforms: {
       uParticleSize: { value: 0.075 },
@@ -1252,6 +1418,7 @@ function WaveField({ waves, waveCount, interferenceModes, running, timeRef, expe
     blending: AdditiveBlending
   }), []);
   const color = useMemo(() => new Color(), []);
+  const secondaryColor = useMemo(() => new Color(), []);
 
   useEffect(() => () => geometry.dispose(), [geometry]);
   useEffect(() => () => material.dispose(), [material]);
@@ -1275,8 +1442,18 @@ function WaveField({ waves, waveCount, interferenceModes, running, timeRef, expe
 
   useFrame((_, delta) => {
     if (running) timeRef.current += Math.min(delta, 0.05) * simulationSpeed;
+    if (solitonConfig?.enabled && solitonSolverRef?.current) {
+      if (running) {
+        stepSolitonSolver(solitonSolverRef.current, solitonConfig, Math.min(delta, 0.04) * simulationSpeed);
+      }
+      solitonTelemetryTimer.current += delta;
+      if (solitonTelemetryTimer.current >= 0.15) {
+        solitonTelemetryTimer.current = 0;
+        onSolitonTelemetry?.({ ...solitonSolverRef.current.telemetry });
+      }
+    }
     if (!showWaveRepresentation) return;
-    if (usesApertureExperiment) {
+    if (usesApertureExperiment && !solitonConfig?.enabled) {
       fieldUpdateTime.current += delta;
       if (fieldUpdateTime.current < 1 / 20) return;
       fieldUpdateTime.current = 0;
@@ -1287,6 +1464,45 @@ function WaveField({ waves, waveCount, interferenceModes, running, timeRef, expe
     const vectorAngles = geometry.attributes.aVectorAngle.array;
     const tensorGaussians = geometry.attributes.aTensorGaussian.array;
     const occlusions = geometry.attributes.aOcclusion.array;
+
+    if (solitonConfig?.enabled && solitonSolverRef?.current) {
+      const state = solitonSolverRef.current;
+      const fluid = SOLITON_FLUIDS[solitonConfig.fluidId] ?? SOLITON_FLUIDS.water;
+      for (let index = 0; index < particleCount; index += 1) {
+        const x = basePositions[index * 3];
+        const y = basePositions[index * 3 + 1];
+        const z = basePositions[index * 3 + 2];
+        const sample = sampleSolitonFieldAt(state, solitonConfig, x, z);
+        positions[index * 3] = x + sample.u1 * 0.25;
+        positions[index * 3 + 1] = y + sample.height * 1.35;
+        positions[index * 3 + 2] = z + sample.u2 * 0.45;
+        occlusions[index] = 1;
+        vectorAngles[index] = solitonConfig.equation === 'vector-coupled'
+          ? sample.vectorAngle
+          : Math.atan(sample.slope * 0.55);
+        tensorGaussians[index] = Math.min(1, Math.hypot(sample.u1, sample.u2));
+        const normalized = Math.min(1, Math.abs(sample.height) / 1.1);
+        if (solitonConfig.fluidId === 'water-hdl-ldl' && solitonConfig.showHdlLdlOverlay) {
+          color.set('#2ee6a8').lerp(secondaryColor.set('#3b82f6'), sample.ldlFraction);
+          color.offsetHSL(0, 0, normalized * 0.14);
+        } else if (solitonConfig.equation === 'vector-coupled') {
+          const hue = ((sample.vectorAngle / (Math.PI * 2)) + 1) % 1;
+          color.setHSL(hue, 0.85, 0.44 + normalized * 0.22);
+        } else {
+          color.set(fluid.colorHex).lerp(secondaryColor.set(fluid.secondaryColorHex), normalized);
+        }
+        colors[index * 3] = color.r;
+        colors[index * 3 + 1] = color.g;
+        colors[index * 3 + 2] = color.b;
+      }
+      geometry.attributes.position.needsUpdate = true;
+      geometry.attributes.color.needsUpdate = true;
+      geometry.attributes.aVectorAngle.needsUpdate = true;
+      geometry.attributes.aTensorGaussian.needsUpdate = true;
+      geometry.attributes.aOcclusion.needsUpdate = true;
+      return;
+    }
+
     const activeWaves = waves.slice(0, waveCount);
     const activeWaveCount = activeWaves.filter((wave) => wave.enabled !== false).length;
     const hasOrbitalWaves = activeWaves.some((wave) => wave.enabled !== false
@@ -1396,8 +1612,12 @@ function SignalSourceArrows({ waves, waveCount, visible, palette }) {
   );
 }
 
-function WaveScene({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, occlusionPreset, orbitControlsVisible, sourceVectorsVisible, waveMechanics, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation, onDetectorResolutionChange, showWaveRepresentation, showTensorGaussianSplatters, classicalWavePalette, superpositionPalette, oamSplatterPalette }) {
+function WaveScene({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, occlusionPreset, orbitControlsVisible, sourceVectorsVisible, waveMechanics, solitonConfig, solitonSolverRef, onSolitonTelemetry, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation, onDetectorResolutionChange, showWaveRepresentation, showTensorGaussianSplatters, classicalWavePalette, superpositionPalette, oamSplatterPalette }) {
   const { viewMode, orbitPlaying, orbitSettings, particleAppearance, onManualInteraction } = useContext(PerspectiveCameraContext);
+  const solitonContext = useContext(SolitonSimulatorContext);
+  const activeSolitonConfig = solitonConfig ?? solitonContext.config;
+  const activeSolitonSolverRef = solitonSolverRef ?? solitonContext.solverRef;
+  const activeOnSolitonTelemetry = onSolitonTelemetry ?? solitonContext.setTelemetry;
   const contextDetectorVisible = useContext(DetectorVisibilityContext);
   const detectorOamReadout = useContext(DetectorOamReadoutContext);
   const detectorMechanicsMode = useContext(DetectorMechanicsContext);
@@ -1425,11 +1645,12 @@ function WaveScene({ waves, waveCount, interferenceModes, running, particleCount
       {/* <fog attach="fog" args={['#080d17', 17, 34]} /> */}
       <ambientLight intensity={0.7} color="#b5d8d1" />
       <gridHelper args={[FIELD_SIZE, 18, '#294555', '#142631']} position={[0, -1.35, 0]} />
-      <SignalSourceArrows waves={waves} waveCount={waveCount} visible={sourceVectorsVisible} palette={classicalWavePalette} />
+      {!activeSolitonConfig?.enabled && <SignalSourceArrows waves={waves} waveCount={waveCount} visible={sourceVectorsVisible} palette={classicalWavePalette} />}
+      <SolitonChamberRig solitonConfig={activeSolitonConfig} solverStateRef={activeSolitonSolverRef} />
       {['single-slit', 'double-slit', 'grating'].includes(experimentMode) && <SlitScreen experimentMode={experimentMode} apertureSettings={apertureSettings} />}
       {experimentMode === 'pinhole' && <PinholeScreen />}
       {experimentMode === 'two-source' && <TwoSourceMarkers />}
-      <WaveField waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} timeRef={timeRef} experimentMode={experimentMode} apertureField={apertureField} apertureSettings={apertureSettings} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} particleAppearance={particleAppearance} occlusionPreset={occlusionPreset} waveMechanics={waveMechanics} showWaveRepresentation={showWaveRepresentation} showTensorGaussianSplatters={showTensorGaussianSplatters} classicalWavePalette={classicalWavePalette} superpositionPalette={superpositionPalette} oamSplatterPalette={oamSplatterPalette} />
+      <WaveField waves={waves} waveCount={waveCount} interferenceModes={interferenceModes} running={running} timeRef={timeRef} experimentMode={experimentMode} apertureField={apertureField} apertureSettings={apertureSettings} particleCount={particleCount} doubleSided={doubleSided} particleSize={particleSize} particleOpacity={particleOpacity} particleShape={particleShape} particleDerivativeOrder={particleDerivativeOrder} particleAppearance={particleAppearance} occlusionPreset={occlusionPreset} waveMechanics={waveMechanics} solitonConfig={activeSolitonConfig} solitonSolverRef={activeSolitonSolverRef} onSolitonTelemetry={activeOnSolitonTelemetry} showWaveRepresentation={showWaveRepresentation} showTensorGaussianSplatters={showTensorGaussianSplatters} classicalWavePalette={classicalWavePalette} superpositionPalette={superpositionPalette} oamSplatterPalette={oamSplatterPalette} />
       {showDetector && (experimentMode === 'field' || APERTURE_EXPERIMENT_MODES.includes(experimentMode)) && <ExperimentDetector key={`${experimentMode}:${detectorImplementation}`} implementation={detectorImplementation} experimentMode={experimentMode} waves={detectorWaves} waveCount={detectorWaves.length} interferenceModes={detectorInterferenceModes} apertureField={detectorApertureField} running={running} timeRef={timeRef} detectionTime={detectionTime} glowTime={glowTime} detectorBrightness={detectorBrightness} detectorPalette={detectorPalette} detectorMechanicsMode={detectorMechanicsMode} clearToken={detectorClear.token} maskEnabled={detectorMaskEnabled} pixelDensity={detectorPixelDensity} onResolutionChange={onDetectorResolutionChange} />}
       {showDetector && wignerMechanics.showOnDetector && <WignerMechanicsReadout label="DETECTOR WIGNER MOMENTS" position={[DOUBLE_SLIT_DETECTOR_X - 0.03, DETECTOR_TRANSVERSE_SPAN / 2 - 0.7, -DETECTOR_TRANSVERSE_SPAN / 2 + 0.8]} waves={detectorWaves} waveCount={detectorWaves.length} timeRef={timeRef} apertureField={detectorApertureField} quantities={wignerMechanics.quantities} />}
       {showWaveRepresentation && wignerMechanics.showOnWaveField && <WignerMechanicsReadout label="WAVE-FIELD WIGNER MOMENTS" position={[-8, 4.2, -8]} waves={waves} waveCount={waveCount} timeRef={timeRef} apertureField={apertureField} quantities={wignerMechanics.quantities} />}
@@ -1567,6 +1788,207 @@ function SourceOrbitControl({ wave, index, onChange, editing = false }) {
   );
 }
 
+const SOLITON_SCENARIO_PRESETS = [
+  {
+    id: 'pool-kdv',
+    label: 'Wave Pool KdV',
+    patch: { enabled: true, domain: 'wave-pool', equation: 'kdv', fluidId: 'water', emissionSide: 'left', solitonCount: 2 }
+  },
+  {
+    id: 'pool-bilateral',
+    label: 'Bilateral Pool Collision',
+    patch: { enabled: true, domain: 'wave-pool', equation: 'boussinesq', fluidId: 'water', emissionSide: 'both', solitonCount: 2 }
+  },
+  {
+    id: 'vector-pair',
+    label: 'Vector Soliton Pair',
+    patch: { enabled: true, domain: 'wave-pool', equation: 'vector-coupled', fluidId: 'water', emissionSide: 'left', solitonCount: 2, vectorCoupling: 0.75 }
+  },
+  {
+    id: 'water-hdl-ldl-3-saddle',
+    label: 'Water (HDL+LDL) 3-Saddle',
+    patch: { enabled: true, domain: 'wave-pool', equation: 'boussinesq', fluidId: 'water-hdl-ldl', hdlLdlPathway: 'near-boundary-3-saddle', emissionSide: 'both', solitonCount: 2 }
+  },
+  {
+    id: 'argon-plasma',
+    label: 'Argon Ion-Acoustic Plasma',
+    patch: { enabled: true, domain: 'plasma-wave', equation: 'kdv', fluidId: 'argon', emissionSide: 'left', solitonCount: 2, electronTempEv: 2.8 }
+  },
+  {
+    id: 'hydrogen-plasma',
+    label: 'Hydrogen Magnetized Plasma',
+    patch: { enabled: true, domain: 'plasma-wave', equation: 'boussinesq', fluidId: 'hydrogen', emissionSide: 'both', solitonCount: 2, magneticFieldT: 1.2, electronTempEv: 4.5 }
+  },
+  {
+    id: 'pool-cfd-2d',
+    label: '2D Free-Surface CFD',
+    patch: { enabled: true, domain: 'wave-pool', equation: 'cfd-2d', fluidId: 'water', emissionSide: 'both', solitonCount: 2, showCfdVelocityOverlay: true }
+  }
+];
+
+function SolitonWaveControlsSection({ solitonConfig, solitonTelemetry, onSolitonConfigChange, onEmitPulse, onResetSoliton, editing = false }) {
+  const config = normalizeSolitonConfig(solitonConfig);
+  const physics = useMemo(() => deriveSolitonPhysicsParameters(config), [config]);
+  const telemetry = solitonTelemetry ?? {
+    characteristicWaveSpeedMS: config.domain === 'plasma-wave' ? physics.ionSoundSpeedMS : physics.shallowWaterSpeedMS,
+    machOrFroudeNumber: 1.18,
+    peakAmplitude: config.solitons[0]?.amplitude ?? 0.72,
+    viscousEnergyLossFraction: 0,
+    debyeLengthM: physics.debyeLengthM,
+    ionPlasmaFrequencyHz: physics.ionPlasmaFrequencyHz,
+    alfvenSpeedMS: physics.alfvenSpeedMS,
+    meanHdlFraction: physics.equilibriumHdlFraction,
+    meanLdlFraction: physics.equilibriumLdlFraction,
+    hdlLdlSaddlePoints: physics.pathway.saddlePoints,
+    hdlLdlLoopTopology: physics.pathway.loopTopology,
+    cfdGridLabel: '64x16',
+    cfdMaxDivergence: 0,
+    stateSummary: config.domain === 'plasma-wave' ? physics.fluid.plasmaSummary : physics.fluid.stateSummary,
+    caveat: physics.fluid.caveat
+  };
+
+  const updateConfig = (patch) => {
+    onSolitonConfigChange(normalizeSolitonConfig({ ...config, ...patch }));
+  };
+
+  const updatePulse = (index, patch) => {
+    const nextSolitons = config.solitons.map((item, idx) => idx === index ? { ...item, ...patch } : item);
+    updateConfig({ solitons: nextSolitons });
+  };
+
+  return (
+    <section className="wave-control-section wave-state-section wave-soliton-section" aria-label="Soliton and plasma wave controls" data-soliton-enabled={String(config.enabled)} data-soliton-domain={config.domain} data-soliton-equation={config.equation} data-soliton-fluid={config.fluidId} data-soliton-side={config.emissionSide}>
+      <span className="wave-section-label">SOLITON &amp; PLASMA WAVE LAB</span>
+      <label className="wave-toggle wave-visualization-toggle">
+        <input type="checkbox" checked={config.enabled} onChange={(event) => updateConfig({ enabled: event.target.checked })} />
+        <span>Enable soliton / plasma wave solver</span>
+      </label>
+      <p className="wave-description">
+        Simulate nonlinear KdV, bidirectional Boussinesq, coupled vector solitons, and optional 2D cross-section CFD across wave-pool fluids and ionized plasmas.
+      </p>
+      <div className="wave-actions wave-soliton-presets" role="group" aria-label="Soliton scenario presets">
+        {SOLITON_SCENARIO_PRESETS.map((preset) => (
+          <button key={preset.id} type="button" onClick={() => updateConfig(preset.patch)}>
+            {preset.label}
+          </button>
+        ))}
+      </div>
+      <ParamSelect className="wave-select" label="Soliton domain" value={config.domain} options={SOLITON_DOMAIN_OPTIONS} onChange={(domain) => updateConfig({ enabled: true, domain })} />
+      <ParamSelect className="wave-select" label="Soliton equation" value={config.equation} options={SOLITON_EQUATION_OPTIONS} onChange={(equation) => updateConfig({ enabled: true, equation })} />
+      {(() => {
+        const solverInfo = getSolitonEquationDetails(config.equation);
+        return (
+          <div className="wave-description wave-soliton-solver-description" role="note" aria-label="Selected solver module description">
+            <strong>{solverInfo.label}:</strong> {solverInfo.summary} <code>{solverInfo.formula}</code>{' '}
+            <span>{config.domain === 'plasma-wave' ? solverInfo.plasmaUse : solverInfo.poolUse}</span>
+          </div>
+        );
+      })()}
+      <details className="wave-detector-notes wave-soliton-solver-catalog">
+        <summary>Solver module descriptions</summary>
+        {Object.values(SOLITON_EQUATION_DETAILS).map((moduleInfo) => (
+          <div key={moduleInfo.id} className="wave-soliton-module-item" data-solver-module={moduleInfo.id}>
+            <h3>{moduleInfo.label}</h3>
+            <p><code>{moduleInfo.formula}</code></p>
+            <p>{moduleInfo.summary}</p>
+            <p><strong>Wave pool:</strong> {moduleInfo.poolUse}</p>
+            <p><strong>Plasma wave:</strong> {moduleInfo.plasmaUse}</p>
+          </div>
+        ))}
+      </details>
+      <ParamSelect className="wave-select" label="Soliton fluid" value={config.fluidId} options={SOLITON_FLUID_OPTIONS} onChange={(fluidId) => updateConfig({ enabled: true, fluidId })} />
+      <ParamSelect className="wave-select" label="Soliton emission side" value={config.emissionSide} options={SOLITON_EMISSION_SIDE_OPTIONS} onChange={(emissionSide) => updateConfig({ enabled: true, emissionSide })} />
+      <ParamSelect className="wave-select" label="Soliton boundary" value={config.boundaryCondition} options={SOLITON_BOUNDARY_OPTIONS} onChange={(boundaryCondition) => updateConfig({ boundaryCondition })} />
+      {config.equation === 'kdv' && config.emissionSide === 'both' && (
+        <p className="wave-description" role="note">
+          Standard KdV evolves in a single directional frame (two co-propagating solitons). Switch equation to Bidirectional Boussinesq or 2D CFD for head-on bilateral collisions.
+        </p>
+      )}
+      <div className="wave-actions">
+        <button type="button" onClick={() => { updateConfig({ enabled: true }); onEmitPulse(config.emissionSide); }}>Emit soliton pulse(s)</button>
+        <button type="button" onClick={() => { updateConfig({ enabled: true }); onEmitPulse('left'); }}>Emit left</button>
+        <button type="button" onClick={() => { updateConfig({ enabled: true }); onEmitPulse('right'); }}>Emit right</button>
+        <button type="button" onClick={onResetSoliton}>Reset soliton solver</button>
+      </div>
+      {config.enabled && <>
+        <RangeControl label="Soliton count" value={config.solitonCount} min={1} max={2} step={1} editing={editing} onChange={(solitonCount) => updateConfig({ solitonCount })} />
+        <RangeControl label="Fluid viscosity scale" value={config.viscosityScale} min={0} max={5} step={0.05} suffix="x" editing={editing} onChange={(viscosityScale) => updateConfig({ viscosityScale })} />
+        <RangeControl label="Nonlinear coupling scale" value={config.nonlinearScale} min={0.1} max={3} step={0.05} suffix="x" editing={editing} onChange={(nonlinearScale) => updateConfig({ nonlinearScale })} />
+        <RangeControl label="Dispersion scale" value={config.dispersionScale} min={0.1} max={3} step={0.05} suffix="x" editing={editing} onChange={(dispersionScale) => updateConfig({ dispersionScale })} />
+        {config.domain === 'wave-pool' ? <>
+          <RangeControl label="Pool still-water depth" value={config.poolDepthM} min={0.4} max={5} step={0.1} suffix=" m" editing={editing} onChange={(poolDepthM) => updateConfig({ poolDepthM })} />
+          <RangeControl label="Pneumatic chamber pressure" value={config.pneumaticPressureKPa} min={5} max={120} step={1} suffix=" kPa" editing={editing} onChange={(pneumaticPressureKPa) => updateConfig({ pneumaticPressureKPa })} />
+        </> : <>
+          <RangeControl label="Electron temperature Te" value={config.electronTempEv} min={0.2} max={25} step={0.1} suffix=" eV" editing={editing} onChange={(electronTempEv) => updateConfig({ electronTempEv })} />
+          <RangeControl label="Ion temperature Ti" value={config.ionTempEv} min={0.02} max={10} step={0.02} suffix=" eV" editing={editing} onChange={(ionTempEv) => updateConfig({ ionTempEv })} />
+          <RangeControl label="Plasma density n0" value={config.plasmaDensity1e16M3} min={0.2} max={50} step={0.2} suffix=" e16/m³" editing={editing} onChange={(plasmaDensity1e16M3) => updateConfig({ plasmaDensity1e16M3 })} />
+          <RangeControl label="Magnetic field B0" value={config.magneticFieldT} min={0} max={5} step={0.05} suffix=" T" editing={editing} onChange={(magneticFieldT) => updateConfig({ magneticFieldT })} />
+          <RangeControl label="Magnetic wave angle" value={config.magneticAngleDeg} min={0} max={89} step={1} suffix=" deg" editing={editing} onChange={(magneticAngleDeg) => updateConfig({ magneticAngleDeg })} />
+          <RangeControl label="Landau / collisional damping" value={config.landauDamping} min={0} max={0.25} step={0.005} suffix=" /s" editing={editing} onChange={(landauDamping) => updateConfig({ landauDamping })} />
+        </>}
+        {config.equation === 'vector-coupled' && <>
+          <RangeControl label="Vector cross-coupling" value={config.vectorCoupling} min={-1.5} max={1.5} step={0.05} editing={editing} onChange={(vectorCoupling) => updateConfig({ vectorCoupling })} />
+          <RangeControl label="Vector group mismatch" value={config.vectorGroupMismatch} min={-0.8} max={0.8} step={0.02} editing={editing} onChange={(vectorGroupMismatch) => updateConfig({ vectorGroupMismatch })} />
+        </>}
+        {config.equation === 'gardner-mkdv' && (
+          <RangeControl label="Cubic nonlinearity" value={config.cubicNonlinearity} min={-2} max={2} step={0.05} editing={editing} onChange={(cubicNonlinearity) => updateConfig({ cubicNonlinearity })} />
+        )}
+        {config.fluidId === 'water-hdl-ldl' && <>
+          <ParamSelect className="wave-select" label="HDL/LDL reaction pathway" value={config.hdlLdlPathway} options={WATER_HDL_LDL_PATHWAY_OPTIONS.map(({ value, label }) => ({ value, label }))} onChange={(hdlLdlPathway) => updateConfig({ hdlLdlPathway })} />
+          <RangeControl label="HDL/LDL structural coupling" value={config.hdlLdlCoupling} min={0} max={1.5} step={0.05} editing={editing} onChange={(hdlLdlCoupling) => updateConfig({ hdlLdlCoupling })} />
+          <RangeControl label="Supercooled temperature" value={config.hdlLdlTemperatureK} min={175} max={310} step={1} suffix=" K" editing={editing} onChange={(hdlLdlTemperatureK) => updateConfig({ hdlLdlTemperatureK })} />
+          <RangeControl label="Hydrostatic pressure" value={config.hdlLdlPressureBar} min={1} max={2500} step={25} suffix=" bar" editing={editing} onChange={(hdlLdlPressureBar) => updateConfig({ hdlLdlPressureBar })} />
+          <label className="wave-toggle wave-visualization-toggle">
+            <input type="checkbox" checked={config.showHdlLdlOverlay} onChange={(event) => updateConfig({ showHdlLdlOverlay: event.target.checked })} />
+            <span>Color field by HDL/LDL fraction</span>
+          </label>
+          <p className="wave-description">{getWaterHdlLdlPathwayDetails(config.hdlLdlPathway).citation}</p>
+        </>}
+        <label className="wave-toggle wave-visualization-toggle">
+          <input type="checkbox" checked={config.showCfdVelocityOverlay} onChange={(event) => updateConfig({ showCfdVelocityOverlay: event.target.checked })} />
+          <span>Show 2D CFD cross-section curtain</span>
+        </label>
+        {config.solitons.slice(0, config.solitonCount).map((pulse, index) => (
+          <details key={index} className="wave-detector-model-params wave-soliton-pulse-editor" open={index === 0}>
+            <summary>Soliton {index + 1} ({pulse.polarity > 0 ? 'Compressive / crest' : 'Rarefactive / trough'})</summary>
+            <RangeControl label={`Soliton ${index + 1} amplitude`} value={pulse.amplitude} min={0.05} max={1.5} step={0.02} suffix=" u" editing={editing} onChange={(amplitude) => updatePulse(index, { amplitude })} />
+            <RangeControl label={`Soliton ${index + 1} width`} value={pulse.width} min={0.45} max={4.5} step={0.05} suffix=" u" editing={editing} onChange={(width) => updatePulse(index, { width })} />
+            <RangeControl label={`Soliton ${index + 1} offset`} value={pulse.positionOffset} min={-7.5} max={7.5} step={0.1} suffix=" u" editing={editing} onChange={(positionOffset) => updatePulse(index, { positionOffset })} />
+            <RangeControl label={`Soliton ${index + 1} vector angle`} value={pulse.vectorAngleDeg} min={-90} max={90} step={1} suffix=" deg" editing={editing} onChange={(vectorAngleDeg) => updatePulse(index, { vectorAngleDeg })} />
+            <ParamSelect className="wave-select" label={`Soliton ${index + 1} polarity`} value={String(pulse.polarity)} options={[{ value: '1', label: 'Compressive / elevation (+1)' }, { value: '-1', label: 'Rarefactive / depression (-1)' }]} onChange={(val) => updatePulse(index, { polarity: Number(val) })} />
+          </details>
+        ))}
+        <div className="wave-soliton-telemetry" role="region" aria-label="Soliton and plasma telemetry">
+          <div><span>Medium state</span><strong>{telemetry.stateSummary}</strong></div>
+          <div>
+            <span>{config.domain === 'plasma-wave' ? 'Ion sound speed cs' : 'Shallow-water speed c0'}</span>
+            <strong>{telemetry.characteristicWaveSpeedMS.toFixed(1)} m/s</strong>
+          </div>
+          <div>
+            <span>{config.domain === 'plasma-wave' ? 'Soliton Mach M' : 'Froude number Fr'}</span>
+            <strong>{telemetry.machOrFroudeNumber.toFixed(2)}</strong>
+          </div>
+          <div><span>Peak amplitude</span><strong>{telemetry.peakAmplitude.toFixed(3)} u</strong></div>
+          <div><span>Viscous loss</span><strong>{(telemetry.viscousEnergyLossFraction * 100).toFixed(1)}%</strong></div>
+          {config.domain === 'plasma-wave' && <>
+            <div><span>Debye length λDe</span><strong>{(telemetry.debyeLengthM * 1e6).toFixed(1)} μm</strong></div>
+            <div><span>Ion plasma freq fpi</span><strong>{(telemetry.ionPlasmaFrequencyHz / 1e6).toFixed(2)} MHz</strong></div>
+            <div><span>Alfvén speed vA</span><strong>{telemetry.alfvenSpeedMS.toFixed(0)} m/s</strong></div>
+          </>}
+          {config.fluidId === 'water-hdl-ldl' && <>
+            <div><span>HDL / LDL fractions</span><strong>HDL {(telemetry.meanHdlFraction * 100).toFixed(1)}% · LDL {(telemetry.meanLdlFraction * 100).toFixed(1)}%</strong></div>
+            <div><span>Reaction pathway</span><strong>{telemetry.hdlLdlLoopTopology} ({telemetry.hdlLdlSaddlePoints} {telemetry.hdlLdlSaddlePoints === 1 ? 'saddle point' : 'saddle points'})</strong></div>
+          </>}
+          {(config.equation === 'cfd-2d' || config.showCfdVelocityOverlay) && (
+            <div><span>2D CFD ({telemetry.cfdGridLabel}) max |∇·u|</span><strong>{telemetry.cfdMaxDivergence.toFixed(3)}</strong></div>
+          )}
+        </div>
+        <p className="wave-description">{telemetry.caveat}</p>
+      </>}
+    </section>
+  );
+}
+
 function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate, canRemove, editing = false, isDefault = () => true, onResetPath = () => {}, classicalWavePalette = 'native', waveCount = MAX_WAVES }) {
   const [parameterPlacement, setParameterPlacement] = useState('auto');
   const update = (field, value) => onChange(index, { ...wave, [field]: value });
@@ -1610,6 +2032,7 @@ function WaveEditor({ wave, index, onChange, onDuplicate, onRemove, canDuplicate
 
 function WavePanel({ waves, waveCount, interferenceModes, running, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, orbitControlsVisible, sourceVectorsVisible, sourcePreset, occlusionPreset, stateOptions, selectedState, stateDescription, stateName, stateMessage, paramsVisible, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation, onExperimentModeChange, onDetectionTime, onGlowTime, onApertureSettingsChange, onDetectorVisible, onDetectorBrightness, onDetectorPalette, onDetectorMaskEnabled, onDetectorPixelDensity, onDetectorImplementation, onSourcePreset, onOcclusionPreset, onStateChange, onStateName, onSaveState, onChange, onWaveCountChange, onInterferenceChange, onRunning, onReset, onDuplicate, onRemove, onDoubleSided, onParticleCount, onParticleSize, onParticleOpacity, onParticleShape, onParticleDerivativeOrder, onOrbitControls, onSourceVectors, showWaveRepresentation = true, showTensorGaussianSplatters = true, classicalWavePalette = 'native', superpositionPalette = 'native', oamSplatterPalette = 'native', onVisualizationChange = () => {}, editing = false, onEditing = () => {}, canUndo = false, canRedo = false, onUndo = () => {}, onRedo = () => {}, isDefault = () => true, onResetPath = () => {}, simulatorPresets = {}, currentSimulatorPreset = 'Default', simulatorPresetName = '', onSimulatorPresetName = () => {}, onApplySimulatorPreset = () => {}, onSaveSimulatorPreset = () => {}, currentValue = {}, jsonText = '', onJsonText = () => {}, onLoadJson = () => {}, onExport = () => {}, onDeleteSimulatorPresets = () => {}, showEditLog = false, onShowEditLog = () => {}, editLogYaml = '[]\n', onReplayLog = () => {}, replayMessage = '', replaying = false, journal = [], recording = false, onRecording = () => {}, playing = false, onTogglePlayback = () => {}, onStop = () => {}, playbackTime = 0, onPlaybackTime = () => {}, playbackSpeed = 1, onPlaybackSpeed = () => {} }) {
   const detectorClear = useContext(DetectorClearContext);
+  const solitonContext = useContext(SolitonSimulatorContext);
   const detectorModelComparison = useContext(DetectorModelComparisonContext);
   const { scores: detectorComparisonScores } = useContext(DetectorComparisonScoreContext);
   const enabledCount = waves.slice(0, waveCount).filter((wave) => wave.enabled).length;
@@ -1686,7 +2109,7 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
       </section>
       <section className="wave-control-section wave-state-section">
         <span className="wave-section-label">EXPERIMENT MODE</span>
-        <ParamSelect className="wave-select wave-state-select" label="Experiment mode" value={experimentMode} options={[{ value: 'field', label: 'Wave field' }, { value: 'single-slit', label: 'Single-slit diffraction' }, { value: 'double-slit', label: 'Double-slit experiment' }, { value: 'pinhole', label: 'Pinhole diffraction' }, { value: 'grating', label: 'Diffraction grating' }, { value: 'two-source', label: 'Two coherent sources' }]} onChange={onExperimentModeChange} />
+        <ParamSelect className="wave-select wave-state-select" label="Experiment mode" value={experimentMode} options={[{ value: 'field', label: 'Wave field' }, { value: 'soliton-pool', label: 'Pneumatic wave pool solitons' }, { value: 'plasma-soliton', label: 'Plasma wave solitons' }, { value: 'single-slit', label: 'Single-slit diffraction' }, { value: 'double-slit', label: 'Double-slit experiment' }, { value: 'pinhole', label: 'Pinhole diffraction' }, { value: 'grating', label: 'Diffraction grating' }, { value: 'two-source', label: 'Two coherent sources' }]} onChange={onExperimentModeChange} />
         {APERTURE_EXPERIMENT_MODES.includes(experimentMode) && <>
           <p className="wave-description">{experimentMode === 'single-slit'
             ? 'A finite slit illuminates the full two-dimensional detector.'
@@ -1867,6 +2290,14 @@ function WavePanel({ waves, waveCount, interferenceModes, running, particleCount
         <ParamSelect className="wave-select wave-state-select" label="Occlusion map" value={occlusionPreset} options={OCCLUSION_PRESETS.map((preset) => ({ value: preset.id, label: preset.name }))} onChange={onOcclusionPreset} />
         <p className="wave-description wave-state-description">{OCCLUSION_PRESETS.find((preset) => preset.id === occlusionPreset)?.description}</p>
       </section>
+      <SolitonWaveControlsSection
+        solitonConfig={currentValue.solitonConfig ?? solitonContext.config}
+        solitonTelemetry={solitonContext.telemetry}
+        onSolitonConfigChange={solitonContext.updateConfig}
+        onEmitPulse={solitonContext.emitPulse}
+        onResetSoliton={solitonContext.resetSolver}
+        editing={editing}
+      />
       <SimulatorIOJournal className="wave-io-journal" currentValue={currentValue} presets={simulatorPresets} jsonText={jsonText} onJsonText={onJsonText} onLoad={onLoadJson} onExport={onExport} onDeletePresets={onDeleteSimulatorPresets} showEditLog={showEditLog} onShowEditLog={onShowEditLog} editLogYaml={editLogYaml} onReplayLog={onReplayLog} replayMessage={replayMessage} replaying={replaying} journal={journal} recording={recording} onRecording={onRecording} playing={playing} onTogglePlayback={onTogglePlayback} onStop={onStop} playbackTime={playbackTime} onPlaybackTime={onPlaybackTime} playbackSpeed={playbackSpeed} onPlaybackSpeed={onPlaybackSpeed} />
     </aside>
   );
@@ -1918,6 +2349,7 @@ export default function WaveInterferenceSim({ onBack }) {
     showCurrentHertz: false,
     running: true,
     waveMechanics: { ...DEFAULT_WAVE_MECHANICS },
+    solitonConfig: normalizeSolitonConfig(DEFAULT_SOLITON_CONFIG),
     ...DEFAULT_SIMULATOR_3D_PARAMETERS
   };
   const [simulatorPresets, setSimulatorPresets] = useState(() => readPresetLibrary(localStorage, WAVE_PRESET_STORAGE_KEY, { Default: initialSnapshot }));
@@ -1961,11 +2393,17 @@ export default function WaveInterferenceSim({ onBack }) {
   const [orbitControlsVisible, setOrbitControlsVisible] = useState(true);
   const [sourceVectorsVisible, setSourceVectorsVisible] = useState(true);
   const [waveMechanics, setWaveMechanicsState] = useState(() => ({ ...initialSnapshot.waveMechanics }));
+  const [solitonConfig, setSolitonConfigState] = useState(() => normalizeSolitonConfig(initialSnapshot.solitonConfig));
+  const solitonSolverRef = useRef(null);
+  if (!solitonSolverRef.current) {
+    solitonSolverRef.current = createSolitonSolverState(initialSnapshot.solitonConfig);
+  }
+  const [solitonTelemetry, setSolitonTelemetry] = useState(() => solitonSolverRef.current.telemetry);
   const [paramsVisible, setParamsVisible] = useState(true);
   const [viewMode, setViewMode] = useState('ortho1');
   const [orbitPlaying, setOrbitPlaying] = useState(true);
   const [editing, setEditing] = useState(false);
-  const waveEditor = useSimulationEditor({ ...initialSnapshot, waves, waveCount, interferenceModes, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, orbitControlsVisible, sourceVectorsVisible, occlusionPreset, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation, running, waveMechanics }, { recordParameterEdits: true });
+  const waveEditor = useSimulationEditor({ ...initialSnapshot, waves, waveCount, interferenceModes, particleCount, doubleSided, particleSize, particleOpacity, particleShape, particleDerivativeOrder, orbitControlsVisible, sourceVectorsVisible, occlusionPreset, experimentMode, detectionTime, glowTime, apertureSettings, detectorVisible, detectorBrightness, detectorPalette, detectorMaskEnabled, detectorPixelDensity, detectorImplementation, running, waveMechanics, solitonConfig }, { recordParameterEdits: true });
   const setRunning = (nextValue) => {
     const next = typeof nextValue === 'function' ? nextValue(running) : nextValue;
     setRunningState(next);
@@ -1974,6 +2412,30 @@ export default function WaveInterferenceSim({ onBack }) {
   const setWaveMechanics = (next) => {
     setWaveMechanicsState(next);
     waveEditor.commit((current) => ({ ...current, waveMechanics: next }));
+  };
+  const updateSolitonConfig = (nextRaw) => {
+    const next = normalizeSolitonConfig(nextRaw);
+    setSolitonConfigState(next);
+    solitonSolverRef.current = createSolitonSolverState(next);
+    setSolitonTelemetry(solitonSolverRef.current.telemetry);
+    waveEditor.commit((current) => ({
+      ...current,
+      solitonConfig: next,
+      experimentMode: next.enabled
+        ? (next.domain === 'plasma-wave' ? 'plasma-soliton' : 'soliton-pool')
+        : (['soliton-pool', 'plasma-soliton'].includes(current.experimentMode) ? 'field' : current.experimentMode)
+    }));
+  };
+  const emitSolitonPulse = (side) => {
+    if (!solitonSolverRef.current) {
+      solitonSolverRef.current = createSolitonSolverState(solitonConfig);
+    }
+    triggerSolitonLauncherImpulse(solitonSolverRef.current, solitonConfig, side);
+    setSolitonTelemetry({ ...solitonSolverRef.current.telemetry });
+  };
+  const resetSolitonSolver = () => {
+    solitonSolverRef.current = createSolitonSolverState(solitonConfig);
+    setSolitonTelemetry({ ...solitonSolverRef.current.telemetry });
   };
   const { canUndo, canRedo, undo, redo, log } = waveEditor;
   const journal = useSimulatorJournal({ initialSnapshot, playbackSpeed, onApplySnapshot: (snapshot) => waveEditor.replace(normalizeWaveSnapshot(snapshot, initialSnapshot)) });
@@ -2017,15 +2479,23 @@ export default function WaveInterferenceSim({ onBack }) {
     setDetectorImplementation(next.detectorImplementation ?? 'classic');
     setRunningState(next.running ?? true);
     setWaveMechanicsState({ ...DEFAULT_WAVE_MECHANICS, ...next.waveMechanics });
+    const nextSoliton = normalizeSolitonConfig(next.solitonConfig ?? DEFAULT_SOLITON_CONFIG);
+    setSolitonConfigState((prev) => {
+      if (JSON.stringify(prev) !== JSON.stringify(nextSoliton)) {
+        solitonSolverRef.current = createSolitonSolverState(nextSoliton);
+        setSolitonTelemetry(solitonSolverRef.current.telemetry);
+      }
+      return nextSoliton;
+    });
   }, [waveEditor.value]);
   const setOcclusionPreset = (value) => {
     const experimentMode = EXPERIMENT_MODE_BY_PRESET[value];
     if (experimentMode) {
-      waveEditor.commit((current) => ({ ...current, occlusionPreset: value, experimentMode }));
+      waveEditor.commit((current) => ({ ...current, occlusionPreset: value, experimentMode, solitonConfig: { ...normalizeSolitonConfig(current.solitonConfig), enabled: false } }));
       markStateModified();
       return;
     }
-    waveEditor.commit((current) => ({ ...current, occlusionPreset: value, experimentMode: 'field', detectorImplementation: 'classic' }));
+    waveEditor.commit((current) => ({ ...current, occlusionPreset: value, experimentMode: 'field', detectorImplementation: 'classic', solitonConfig: { ...normalizeSolitonConfig(current.solitonConfig), enabled: false } }));
     markStateModified();
   };
   const sourceFrame = calculateWaveFrame(waves.slice(0, waveCount).find((wave) => wave.enabled !== false) || waves[0]);
@@ -2036,19 +2506,39 @@ export default function WaveInterferenceSim({ onBack }) {
     setStateMessage('Current field has unsaved changes.');
   };
   const setExperimentMode = (mode) => {
+    if (mode === 'soliton-pool' || mode === 'plasma-soliton') {
+      const nextSoliton = normalizeSolitonConfig({
+        ...solitonConfig,
+        enabled: true,
+        domain: mode === 'plasma-soliton' ? 'plasma-wave' : 'wave-pool'
+      });
+      solitonSolverRef.current = createSolitonSolverState(nextSoliton);
+      setSolitonTelemetry(solitonSolverRef.current.telemetry);
+      waveEditor.commit((current) => ({
+        ...current,
+        experimentMode: mode,
+        occlusionPreset: 'none',
+        solitonConfig: nextSoliton
+      }));
+      setSourcePreset('');
+      setSelectedState('');
+      setStateModified(false);
+      setStateMessage(mode === 'plasma-soliton' ? 'Loaded Plasma wave solitons.' : 'Loaded Pneumatic wave pool solitons.');
+      return;
+    }
     const experimentStateName = EXPERIMENT_STATE_NAMES[mode];
     if (experimentStateName) {
       const state = DEFAULT_WAVE_STATES.find((item) => item.name === experimentStateName);
       if (!state) return;
       const next = cloneWaveState(state);
-      waveEditor.load((current) => ({ ...current, waves: next.waves, waveCount: next.waveCount, interferenceModes: next.interferenceModes, occlusionPreset: EXPERIMENT_PRESET_IDS[mode] ?? 'none', experimentMode: mode }));
+      waveEditor.load((current) => ({ ...current, waves: next.waves, waveCount: next.waveCount, interferenceModes: next.interferenceModes, occlusionPreset: EXPERIMENT_PRESET_IDS[mode] ?? 'none', experimentMode: mode, solitonConfig: { ...normalizeSolitonConfig(current.solitonConfig), enabled: false } }));
       setSourcePreset('');
       setSelectedState(state.name);
       setStateModified(false);
       setStateMessage(`Loaded ${state.name}.`);
       return;
     }
-    waveEditor.commit((current) => ({ ...current, occlusionPreset: 'none', experimentMode: 'field', detectorImplementation: 'classic' }));
+    waveEditor.commit((current) => ({ ...current, occlusionPreset: 'none', experimentMode: 'field', detectorImplementation: 'classic', solitonConfig: { ...normalizeSolitonConfig(current.solitonConfig), enabled: false } }));
     setSourcePreset('');
     setSelectedState('');
     setStateModified(true);
@@ -2101,7 +2591,8 @@ export default function WaveInterferenceSim({ onBack }) {
       waves: next.waves,
       waveCount: next.waveCount,
       interferenceModes: next.interferenceModes,
-      ...(experimentMode ? { occlusionPreset: EXPERIMENT_PRESET_IDS[experimentMode] ?? 'none', experimentMode } : {})
+      solitonConfig: { ...normalizeSolitonConfig(current.solitonConfig), enabled: false },
+      ...(experimentMode ? { occlusionPreset: EXPERIMENT_PRESET_IDS[experimentMode] ?? 'none', experimentMode } : { experimentMode: 'field' })
     }));
   };
   const onSourcePreset = (id) => {
@@ -2222,6 +2713,15 @@ export default function WaveInterferenceSim({ onBack }) {
     .filter(({ wave }) => wave.enabled !== false && (wave.phaseMode === 'Helical-Left' || wave.phaseMode === 'Helical-Right'));
 
   return (
+    <SolitonSimulatorContext.Provider value={{
+      config: solitonConfig,
+      solverRef: solitonSolverRef,
+      telemetry: solitonTelemetry,
+      setTelemetry: setSolitonTelemetry,
+      updateConfig: updateSolitonConfig,
+      emitPulse: emitSolitonPulse,
+      resetSolver: resetSolitonSolver
+    }}>
     <DetectorClearContext.Provider value={{ token: detectorClearToken, clear: () => setDetectorClearToken((token) => token + 1) }}>
     <WignerMechanicsContext.Provider value={waveEditor.value.wignerMechanics ?? DEFAULT_WIGNER_MECHANICS}>
     <DetectorModelComparisonContext.Provider value={waveEditor.value.detectorModelComparison ?? DEFAULT_DETECTOR_MODEL_COMPARISON}>
@@ -2361,5 +2861,6 @@ export default function WaveInterferenceSim({ onBack }) {
     </DetectorModelComparisonContext.Provider>
     </WignerMechanicsContext.Provider>
     </DetectorClearContext.Provider>
+    </SolitonSimulatorContext.Provider>
   );
 }
