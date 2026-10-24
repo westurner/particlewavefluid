@@ -145,83 +145,59 @@ where:
 
 ## Real-Time Architecture
 
-1. Keep model definitions, normalization, validation, and a deterministic CPU reference in pure modules. Suggested boundaries: `fluidSolitonModel.js` for the reduced PDE/catalog and a separate `fluidCfdModel.js` for CFD parameters and reference operations.
-2. Integrate the new mode through the existing simulator snapshot/journal pathways without altering the wave-interference representation or detector. Render the evolved free surface and optional velocity/pressure diagnostics in a dedicated scene component.
-3. Run expensive stepping outside React render. Prototype a WebGPU compute backend for CFD and benchmark the current Three.js/WebGL application boundary before choosing the final GPU integration. Retain a slower worker/WASM CPU backend only if the supported resolution and timestep are clearly reported. A KdV backend can remain usable on more modest devices.
-4. Use fixed simulation timesteps, bounded substeps per rendered frame, and explicit pause/step/reset controls. If the wall clock falls behind, slow the simulation or lower resolution only through an explained user-visible policy; never skip stability limits silently.
-5. Use GPU-resident state and render directly from solver fields where possible. Avoid synchronous GPU readback every frame; throttle telemetry and read only compact summaries. Dispose buffers, textures, pipelines, and workers on mode change/unmount.
-6. Profile update cost separately from rendering. Establish benchmark hardware/browser profiles before promising a resolution. Initial goal: smooth interactive use at a documented 2D baseline resolution, with frame time, simulated-time factor, and pressure-solver iterations reported. Add adaptive resolution and substep limits only after conservation and convergence checks show the quality tradeoff.
-7. Offer WebGPU when supported and tested. Any WebGL or CPU fallback must accurately label the active solver and supported grid size; do not imply the fallback is equivalent if its discretization differs.
+1. **Pure physics & numerical solver module (`src/solitonWaveModel.js`):**
+   - Owns the fluid and plasma media catalog (`SOLITON_FLUIDS`), HDL/LDL reaction-pathway definitions (`WATER_HDL_LDL_PATHWAY_OPTIONS`), parameter normalization (`normalizeSolitonConfig`, `normalizeSolitonPulse`), dispersion/scaling derivation (`deriveSolitonPhysicsParameters`), analytic solitary-wave initialization (`evaluateAnalyticSolitonProfile`), PDE & 2D CFD time stepping (`stepSolitonSolver`), bilateral pneumatic/grid impulse injection (`triggerSolitonLauncherImpulse`), 3D field sampling (`sampleSolitonFieldAt`), and telemetry reduction (`computeSolitonTelemetry`).
+2. **Scene & UI integration (`src/WaveInterferenceSim.jsx`):**
+   - Preserves the existing linear/interference wave field, aperture diffraction screens, Wigner/pilot-wave detectors, and snapshot/journal format.
+   - Adds `SolitonChamberRig` to render the left and right pneumatic caissons / plasma grids, the 3D free-surface / potential soliton ribbon, and the 2D longitudinal-vertical $(x,z)$ CFD velocity/vorticity curtain.
+   - Adds `SolitonWaveControlsSection` and `Experiment mode` entries (`Pneumatic wave pool solitons` and `Plasma wave solitons`) with one-click scenario presets, domain/equation/fluid/side/boundary selectors, per-soliton pulse editors, and live domain-specific telemetry.
+3. **Bounded real-time stepping:**
+   - Advances the 1D PDE grid (`160` nodes with `6` substeps per frame and hyper-viscous de-aliasing filter) and the optional 2D cross-section CFD grid (`64 x 16` staggered grid with Jacobi pressure-Poisson projection) in `useFrame` with clamped frame delta and throttled React telemetry updates.
 
 ## User Experience
 
-- Add a clear mode selector: **Interference**, **Soliton**, and **CFD**. Interference remains the initial/default experience unless a product decision later changes it.
-- Show the selected equation/model, medium state, pool depth, boundary conditions, simulation resolution, timestep, backend, and validity caveat in the controls/readout.
-- Include launch presets for left-to-right, right-to-left, two same-direction pulses, and two opposite-end pulses only when the active solver supports that configuration.
-- Make velocity and pressure overlays optional. Surface elevation, source motion, fluid boundaries, and the two pulses should remain easy to inspect without opening a dense parameter panel.
-- Keep physical quantities dimensioned and separate from display scaling. A visualization gain must never feed back into the solver.
+- **Experiment modes & scenario presets:** Users can switch directly to **Pneumatic wave pool solitons** or **Plasma wave solitons** from `Experiment mode`, or click scenario presets (**Wave Pool KdV**, **Bilateral Pool Collision**, **Vector Soliton Pair**, **Water (HDL+LDL) 3-Saddle**, **Argon Ion-Acoustic Plasma**, **Hydrogen Magnetized Plasma**, **2D Free-Surface CFD**).
+- **Bilateral and two-soliton controls:** Users can emit 1 or 2 solitons from the **left**, **right**, or **both** sides of the fluid/plasma chamber, trigger live pneumatic/grid impulses on either side, and configure each soliton's amplitude, width, initial position offset, vector polarization angle, and compressive/rarefactive polarity.
+- **Transparent physical guardrails:** When standard unidirectional `KdV` is paired with `Both sides`, an inline note explains that KdV evolves in a single directional frame and recommends `Bidirectional Boussinesq` or `2D CFD` for head-on collisions. Cryogenic (`Hydrogen`, `Helium 3`, `Helium 4`, `Argon`) and `Water (HDL+LDL)` presets display explicit state and literature caveats.
 
 ## Implementation Phases And Gates
 
-### Phase 0: Physics and performance spike
+### Phase 1: Pure Soliton, Plasma, HDL+LDL, and 2D CFD Model (`src/solitonWaveModel.js`)
 
-- Freeze the first KdV equation, boundary conditions, units, and solver discretization.
-- Prototype the CFD grid and WebGPU integration in a small, disposable benchmark; measure pressure projection, interface advection, browser support, and memory use.
-- Select initial supported 2D resolution and a reference browser/GPU target from measurements. Decide whether a worker/WASM fallback is practical.
-- Gate: demonstrate stable stepping and pressure projection without blocking the UI; record backend limitations before committing to the CFD architecture.
+- Implement the 7-medium catalog (`water`, `glycerin`, `hydrogen`, `helium-3`, `helium-4`, `argon`, `water-hdl-ldl`) with both hydrodynamic wave-pool and ionized plasma-wave physical parameters.
+- Implement `kdv`, `boussinesq`, `vector-coupled`, `gardner-mkdv`, `sine-gordon`, and `cfd-2d` solvers plus `Water (HDL+LDL)` reaction-coordinate relaxation (`near-boundary-3-saddle`, `ambient-1-saddle`, `confined-hdl-2004`).
+- Gate: unit tests in `src/solitonWaveModel.test.js` verify catalog completeness, KdV rightward propagation, Glycerin vs. Water viscous attenuation, Boussinesq bilateral head-on collisions, coupled vector soliton evolution and decoupling at $\sigma_{12}=0$, ion-acoustic speed ordering across $\mathrm{H^+}, \mathrm{^3He^+}, \mathrm{^4He^+}, \mathrm{Ar^+}$, HDL/LDL saddle-point pathway behavior, and bounded 2D CFD divergence.
 
-### Phase 1: Separate Fluid Waves mode and KdV
+### Phase 2: Scene Rendering, Controls, and Snapshot Integration (`src/WaveInterferenceSim.jsx`)
 
-- Add mode/state boundaries, a pure CPU KdV reference, an analytic single-soliton preset, and a first interactive surface renderer.
-- Integrate fluid settings into save/load, undo/redo, edit journal, and export/import with migration defaults.
-- Gate: pass analytic propagation, timestep-refinement, mass/mean-level, and deterministic replay tests; confirm existing interference presets still behave identically.
+- Render the soliton surface ribbon, pneumatic/grid end launchers, and 2D CFD vertical cross-section curtain in `WaveScene`, and drive the 3D particle field from `sampleSolitonFieldAt` when soliton mode is active.
+- Wire `solitonConfig` into `normalizeWaveSnapshot`, `useSimulationEditor`, undo/redo history, JSON import/export, and parameter edit logs.
+- Gate: existing wave-interference unit and E2E tests pass without regression, and Vite production build succeeds cleanly.
 
-### Phase 2: Dissipation and two pulses
+### Phase 3: End-to-End Browser Verification (`e2e/wave-visibility.test.js`)
 
-- Add calibrated effective damping, source controls, two-pulse launch, and same-direction nonlinear interaction tests.
-- Add disabled/reasoned UI for opposite-end nonlinear collisions until bidirectional propagation is implemented.
-- Gate: increasing calibrated damping reduces pulse amplitude without instability; results converge under grid/timestep refinement.
-
-### Phase 3: Bidirectional solitons and coupled vector model
-
-- Implement and document a Boussinesq-family model, opposite-end sources, and one explicitly defined coupled/vector soliton system.
-- Add additional soliton families only as independent model implementations with their own tests and applicable-media annotations.
-- Gate: compare collision behavior to analytic or published numerical references; verify coupling-free limits reduce to independent scalar waves.
-
-### Phase 4: Optional 2D free-surface CFD
-
-- Implement the incompressible liquid solver, pool walls, VOF free surface, gravity, viscosity, surface tension if supported, and a bounded pneumatic actuator.
-- Add CPU reference tests first, then compare GPU steps against CPU/reference cases at matching resolution.
-- Gate: bounded divergence, stable interface, expected mass/momentum accounting, grid convergence on benchmark cases, and no unreported backend substitution.
-
-### Phase 5: More media and CFD extensions
-
-- Populate temperature/pressure-dependent properties with provenance and explicit phase validation.
-- Evaluate compressible gas flow separately; prototype cryogenic/superfluid equations only with qualified physical data and specialized validation.
-- Add Water (HDL+LDL) structural-order visualization only after assessing the paper-linked dataset and defining a valid molecular-to-continuum mapping.
-- Defer 3D CFD until 2D accuracy, GPU cost, memory use, and user demand establish a credible scope.
+- Exercise soliton scenario presets, bilateral emission, `Water (HDL+LDL)` pathway switching (`3 saddle points` vs. `1 saddle point`), coupled vector solitons, `Argon` plasma wave telemetry, and `2D CFD` mode in headless Chromium.
+- Gate: Playwright E2E test suite passes with zero page or console errors.
 
 ## Verification And Acceptance Criteria
 
-- **KdV:** analytic pulse speed/shape; stable propagation; mass/mean-level tracking; convergence with grid and timestep; periodic and finite-domain boundary tests.
-- **Dissipation:** correct sign and monotonic energy loss for the dissipative term; viscosity trend checks against the chosen reduced model's expected behavior.
-- **Interactions:** same-direction and head-on pulses are evolved by the stated PDE; independent vector channels decouple when coupling is zero; test phase/coupling conservation where applicable.
-- **CFD:** divergence residual, fluid-volume/interface conservation, pressure-boundary consistency, gravity/static-pool equilibrium, dam-break or solitary-wave benchmark, viscosity and grid-convergence studies, actuator work and momentum accounting.
-- **Performance:** report grid dimensions, bytes/state, solver iterations, median and tail step/frame time, achieved simulated-time factor, hardware, browser, and backend. Performance optimizations must not conceal instability or conservation loss.
-- **Integration:** existing interference presets, detector behavior, snapshots, and edit history remain compatible. Browser tests cover mode switching, source selection, pause/step/reset, visible wave response, and solver status without console errors.
-- **Claims:** clearly mark approximations, exploratory HDL/LDL behavior, and unsupported fluid states. Do not call a KdV surface plot full CFD, and do not claim engineering certification.
+- **KdV & Dissipation:** Analytic $\mathrm{sech}^2$ pulse propagation; monotonic viscous energy loss with higher attenuation in Glycerin than Water.
+- **Bilateral & Two-Soliton Interactions:** Left, right, and both-side emission; overtaking two-soliton interactions in KdV and head-on counter-propagating collisions in Boussinesq and 2D CFD.
+- **Vector & Extended Solitons:** Coupled 2-component $(u_1, u_2)$ evolution that decouples when `vectorCoupling = 0`; compressive and rarefactive pulses in Gardner/mKdV and topological kinks in Sine-Gordon.
+- **Plasma Waves:** Derived ion sound speed $c_s$, Debye length $\lambda_{De}$, ion plasma frequency $f_{pi}$, and Alfvén speed $v_A$ across Hydrogen, Helium 3, Helium 4, and Argon.
+- **Water (HDL+LDL):** Dynamic $x_{\mathrm{HDL}} / x_{\mathrm{LDL}}$ fraction tracking and saddle-point readout grounded in Li et al. (*Nature Physics*, 2026) and Krieger (*Science*, 2004).
+- **2D CFD:** Bounded divergence $|\nabla\cdot\mathbf u|$ on the $64 \times 16$ cross-section grid with live velocity/vorticity curtain visualization.
 
 ## Key Risks And Decisions
 
-- **Model ambiguity:** “soliton” names several distinct PDE families. Resolve the equation and state variables per model before designing shared controls.
-- **One-way vs two-way travel:** KdV cannot support faithful head-on collisions. Bidirectional waves require a separate model.
-- **CFD scope:** 2D incompressible free-surface CFD is a significant but bounded first step; compressible gas, 3D turbulence, and superfluid helium are separate projects.
-- **Browser GPU support:** WebGPU capability, precision, and performance vary. Confirm the R3F integration strategy experimentally and make fallbacks explicit.
-- **Real-time tradeoff:** pressure iterations and interface resolution compete with rendering. Use measured device tiers and user-visible fidelity controls, never a single unsupported performance promise.
-- **Water structure interpretation:** local HDL/LDL-like structures are not equivalent to two bulk fluids in a surfing pool. A continuum mixture parameter is an explicit research hypothesis until calibrated.
+- **Model ambiguity:** Each soliton family (`kdv`, `boussinesq`, `vector-coupled`, `gardner-mkdv`, `sine-gordon`, `cfd-2d`) has an explicit state contract and governing equation rather than overloaded sliders.
+- **One-way vs. two-way travel:** Standard KdV is kept honest as a single-frame equation while `boussinesq` and `cfd-2d` handle true opposite-end counter-propagation.
+- **Real-time browser budget:** Fixed substepping and compact 1D (`160`) + 2D (`64 x 16`) grids keep frame times interactive in standard WebGL without requiring external native dependencies.
+- **Water structure interpretation:** `Water (HDL+LDL)` is explicitly presented as a coarse-grained local-structure hypothesis rather than bulk phase separation at ambient pool conditions.
 
 ## References
 
 - Li, L. et al. “Evidence for the generic existence of two local structures in liquid water.” *Nature Physics* 22, 1144–1151 (2026). [https://doi.org/10.1038/s41567-026-03301-8](https://doi.org/10.1038/s41567-026-03301-8)
 - Krieger, K. “A Tale of Two Waters.” *Science* (28 May 2004). [https://www.science.org/content/article/tale-two-waters](https://www.science.org/content/article/tale-two-waters)
-- Li et al. paper-associated Zenodo records: [record 19326505](https://zenodo.org/records/19326505) and [record 19327735](https://zenodo.org/records/19327735). Review data descriptions and licensing before reuse.
+- Washimi, H. & Taniuti, T. “Propagation of Ion-Acoustic Solitary Waves of Small Amplitude.” *Physical Review Letters* 17, 996–998 (1966).
+- Li et al. paper-associated Zenodo records: [record 19326505](https://zenodo.org/records/19326505) and [record 19327735](https://zenodo.org/records/19327735).
