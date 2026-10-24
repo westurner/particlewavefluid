@@ -3,7 +3,7 @@ import { Html } from '@react-three/drei';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DataTexture, DoubleSide, FloatType, FrontSide, Mesh, NearestFilter, NoBlending, OrthographicCamera, RGBAFormat, Scene, ShaderMaterial, UnsignedByteType, Vector3, WebGLRenderTarget } from 'three';
 import { advanceDetectorResponse, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacementAndTensorGaussian, calculateWaveFrame, calculateWaveOrbitalPhase, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_APERTURE_SETTINGS, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, DOUBLE_SLIT_SCREEN_THICKNESS, DOUBLE_SLIT_SCREEN_X, DOUBLE_SLIT_WIDTH, APERTURE_SCREEN_DEPTH, APERTURE_SCREEN_HEIGHT, DETECTOR_TRANSVERSE_SPAN, detectorDistanceForSlitScreenPosition, filterWavesByPhase, getOrbitalAngularMomentum, getSlitGeometry, getSlitScreenPlane, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, GRATING_SLIT_WIDTH, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, OAM_CHARGE_MAX, OAM_CHARGE_MIN, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, readSavedWaveStates, sampleApertureField, samplePilotWaveCurrent, sampleTransverseWignerFunction, sampleWignerMechanics, SIGNAL_SOURCE_PRESETS, SINGLE_SLIT_WIDTH, slitScreenPlaneDepth, TWO_SOURCE_CENTERS, WIGNER_MECHANICS_QUANTITIES, writeSavedWaveStates } from './waveModel.js';
-import { createSolitonSolverState, DEFAULT_SOLITON_CONFIG, deriveSolitonPhysicsParameters, evaluateBathymetryAt, evaluateTubularCrestAt, getBathymetryProfileDetails, getSolitonEquationDetails, getWaterHdlLdlPathwayDetails, normalizeSolitonConfig, sampleSolitonFieldAt, SOLITON_BATHYMETRY_OPTIONS, SOLITON_BOUNDARY_OPTIONS, SOLITON_DOMAIN_OPTIONS, SOLITON_DOMAIN_SPAN, SOLITON_EMISSION_SIDE_OPTIONS, SOLITON_EQUATION_DETAILS, SOLITON_EQUATION_OPTIONS, SOLITON_FLUID_OPTIONS, SOLITON_FLUIDS, stepSolitonSolver, triggerSolitonLauncherImpulse, WATER_HDL_LDL_PATHWAY_OPTIONS } from './solitonWaveModel.js';
+import { createSolitonSolverState, DEFAULT_SOLITON_CONFIG, deriveSolitonPhysicsParameters, evaluateBathymetryAt, evaluateSolitonCheckFigures, evaluateTubularCrestAt, getBathymetryProfileDetails, getSolitonEquationDetails, getWaterHdlLdlPathwayDetails, normalizeSolitonConfig, sampleSolitonFieldAt, SOLITON_BATHYMETRY_OPTIONS, SOLITON_BOUNDARY_OPTIONS, SOLITON_DOMAIN_OPTIONS, SOLITON_DOMAIN_SPAN, SOLITON_EMISSION_SIDE_OPTIONS, SOLITON_EQUATION_DETAILS, SOLITON_EQUATION_OPTIONS, SOLITON_FLUID_OPTIONS, SOLITON_FLUIDS, stepSolitonSolver, triggerSolitonLauncherImpulse, WATER_HDL_LDL_PATHWAY_OPTIONS } from './solitonWaveModel.js';
 import { HistoryControls, NumericParamControl, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 import { CameraPerspectiveToolbar, OrbitalTrackingParameters, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase, SimulatorExportModal, SimulatorIOJournal, SimulatorPresetControls, useSimulatorJournal } from './lib/SimulatorBase.jsx';
@@ -1982,6 +1982,8 @@ const SOLITON_SCENARIO_PRESETS = [
 function SolitonWaveControlsSection({ solitonConfig, solitonTelemetry, onSolitonConfigChange, onEmitPulse, onResetSoliton, editing = false }) {
   const config = normalizeSolitonConfig(solitonConfig);
   const physics = useMemo(() => deriveSolitonPhysicsParameters(config), [config]);
+  const [checkRunCount, setCheckRunCount] = useState(0);
+  const checkFiguresReport = useMemo(() => evaluateSolitonCheckFigures(config), [config, checkRunCount]);
   const telemetry = solitonTelemetry ?? {
     characteristicWaveSpeedMS: config.domain === 'plasma-wave' ? physics.ionSoundSpeedMS : physics.shallowWaterSpeedMS,
     machOrFroudeNumber: 1.18,
@@ -2029,6 +2031,7 @@ function SolitonWaveControlsSection({ solitonConfig, solitonTelemetry, onSoliton
       data-show-floor-bathymetry={String(config.showFloorBathymetry)}
       data-bathymetry-profile={config.bathymetryProfile}
       data-tubular-breaker={String(config.tubularBreakerEnabled)}
+      data-check-figures-passed={`${checkFiguresReport.passedCount}/${checkFiguresReport.totalCount}`}
     >
       <span className="wave-section-label">SOLITON &amp; PLASMA WAVE LAB</span>
       <label className="wave-toggle wave-visualization-toggle">
@@ -2185,7 +2188,50 @@ function SolitonWaveControlsSection({ solitonConfig, solitonTelemetry, onSoliton
           {(config.equation === 'cfd-2d' || config.showCfdVelocityOverlay) && (
             <div><span>2D CFD ({telemetry.cfdGridLabel}) max |∇·u|</span><strong>{telemetry.cfdMaxDivergence.toFixed(3)}</strong></div>
           )}
+          <div>
+            <span>Validation check figures</span>
+            <strong>{checkFiguresReport.passedCount} / {checkFiguresReport.totalCount} passed ({checkFiguresReport.allPassed ? 'VALIDATED' : 'CHECK'})</strong>
+          </div>
         </div>
+        <details className="wave-detector-notes wave-soliton-check-figures" aria-label="Soliton validation check figures">
+          <summary>Validation check figures ({checkFiguresReport.passedCount}/{checkFiguresReport.totalCount} passed)</summary>
+          <div className="wave-actions">
+            <button type="button" onClick={() => setCheckRunCount((count) => count + 1)}>Re-verify check figures</button>
+          </div>
+          <div className="wave-detector-score-table-wrap">
+            <table className="wave-detector-score-table wave-soliton-check-table">
+              <caption>Canonical hydrodynamic, plasma, HDL+LDL, and 2D CFD check figures</caption>
+              <thead>
+                <tr>
+                  <th>Benchmark</th>
+                  <th>Reference</th>
+                  <th>Model</th>
+                  <th>|Δ| ≤ Tol</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {checkFiguresReport.results.map((item) => (
+                  <tr key={item.id} data-check-figure={item.id} data-check-passed={String(item.passed)}>
+                    <th>
+                      <div>{item.title}</div>
+                      <small>{item.equation}</small>
+                    </th>
+                    <td>{item.referenceValue.toFixed(4)} {item.unit}</td>
+                    <td>{item.modelValue.toFixed(4)} {item.unit}</td>
+                    <td>{item.error.toExponential(2)} ≤ {item.tolerance}</td>
+                    <td>{item.passed ? 'PASS' : 'FAIL'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {checkFiguresReport.results.map((item) => (
+            <p key={item.id} className="wave-description">
+              <strong>{item.title}:</strong> {item.description} <em>({item.liveNote})</em> [{item.citation}]
+            </p>
+          ))}
+        </details>
         <p className="wave-description">{telemetry.caveat}</p>
       </>}
     </section>

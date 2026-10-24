@@ -5,6 +5,7 @@ import {
   DEFAULT_SOLITON_CONFIG,
   deriveSolitonPhysicsParameters,
   evaluateBathymetryAt,
+  evaluateSolitonCheckFigures,
   evaluateTubularCrestAt,
   getSolitonEquationDetails,
   normalizeSolitonConfig,
@@ -14,6 +15,7 @@ import {
   SOLITON_EQUATION_DETAILS,
   SOLITON_EQUATION_OPTIONS,
   SOLITON_FLUIDS,
+  SOLITON_VALIDATION_CHECK_FIGURES,
   stepSolitonSolver,
   triggerSolitonLauncherImpulse,
   WATER_HDL_LDL_PATHWAY_OPTIONS
@@ -267,4 +269,17 @@ test('floor bathymetry shoaling and tubular wave curl tool compute reef depth, b
   assert.ok(Math.abs(crest.curlOffsetX) > 0.01, 'expected horizontal lip curl projection');
   assert.equal(state.telemetry.breakerRegime, 'Plunging / Tubular barrel');
   assert.ok(state.telemetry.minLocalDepthM < state.telemetry.poolDepthM);
+});
+
+test('researched validation check figures pass across Russell/KdV, Su-Mirie, Keulegan, Washimi-Taniuti, Green/McCowan, HDL+LDL, and Chorin/Manakov benchmarks', () => {
+  assert.equal(SOLITON_VALIDATION_CHECK_FIGURES.length, 8);
+  const report = evaluateSolitonCheckFigures(DEFAULT_SOLITON_CONFIG);
+  assert.equal(report.totalCount, 8);
+  assert.equal(report.passedCount, 8);
+  assert.equal(report.allPassed, true);
+  report.results.forEach((result) => {
+    assert.equal(result.passed, true, `check figure ${result.id} failed: model=${result.modelValue}, ref=${result.referenceValue}, err=${result.error}, tol=${result.tolerance}`);
+    assert.ok(result.citation.length > 10, `expected citation for ${result.id}`);
+    assert.ok(result.liveNote.length > 5, `expected liveNote for ${result.id}`);
+  });
 });

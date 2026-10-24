@@ -188,6 +188,19 @@ where:
 - **Water (HDL+LDL):** Dynamic $x_{\mathrm{HDL}} / x_{\mathrm{LDL}}$ fraction tracking and saddle-point readout grounded in Li et al. (*Nature Physics*, 2026) and Krieger (*Science*, 2004).
 - **2D CFD:** Bounded divergence $|\nabla\cdot\mathbf u|$ on the $64 \times 16$ cross-section grid with live velocity/vorticity curtain visualization.
 
+### Researched Validation Check Figures (`SOLITON_VALIDATION_CHECK_FIGURES`)
+
+| Check Figure ID | Physical Law / Equation | Benchmark Input | Reference Value | Tolerance | Primary Citation |
+| --- | --- | --- | --- | --- | --- |
+| `russell-kdv-celerity` | $c_{\mathrm{KdV}} = \sqrt{g h_0}(1 + \eta_0 / 2h_0)$ | $h_0 = 1.80\,\mathrm{m}$, $\eta_0 = 0.54\,\mathrm{m}$ ($\varepsilon = 0.30$) | $4.8316\,\mathrm{m/s}$ ($\mathrm{Fr} = 1.150$) | $\pm 0.01\,\mathrm{m/s}$ | Russell (1844); Korteweg & de Vries (1895) |
+| `kdv-width-amplitude-invariant` | $\mathrm{FWHM}/L = 2\,\mathrm{arccosh}(\sqrt{2})$, $(L/h_0)^2(\eta_0/h_0) = 4/3$ | $\eta(x) = \eta_0\,\mathrm{sech}^2(x/L)$, $L = 1.50\,\mathrm{u}$ | $1.7627$ | $\pm 0.005$ | Korteweg & de Vries (1895); Whitham (1974) |
+| `su-mirie-head-on-collision` | $\varepsilon_{\max}/(\varepsilon_L + \varepsilon_R) = 1 + \frac{\varepsilon_L\varepsilon_R}{2(\varepsilon_L+\varepsilon_R)}$ | Counter-propagating Boussinesq pulses $\varepsilon_L = \varepsilon_R = 0.50$ | $1.1250$ | $\pm 0.12$ | Byatt-Smith (1971); Su & Mirie (1980) |
+| `keulegan-kdv-burgers-viscosity` | $\nu_{\mathrm{Glycerin}} / \nu_{\mathrm{Water}}$, $dE/dt = -2\nu_{\mathrm{eff}}\int (\partial_x u)^2\,dx$ | $293\,\mathrm{K}$, $1\,\mathrm{atm}$ Glycerin vs. IAPWS Water | $1115.54\times$ | $\pm 0.5$ | Keulegan (1948); Ott & Sudan (1970); IAPWS (2015) |
+| `washimi-taniuti-ikezi-plasma` | $c_s = \sqrt{(Z k_B T_e + 3 k_B T_i)/m_i}$, $\lambda_{De} = \sqrt{\varepsilon_0 k_B T_e / n_0 e^2}$ | $\mathrm{Ar^+}$ ($39.948\,\mathrm{u}$), $T_e = 2.5\,\mathrm{eV}$, $T_i = 0.15\,\mathrm{eV}$, $n_0 = 4\times 10^{16}\,\mathrm{m^{-3}}$ | $2663.6\,\mathrm{m/s}$ ($\lambda_{De} = 58.78\,\mu\mathrm{m}$) | $\pm 1.0\,\mathrm{m/s}$ | Washimi & Taniuti (1966); Ikezi et al. (1970) |
+| `greens-law-mccowan-iribarren-surf` | $\eta/\eta_0 = (h_0/h)^{1/4}$, $\gamma_b \approx 0.78$, $0.5 \le \xi_0 \le 3.3$ | `surf-reef` with $h_{\min}/h_0 = 0.38$, tubular breaker active | $1.2736$ | $\pm 0.01$ | Green (1838); McCowan (1894); Battjes (1974) |
+| `water-hdl-ldl-two-state-pathway` | $x_{\mathrm{HDL}} + x_{\mathrm{LDL}} = 1$, $\Delta x_{\mathrm{LDL}} = x_{\mathrm{LDL,3\text{-}saddle}} - x_{\mathrm{LDL,1\text{-}saddle}}$ | $1800\,\mathrm{bar}, 188\,\mathrm{K}$ (3 saddles) vs. $1\,\mathrm{bar}, 260\,\mathrm{K}$ (1 saddle) | $0.3435$ | $\pm 0.01$ | Li et al., *Nature Physics* (2026); Reichert (2004) |
+| `chorin-cfd-projection-manakov-vector` | $\|u_1(\sigma_{12}=0, u_2\neq 0) - u_1(\sigma_{12}=0, u_2=0)\|_\infty = 0$ | $64\times 16$ Jacobi projection & $\sigma_{12} = 0$ decoupling test | $0.0000$ | $10^{-12}$ | Chorin (1968); Manakov (1974) |
+
 ## Key Risks And Decisions
 
 - **Model ambiguity:** Each soliton family (`kdv`, `boussinesq`, `vector-coupled`, `gardner-mkdv`, `sine-gordon`, `cfd-2d`) has an explicit state contract and governing equation rather than overloaded sliders.

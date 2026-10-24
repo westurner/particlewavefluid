@@ -830,6 +830,14 @@ test('soliton and plasma wave lab supports pool fluids, HDL+LDL water, vector so
   await telemetry.waitFor();
   assert.match(await telemetry.textContent(), /Shallow-water speed c0/);
   assert.match(await telemetry.textContent(), /Plunging \/ Tubular barrel/);
+  assert.equal(await solitonSection.getAttribute('data-check-figures-passed'), '8/8');
+  assert.match(await telemetry.textContent(), /8 \/ 8 passed \(VALIDATED\)/);
+
+  const checkFiguresDetails = solitonSection.locator('.wave-soliton-check-figures');
+  await checkFiguresDetails.locator('summary').click();
+  assert.equal(await checkFiguresDetails.locator('tbody tr[data-check-passed="true"]').count(), 8);
+  await checkFiguresDetails.getByRole('button', { name: 'Re-verify check figures' }).click();
+  assert.equal(await checkFiguresDetails.locator('tbody tr[data-check-passed="true"]').count(), 8);
 
   await selectParam(page, 'Soliton fluid', 'water-hdl-ldl', solitonSection);
   assert.equal(await solitonSection.getAttribute('data-soliton-fluid'), 'water-hdl-ldl');
