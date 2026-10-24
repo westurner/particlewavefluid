@@ -84,6 +84,34 @@ export const SOLITON_BOUNDARY_OPTIONS = Object.freeze([
   { value: 'periodic', label: 'Periodic wrap' }
 ]);
 
+export const SOLITON_BATHYMETRY_OPTIONS = Object.freeze([
+  {
+    value: 'flat',
+    label: 'Flat pool floor (uniform depth h0)',
+    description: 'Uniform still-water depth h(x) = h0; solitary waves translate without shoaling amplification.'
+  },
+  {
+    value: 'surf-reef',
+    label: 'Submerged surfing reef (A-frame shoaling ledge)',
+    description: 'Steep submerged reef shelf that decelerates the wave base, amplifies crest height via Green’s law, and pitches the lip into a tubular barrel.'
+  },
+  {
+    value: 'linear-shoal',
+    label: 'Sloping beach ramp (shoaling incline)',
+    description: 'Continuous upward seabed slope that progressively compresses wavelength and steepens the forward wave face.'
+  },
+  {
+    value: 'double-sandbar',
+    label: 'Double nearshore sandbar + trough',
+    description: 'Outer and inner sandbars separated by a deeper trough, producing two-stage shoaling and reform.'
+  },
+  {
+    value: 'canyon-focus',
+    label: 'Refractive canyon + shallow point ledge',
+    description: 'Deep feeder channel transitioning abruptly onto a shallow point-break shelf.'
+  }
+]);
+
 export const WATER_HDL_LDL_PATHWAY_OPTIONS = Object.freeze([
   {
     value: 'near-boundary-3-saddle',
@@ -300,6 +328,13 @@ export const DEFAULT_SOLITON_CONFIG = Object.freeze({
   hdlLdlCoupling: 0.45,
   hdlLdlTemperatureK: 228,
   hdlLdlPressureBar: 1200,
+  showStillWaterDepth: true,
+  showFloorBathymetry: true,
+  bathymetryProfile: 'flat',
+  bathymetryRelief: 0.55,
+  bathymetryCenterX: 1.2,
+  tubularBreakerEnabled: false,
+  tubularCurlStrength: 0.85,
   showCfdVelocityOverlay: true,
   showHdlLdlOverlay: true,
   solitons: DEFAULT_SOLITON_PULSES.map((pulse) => ({ ...pulse }))
@@ -358,6 +393,9 @@ export function normalizeSolitonConfig(input = {}, defaults = DEFAULT_SOLITON_CO
   const hdlLdlPathway = WATER_HDL_LDL_PATHWAY_OPTIONS.some((option) => option.value === input.hdlLdlPathway)
     ? input.hdlLdlPathway
     : defaults.hdlLdlPathway;
+  const bathymetryProfile = SOLITON_BATHYMETRY_OPTIONS.some((option) => option.value === input.bathymetryProfile)
+    ? input.bathymetryProfile
+    : defaults.bathymetryProfile;
   const rawSolitons = Array.isArray(input.solitons) ? input.solitons : defaults.solitons;
   const solitons = [
     normalizeSolitonPulse(rawSolitons[0], DEFAULT_SOLITON_PULSES[0]),
@@ -389,9 +427,61 @@ export function normalizeSolitonConfig(input = {}, defaults = DEFAULT_SOLITON_CO
     hdlLdlCoupling: clamp(finiteOr(input.hdlLdlCoupling, defaults.hdlLdlCoupling), 0, 1.5),
     hdlLdlTemperatureK: clamp(finiteOr(input.hdlLdlTemperatureK, defaults.hdlLdlTemperatureK), 175, 310),
     hdlLdlPressureBar: clamp(finiteOr(input.hdlLdlPressureBar, defaults.hdlLdlPressureBar), 1, 2500),
+    showStillWaterDepth: Boolean(input.showStillWaterDepth ?? defaults.showStillWaterDepth),
+    showFloorBathymetry: Boolean(input.showFloorBathymetry ?? defaults.showFloorBathymetry),
+    bathymetryProfile,
+    bathymetryRelief: clamp(finiteOr(input.bathymetryRelief, defaults.bathymetryRelief), 0, 0.78),
+    bathymetryCenterX: clamp(finiteOr(input.bathymetryCenterX, defaults.bathymetryCenterX), -6, 6),
+    tubularBreakerEnabled: Boolean(input.tubularBreakerEnabled ?? defaults.tubularBreakerEnabled),
+    tubularCurlStrength: clamp(finiteOr(input.tubularCurlStrength, defaults.tubularCurlStrength), 0, 1.5),
     showCfdVelocityOverlay: Boolean(input.showCfdVelocityOverlay ?? defaults.showCfdVelocityOverlay),
     showHdlLdlOverlay: Boolean(input.showHdlLdlOverlay ?? defaults.showHdlLdlOverlay),
     solitons
+  };
+}
+
+export function getBathymetryProfileDetails(profileId) {
+  return SOLITON_BATHYMETRY_OPTIONS.find((item) => item.value === profileId)
+    ?? SOLITON_BATHYMETRY_OPTIONS[0];
+}
+
+export function evaluateBathymetryAt(x, z = 0, rawConfig = {}) {
+  const config = normalizeSolitonConfig(rawConfig);
+  const h0 = Math.max(0.4, config.poolDepthM);
+  const reliefFrac = config.bathymetryProfile === 'flat' ? 0 : config.bathymetryRelief;
+  const maxReliefM = h0 * reliefFrac;
+  const centerX = config.bathymetryCenterX;
+  const spanHalf = SOLITON_DOMAIN_SPAN / 2;
+  const zWedge = Math.exp(-((z / 5.2) ** 2));
+
+  let elevationRatio = 0;
+  if (config.bathymetryProfile === 'surf-reef') {
+    const dxReef = (x - centerX) / 2.25;
+    const ramp = 0.5 * (1 + Math.tanh((x - (centerX - 1.6)) / 1.15));
+    const dropoff = 0.5 * (1 - Math.tanh((x - (centerX + 2.8)) / 0.95));
+    const reefPeak = Math.exp(-(dxReef ** 2)) * (0.65 + 0.35 * zWedge);
+    elevationRatio = clamp(0.75 * ramp * dropoff + 0.35 * reefPeak, 0, 1);
+  } else if (config.bathymetryProfile === 'linear-shoal') {
+    const s = clamp((x - (centerX - 4.5)) / (spanHalf - (centerX - 4.5)), 0, 1);
+    elevationRatio = s * (0.85 + 0.15 * zWedge);
+  } else if (config.bathymetryProfile === 'double-sandbar') {
+    const bar1 = Math.exp(-(((x - (centerX - 2.2)) / 1.35) ** 2));
+    const bar2 = 1.12 * Math.exp(-(((x - (centerX + 2.0)) / 1.15) ** 2));
+    elevationRatio = clamp(Math.max(bar1 * 0.78, bar2 * 0.92) * (0.8 + 0.2 * zWedge), 0, 1);
+  } else if (config.bathymetryProfile === 'canyon-focus') {
+    const shelf = 0.5 * (1 + Math.tanh((x - centerX) / 0.85));
+    const canyonCut = 1 - 0.55 * Math.exp(-((z / 2.1) ** 2)) * (1 - shelf);
+    elevationRatio = clamp(shelf * canyonCut, 0, 1);
+  }
+
+  const elevationM = clamp(maxReliefM * elevationRatio, 0, h0 * 0.78);
+  const localDepthM = Math.max(h0 * 0.22, h0 - elevationM);
+  const depthRatio = clamp(localDepthM / h0, 0.22, 1);
+  return {
+    elevationM,
+    localDepthM,
+    depthRatio,
+    elevationRatio
   };
 }
 
@@ -559,10 +649,17 @@ export function createSolitonSolverState(rawConfig = {}) {
   const v2 = new Float64Array(size);
   const ldlFraction = new Float64Array(size);
   const baselineU1 = new Float64Array(size);
+  const bathymetryM = new Float64Array(size);
+  const localDepthM = new Float64Array(size);
+  const depthRatio = new Float64Array(size);
 
   for (let i = 0; i < size; i += 1) {
     x[i] = -SOLITON_DOMAIN_SPAN / 2 + i * dx;
     ldlFraction[i] = physics.equilibriumLdlFraction;
+    const bathy = evaluateBathymetryAt(x[i], 0, config);
+    bathymetryM[i] = bathy.elevationM;
+    localDepthM[i] = bathy.localDepthM;
+    depthRatio[i] = bathy.depthRatio;
   }
 
   const activePulses = config.solitons.slice(0, config.solitonCount).filter((pulse) => pulse.enabled);
@@ -577,9 +674,10 @@ export function createSolitonSolverState(rawConfig = {}) {
       : direction;
     for (let i = 0; i < size; i += 1) {
       const sample = evaluateAnalyticSolitonProfile(x[i], effectivePulse, effectiveDirection, physics);
-      u1[i] += sample.u1;
+      const shoalAmp = config.domain === 'wave-pool' ? Math.pow(depthRatio[i], -0.25) : 1;
+      u1[i] += sample.u1 * shoalAmp;
       u2[i] += sample.u2;
-      v1[i] += sample.velocity;
+      v1[i] += sample.velocity * Math.sqrt(depthRatio[i]);
       v2[i] += effectiveDirection * physics.normalizedWaveSpeed * sample.u2;
       if (physics.isHdlLdl) {
         const compressionShift = -0.18 * config.hdlLdlCoupling * sample.u1;
@@ -602,13 +700,21 @@ export function createSolitonSolverState(rawConfig = {}) {
     const gridIndex = Math.min(size - 1, Math.round((ix / (cfdNx - 1)) * (size - 1)));
     const surfaceEta = u1[gridIndex];
     const surfaceVel = v1[gridIndex];
+    const bedFrac = 1 - depthRatio[gridIndex];
     for (let iz = 0; iz < cfdNz; iz += 1) {
       const zFrac = (iz + 0.5) / cfdNz;
-      const depthProfile = Math.cosh(1.6 * zFrac) / Math.cosh(1.6);
       const cell = iz * cfdNx + ix;
-      cfdU[cell] = surfaceVel * depthProfile;
-      cfdW[cell] = 0;
-      cfdP[cell] = surfaceEta * depthProfile;
+      if (zFrac < bedFrac) {
+        cfdU[cell] = 0;
+        cfdW[cell] = 0;
+        cfdP[cell] = 0;
+      } else {
+        const activeFrac = (zFrac - bedFrac) / Math.max(0.15, 1 - bedFrac);
+        const depthProfile = Math.cosh(1.6 * activeFrac) / Math.cosh(1.6);
+        cfdU[cell] = surfaceVel * depthProfile;
+        cfdW[cell] = 0;
+        cfdP[cell] = surfaceEta * depthProfile;
+      }
     }
   }
 
@@ -622,6 +728,9 @@ export function createSolitonSolverState(rawConfig = {}) {
     v2,
     ldlFraction,
     baselineU1,
+    bathymetryM,
+    localDepthM,
+    depthRatio,
     initialPeak: Math.max(0.05, ...Array.from(u1, (val) => Math.abs(val))),
     initialMass: u1.reduce((sum, val) => sum + val, 0) * dx,
     initialEnergy: u1.reduce((sum, val, idx) => sum + (val ** 2 + u2[idx] ** 2), 0) * dx,
@@ -813,9 +922,23 @@ function step2dCrossSectionCfd(state, physics, dt) {
       const idx = iz * nx + ix;
       const dpdx = (nextP[iz * nx + ixR] - nextP[iz * nx + ixL]) / (2 * dx);
       const dpdz = (nextP[izT * nx + ix] - nextP[izB * nx + ix]) / (2 * dz);
-      u[idx] = clamp(nextU[idx] - 0.35 * dt * dpdx, -6, 6);
-      w[idx] = clamp(nextW[idx] - 0.35 * dt * dpdz, -4, 4);
-      p[idx] = nextP[idx];
+      const grid1dIdx = Math.min(state.size - 1, Math.round((ix / (nx - 1)) * (state.size - 1)));
+      const bedFrac = state.depthRatio ? (1 - state.depthRatio[grid1dIdx]) : 0;
+      const zFrac = (iz + 0.5) / nz;
+      if (zFrac < bedFrac) {
+        u[idx] = 0;
+        w[idx] = 0;
+        p[idx] = 0;
+      } else {
+        const i1dL = Math.max(0, grid1dIdx - 1);
+        const i1dR = Math.min(state.size - 1, grid1dIdx + 1);
+        const bedSlope = state.bathymetryM
+          ? (state.bathymetryM[i1dR] - state.bathymetryM[i1dL]) / (2 * state.dx * Math.max(0.4, physics.config.poolDepthM))
+          : 0;
+        u[idx] = clamp(nextU[idx] - 0.35 * dt * dpdx, -6, 6);
+        w[idx] = clamp(nextW[idx] - 0.35 * dt * dpdz + 0.25 * u[idx] * bedSlope * (1 - zFrac), -4, 4);
+        p[idx] = nextP[idx];
+      }
     }
   }
 
@@ -849,6 +972,18 @@ export function stepSolitonSolver(state, rawConfig = {}, deltaSeconds = 1 / 60) 
   const substeps = 6;
   const dt = clampedDelta / substeps;
 
+  if (!state.depthRatio || state.depthRatio.length !== size) {
+    state.bathymetryM = new Float64Array(size);
+    state.localDepthM = new Float64Array(size);
+    state.depthRatio = new Float64Array(size);
+  }
+  for (let i = 0; i < size; i += 1) {
+    const bathy = evaluateBathymetryAt(state.x[i], 0, config);
+    state.bathymetryM[i] = bathy.elevationM;
+    state.localDepthM[i] = bathy.localDepthM;
+    state.depthRatio[i] = bathy.depthRatio;
+  }
+
   const baseC0 = physics.normalizedWaveSpeed;
   const directionSign = config.equation === 'kdv' && config.emissionSide === 'right' ? -1 : 1;
   const c0 = baseC0 * directionSign;
@@ -864,7 +999,7 @@ export function stepSolitonSolver(state, rawConfig = {}, deltaSeconds = 1 / 60) 
   const nextLdl = new Float64Array(size);
 
   for (let step = 0; step < substeps; step += 1) {
-    const { u1, u2, v1, ldlFraction } = state;
+    const { u1, u2, v1, ldlFraction, depthRatio } = state;
 
     for (let i = 0; i < size; i += 1) {
       const iM2 = indexWithBoundary(i - 2, size, boundary);
@@ -884,19 +1019,27 @@ export function stepSolitonSolver(state, rawConfig = {}, deltaSeconds = 1 / 60) 
       const d3u2dx3 = (u2[iP2] - 2 * u2[iP1] + 2 * u2[iM1] - u2[iM2]) / (2 * dx ** 3);
       const hyperFilter2 = (u2[iP2] - 4 * u2[iP1] + 6 * w - 4 * u2[iM1] + u2[iM2]) * 0.018;
 
-      const localHdlFactor = physics.isHdlLdl
+      const rH = config.domain === 'wave-pool' ? depthRatio[i] : 1;
+      const drHdx = config.domain === 'wave-pool'
+        ? (depthRatio[iP1] - depthRatio[iM1]) / (2 * dx)
+        : 0;
+      const localCScale = Math.sqrt(rH);
+      const shoalingSteepScale = Math.pow(rH, -0.65);
+      const shoalingGrowth = clamp(-0.22 * (drHdx / Math.max(0.22, rH)) * baseC0 * localCScale, -0.45, 0.45);
+
+      const localHdlFactor = (physics.isHdlLdl
         ? 1 + config.hdlLdlCoupling * (0.5 - ldlFraction[i]) * 0.35
-        : 1;
+        : 1) * shoalingSteepScale;
       const localNu = clamp(nu * (physics.isHdlLdl ? 0.85 + 0.5 * ldlFraction[i] : 1), 0, 0.75);
 
       if (config.equation === 'boussinesq' || config.equation === 'cfd-2d') {
         const dvdx = (v1[iP1] - v1[iM1]) / (2 * dx);
         const d2vdx2 = (v1[iP1] - 2 * v1[i] + v1[iM1]) / (dx * dx);
         const nonlinearFlux = 0.42 * config.nonlinearScale * localHdlFactor * (u * dvdx + v1[i] * du1dx);
-        const duDt = -dvdx - nonlinearFlux + localNu * d2u1dx2 - damping * u;
-        const dvDt = -(baseC0 ** 2) * du1dx
-          - 0.45 * baseC0 * config.nonlinearScale * u * du1dx
-          - baseC0 * Math.abs(beta) * d3u1dx3
+        const duDt = -dvdx * localCScale - nonlinearFlux + shoalingGrowth * u + localNu * d2u1dx2 - damping * u;
+        const dvDt = -((baseC0 * localCScale) ** 2) * du1dx
+          - 0.45 * baseC0 * localCScale * config.nonlinearScale * shoalingSteepScale * u * du1dx
+          - baseC0 * localCScale * Math.abs(beta) * rH * d3u1dx3
           + localNu * d2vdx2
           - damping * v1[i];
         nextU1[i] = u + dt * duDt - hyperFilter1;
@@ -905,44 +1048,48 @@ export function stepSolitonSolver(state, rawConfig = {}, deltaSeconds = 1 / 60) 
       } else if (config.equation === 'vector-coupled') {
         const deltaC = config.vectorGroupMismatch * baseC0;
         const sigma = config.vectorCoupling;
-        const du1Dt = -(c0 + deltaC) * du1dx
+        const du1Dt = -(c0 * localCScale + deltaC) * du1dx
           - alpha * localHdlFactor * (u + sigma * w) * du1dx
-          - beta * d3u1dx3
+          - beta * rH * d3u1dx3
+          + shoalingGrowth * u
           + localNu * d2u1dx2
           - damping * u;
-        const du2Dt = -(c0 - deltaC) * du2dx
+        const du2Dt = -(c0 * localCScale - deltaC) * du2dx
           - alpha * localHdlFactor * (w + sigma * u) * du2dx
-          - beta * d3u2dx3
+          - beta * rH * d3u2dx3
+          + shoalingGrowth * w
           + localNu * d2u2dx2
           - damping * w;
         nextU1[i] = u + dt * du1Dt - hyperFilter1;
         nextU2[i] = w + dt * du2Dt - hyperFilter2;
-        nextV1[i] = c0 * nextU1[i];
+        nextV1[i] = c0 * localCScale * nextU1[i];
       } else if (config.equation === 'gardner-mkdv') {
         const alpha2 = config.cubicNonlinearity * Math.abs(alpha);
-        const duDt = -c0 * du1dx
+        const duDt = -c0 * localCScale * du1dx
           - (alpha * localHdlFactor * u + alpha2 * u * u) * du1dx
-          - beta * d3u1dx3
+          - beta * rH * d3u1dx3
+          + shoalingGrowth * u
           + localNu * d2u1dx2
           - damping * u;
         nextU1[i] = u + dt * duDt - hyperFilter1;
         nextU2[i] = 0;
-        nextV1[i] = c0 * nextU1[i];
+        nextV1[i] = c0 * localCScale * nextU1[i];
       } else if (config.equation === 'sine-gordon') {
         const omega0Sq = 1.6 * config.dispersionScale;
-        const dvDt = (baseC0 ** 2) * d2u1dx2 - omega0Sq * Math.sin(u * Math.PI) + localNu * d2u1dx2 - (damping + localNu * 0.5) * v1[i];
+        const dvDt = ((baseC0 * localCScale) ** 2) * d2u1dx2 - omega0Sq * Math.sin(u * Math.PI) + localNu * d2u1dx2 - (damping + localNu * 0.5) * v1[i];
         nextV1[i] = v1[i] + dt * dvDt;
         nextU1[i] = u + dt * nextV1[i] - hyperFilter1 * 0.5;
         nextU2[i] = sech(u * 2) * 0.35;
       } else {
-        const duDt = -c0 * du1dx
+        const duDt = -c0 * localCScale * du1dx
           - alpha * localHdlFactor * u * du1dx
-          - beta * d3u1dx3
+          - beta * rH * d3u1dx3
+          + shoalingGrowth * u
           + localNu * d2u1dx2
           - damping * u;
         nextU1[i] = u + dt * duDt - hyperFilter1;
         nextU2[i] = 0;
-        nextV1[i] = c0 * nextU1[i];
+        nextV1[i] = c0 * localCScale * nextU1[i];
       }
 
       const mask = boundaryDampingMask(i, size, boundary);
@@ -989,6 +1136,34 @@ export function stepSolitonSolver(state, rawConfig = {}, deltaSeconds = 1 / 60) 
   return state;
 }
 
+export function evaluateTubularCrestAt(state, rawConfig, worldX, worldZ = 0, lipPhase = 0.65) {
+  const config = normalizeSolitonConfig(rawConfig);
+  const sample = sampleSolitonFieldAt(state, config, worldX, worldZ);
+  const bathy = evaluateBathymetryAt(worldX, worldZ, config);
+  const crestPositive = Math.max(0, sample.height);
+  const breakerRatio = crestPositive / Math.max(0.22, bathy.depthRatio);
+  const travelDir = sample.velocityX >= 0 ? 1 : -1;
+  const forwardSlope = Math.max(0, -travelDir * sample.slope);
+  const shoalFactor = 1 + (1 - bathy.depthRatio) * 1.4;
+  const plungeIntensity = config.tubularBreakerEnabled
+    ? clamp((breakerRatio * 0.85 + forwardSlope * 0.65) * config.tubularCurlStrength * shoalFactor, 0, 1.4)
+    : 0;
+  const theta = clamp(lipPhase, 0, 1) * Math.PI * 1.28 * Math.min(1.15, plungeIntensity);
+  const barrelRadius = 0.36 * crestPositive * Math.min(1.25, plungeIntensity);
+  const curlOffsetX = travelDir * barrelRadius * Math.sin(theta);
+  const curlOffsetY = barrelRadius * (Math.cos(theta) - 0.35 * (1 - Math.cos(theta)));
+  return {
+    ...sample,
+    ...bathy,
+    breakerRatio,
+    plungeIntensity,
+    barrelRadius,
+    curlOffsetX,
+    curlOffsetY,
+    travelDir
+  };
+}
+
 export function computeSolitonTelemetry(state, rawConfig = {}) {
   const physics = deriveSolitonPhysicsParameters(rawConfig);
   const { config, fluid, pathway } = physics;
@@ -1002,6 +1177,10 @@ export function computeSolitonTelemetry(state, rawConfig = {}) {
   let secondaryEnergy = 0;
   let mass = 0;
   let meanLdl = 0;
+  let minLocalDepthM = config.poolDepthM;
+  let maxBathymetryElevationM = 0;
+  let maxBreakerGamma = 0;
+  let maxBedSlope = 0.02;
 
   for (let i = 0; i < size; i += 1) {
     const val1 = u1[i];
@@ -1017,6 +1196,18 @@ export function computeSolitonTelemetry(state, rawConfig = {}) {
     vectorNormEnergy += (val1 * val1 + val2 * val2) * dx;
     mass += val1 * dx;
     meanLdl += ldlFraction[i];
+
+    const localDepth = state.localDepthM ? state.localDepthM[i] : config.poolDepthM;
+    const localElev = state.bathymetryM ? state.bathymetryM[i] : 0;
+    const localRatio = state.depthRatio ? state.depthRatio[i] : 1;
+    if (localDepth < minLocalDepthM) minLocalDepthM = localDepth;
+    if (localElev > maxBathymetryElevationM) maxBathymetryElevationM = localElev;
+    const gamma = Math.max(0, val1) / Math.max(0.22, localRatio);
+    if (gamma > maxBreakerGamma) maxBreakerGamma = gamma;
+    if (i > 0 && state.bathymetryM) {
+      const slope = Math.abs(state.bathymetryM[i] - state.bathymetryM[i - 1]) / dx;
+      if (slope > maxBedSlope) maxBedSlope = slope;
+    }
   }
   meanLdl /= size;
   const meanHdl = physics.isHdlLdl ? 1 - meanLdl : 1;
@@ -1030,6 +1221,17 @@ export function computeSolitonTelemetry(state, rawConfig = {}) {
     ? 1 + 0.33 * peakAmplitude * config.nonlinearScale
     : (physics.shallowWaterSpeedMS + 0.5 * peakAmplitude * Math.sqrt(GRAVITY_MS2 / config.poolDepthM))
       / Math.max(0.1, physics.shallowWaterSpeedMS);
+
+  const effectiveSlope = config.bathymetryProfile === 'flat'
+    ? 0.035
+    : clamp(maxBedSlope * 0.45 + config.bathymetryRelief * 0.18, 0.04, 0.38);
+  const deepSteepness = Math.max(0.015, peakAmplitude / 6.5);
+  const iribarrenNumber = effectiveSlope / Math.sqrt(deepSteepness);
+  const breakerRegime = (config.tubularBreakerEnabled || maxBreakerGamma >= 0.72) && iribarrenNumber >= 0.5
+    ? 'Plunging / Tubular barrel'
+    : maxBreakerGamma >= 0.58
+      ? 'Spilling crest'
+      : 'Non-breaking solitary';
 
   return {
     domain: config.domain,
@@ -1067,7 +1269,14 @@ export function computeSolitonTelemetry(state, rawConfig = {}) {
     meanLdlFraction: meanLdl,
     meanHdlFraction: meanHdl,
     cfdMaxDivergence: cfd.maxDivergence,
-    cfdGridLabel: `${cfd.nx}x${cfd.nz}`
+    cfdGridLabel: `${cfd.nx}x${cfd.nz}`,
+    poolDepthM: config.poolDepthM,
+    minLocalDepthM,
+    maxBathymetryElevationM,
+    bathymetryProfile: config.bathymetryProfile,
+    breakerIndexGamma: maxBreakerGamma,
+    iribarrenNumber,
+    breakerRegime
   };
 }
 
@@ -1084,6 +1293,9 @@ export function sampleSolitonFieldAt(state, rawConfig, worldX, worldZ) {
   const u2 = state.u2[i0] * (1 - frac) + state.u2[i1] * frac;
   const v1 = state.v1[i0] * (1 - frac) + state.v1[i1] * frac;
   const ldl = state.ldlFraction[i0] * (1 - frac) + state.ldlFraction[i1] * frac;
+  const depthRatio = state.depthRatio
+    ? state.depthRatio[i0] * (1 - frac) + state.depthRatio[i1] * frac
+    : 1;
 
   const iL = Math.max(0, i0 - 1);
   const iR = Math.min(size - 1, i0 + 1);
@@ -1101,6 +1313,7 @@ export function sampleSolitonFieldAt(state, rawConfig, worldX, worldZ) {
     u2,
     velocityX: v1 * channelEnvelope,
     slope: slope * channelEnvelope,
+    depthRatio,
     ldlFraction: ldl,
     hdlFraction: 1 - ldl,
     vectorAngle: Math.atan2(u2, u1 || 1e-6)

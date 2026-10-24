@@ -3,7 +3,7 @@ import { Html } from '@react-three/drei';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DataTexture, DoubleSide, FloatType, FrontSide, Mesh, NearestFilter, NoBlending, OrthographicCamera, RGBAFormat, Scene, ShaderMaterial, UnsignedByteType, Vector3, WebGLRenderTarget } from 'three';
 import { advanceDetectorResponse, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacementAndTensorGaussian, calculateWaveFrame, calculateWaveOrbitalPhase, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_APERTURE_SETTINGS, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, DOUBLE_SLIT_SCREEN_THICKNESS, DOUBLE_SLIT_SCREEN_X, DOUBLE_SLIT_WIDTH, APERTURE_SCREEN_DEPTH, APERTURE_SCREEN_HEIGHT, DETECTOR_TRANSVERSE_SPAN, detectorDistanceForSlitScreenPosition, filterWavesByPhase, getOrbitalAngularMomentum, getSlitGeometry, getSlitScreenPlane, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, GRATING_SLIT_WIDTH, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, OAM_CHARGE_MAX, OAM_CHARGE_MIN, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, readSavedWaveStates, sampleApertureField, samplePilotWaveCurrent, sampleTransverseWignerFunction, sampleWignerMechanics, SIGNAL_SOURCE_PRESETS, SINGLE_SLIT_WIDTH, slitScreenPlaneDepth, TWO_SOURCE_CENTERS, WIGNER_MECHANICS_QUANTITIES, writeSavedWaveStates } from './waveModel.js';
-import { createSolitonSolverState, DEFAULT_SOLITON_CONFIG, deriveSolitonPhysicsParameters, getSolitonEquationDetails, getWaterHdlLdlPathwayDetails, normalizeSolitonConfig, sampleSolitonFieldAt, SOLITON_BOUNDARY_OPTIONS, SOLITON_DOMAIN_OPTIONS, SOLITON_DOMAIN_SPAN, SOLITON_EMISSION_SIDE_OPTIONS, SOLITON_EQUATION_DETAILS, SOLITON_EQUATION_OPTIONS, SOLITON_FLUID_OPTIONS, SOLITON_FLUIDS, stepSolitonSolver, triggerSolitonLauncherImpulse, WATER_HDL_LDL_PATHWAY_OPTIONS } from './solitonWaveModel.js';
+import { createSolitonSolverState, DEFAULT_SOLITON_CONFIG, deriveSolitonPhysicsParameters, evaluateBathymetryAt, evaluateTubularCrestAt, getBathymetryProfileDetails, getSolitonEquationDetails, getWaterHdlLdlPathwayDetails, normalizeSolitonConfig, sampleSolitonFieldAt, SOLITON_BATHYMETRY_OPTIONS, SOLITON_BOUNDARY_OPTIONS, SOLITON_DOMAIN_OPTIONS, SOLITON_DOMAIN_SPAN, SOLITON_EMISSION_SIDE_OPTIONS, SOLITON_EQUATION_DETAILS, SOLITON_EQUATION_OPTIONS, SOLITON_FLUID_OPTIONS, SOLITON_FLUIDS, stepSolitonSolver, triggerSolitonLauncherImpulse, WATER_HDL_LDL_PATHWAY_OPTIONS } from './solitonWaveModel.js';
 import { HistoryControls, NumericParamControl, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 import { CameraPerspectiveToolbar, OrbitalTrackingParameters, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase, SimulatorExportModal, SimulatorIOJournal, SimulatorPresetControls, useSimulatorJournal } from './lib/SimulatorBase.jsx';
@@ -1297,12 +1297,106 @@ function SolitonChamberRig({ solitonConfig, solverStateRef }) {
     return geometry;
   }, []);
 
+  const bathymetryFloorGeometry = useMemo(() => {
+    const nx = 64;
+    const nz = 20;
+    const positions = new Float32Array(nx * nz * 3);
+    const colors = new Float32Array(nx * nz * 3);
+    const indices = [];
+    for (let iz = 0; iz < nz; iz += 1) {
+      for (let ix = 0; ix < nx; ix += 1) {
+        const idx = iz * nx + ix;
+        positions[idx * 3] = -SOLITON_DOMAIN_SPAN / 2 + (ix / (nx - 1)) * SOLITON_DOMAIN_SPAN;
+        positions[idx * 3 + 1] = -1.35;
+        positions[idx * 3 + 2] = -7.0 + (iz / (nz - 1)) * 14.0;
+        if (ix < nx - 1 && iz < nz - 1) {
+          const a = idx;
+          const b = idx + 1;
+          const c = idx + nx;
+          const d = idx + nx + 1;
+          indices.push(a, c, b, b, c, d);
+        }
+      }
+    }
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new BufferAttribute(colors, 3));
+    geometry.setIndex(indices);
+    return geometry;
+  }, []);
+
+  const tubularCurlGeometry = useMemo(() => {
+    const nx = 64;
+    const nTheta = 10;
+    const positions = new Float32Array(nx * nTheta * 3);
+    const colors = new Float32Array(nx * nTheta * 3);
+    const indices = [];
+    for (let it = 0; it < nTheta; it += 1) {
+      for (let ix = 0; ix < nx; ix += 1) {
+        const idx = it * nx + ix;
+        positions[idx * 3] = -SOLITON_DOMAIN_SPAN / 2 + (ix / (nx - 1)) * SOLITON_DOMAIN_SPAN;
+        positions[idx * 3 + 1] = 0;
+        positions[idx * 3 + 2] = (it / (nTheta - 1) - 0.5) * 4.2;
+        if (ix < nx - 1 && it < nTheta - 1) {
+          const a = idx;
+          const b = idx + 1;
+          const c = idx + nx;
+          const d = idx + nx + 1;
+          indices.push(a, c, b, b, c, d);
+        }
+      }
+    }
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new BufferAttribute(colors, 3));
+    geometry.setIndex(indices);
+    return geometry;
+  }, []);
+
   const primaryColor = useMemo(() => new Color(), []);
   const secondaryColor = useMemo(() => new Color(), []);
   const workColor = useMemo(() => new Color(), []);
 
   useEffect(() => () => ribbonGeometry.dispose(), [ribbonGeometry]);
   useEffect(() => () => cfdCurtainGeometry.dispose(), [cfdCurtainGeometry]);
+  useEffect(() => () => bathymetryFloorGeometry.dispose(), [bathymetryFloorGeometry]);
+  useEffect(() => () => tubularCurlGeometry.dispose(), [tubularCurlGeometry]);
+
+  useEffect(() => {
+    if (!solitonConfig?.enabled) return;
+    const nx = 64;
+    const nz = 20;
+    const visualDepthSpan = Math.min(2.4, Math.max(0.55, (solitonConfig.poolDepthM ?? 1.8) * 0.75));
+    const pos = bathymetryFloorGeometry.attributes.position.array;
+    const col = bathymetryFloorGeometry.attributes.color.array;
+    const deepColor = new Color('#0d2638');
+    const reefColor = new Color('#d79a52');
+    for (let iz = 0; iz < nz; iz += 1) {
+      const z = -7.0 + (iz / (nz - 1)) * 14.0;
+      for (let ix = 0; ix < nx; ix += 1) {
+        const x = -SOLITON_DOMAIN_SPAN / 2 + (ix / (nx - 1)) * SOLITON_DOMAIN_SPAN;
+        const idx = iz * nx + ix;
+        const bathy = evaluateBathymetryAt(x, z, solitonConfig);
+        const floorY = -visualDepthSpan * bathy.depthRatio;
+        pos[idx * 3 + 1] = floorY;
+        workColor.copy(deepColor).lerp(reefColor, 1 - bathy.depthRatio);
+        col[idx * 3] = workColor.r;
+        col[idx * 3 + 1] = workColor.g;
+        col[idx * 3 + 2] = workColor.b;
+      }
+    }
+    bathymetryFloorGeometry.attributes.position.needsUpdate = true;
+    bathymetryFloorGeometry.attributes.color.needsUpdate = true;
+  }, [
+    bathymetryFloorGeometry,
+    solitonConfig,
+    solitonConfig?.enabled,
+    solitonConfig?.poolDepthM,
+    solitonConfig?.bathymetryProfile,
+    solitonConfig?.bathymetryRelief,
+    solitonConfig?.bathymetryCenterX,
+    workColor
+  ]);
 
   useFrame(() => {
     const state = solverStateRef.current;
@@ -1340,17 +1434,43 @@ function SolitonChamberRig({ solitonConfig, solverStateRef }) {
     ribbonGeometry.attributes.position.needsUpdate = true;
     ribbonGeometry.attributes.color.needsUpdate = true;
 
+    if (solitonConfig.tubularBreakerEnabled) {
+      const nx = 64;
+      const nTheta = 10;
+      const tPos = tubularCurlGeometry.attributes.position.array;
+      const tCol = tubularCurlGeometry.attributes.color.array;
+      for (let it = 0; it < nTheta; it += 1) {
+        const lipPhase = it / (nTheta - 1);
+        for (let ix = 0; ix < nx; ix += 1) {
+          const idx = it * nx + ix;
+          const baseX = -SOLITON_DOMAIN_SPAN / 2 + (ix / (nx - 1)) * SOLITON_DOMAIN_SPAN;
+          const crest = evaluateTubularCrestAt(state, solitonConfig, baseX, 0, lipPhase);
+          tPos[idx * 3] = baseX + crest.curlOffsetX * 1.35;
+          tPos[idx * 3 + 1] = crest.height * 1.35 + crest.curlOffsetY * 1.35;
+          tPos[idx * 3 + 2] = (lipPhase - 0.5) * 3.2;
+          workColor.copy(primaryColor).lerp(new Color('#e8fbff'), lipPhase * Math.min(1, crest.plungeIntensity));
+          tCol[idx * 3] = workColor.r;
+          tCol[idx * 3 + 1] = workColor.g;
+          tCol[idx * 3 + 2] = workColor.b;
+        }
+      }
+      tubularCurlGeometry.attributes.position.needsUpdate = true;
+      tubularCurlGeometry.attributes.color.needsUpdate = true;
+    }
+
     if (solitonConfig.equation === 'cfd-2d' || solitonConfig.showCfdVelocityOverlay) {
       const { nx, nz, u, w, vorticity } = state.cfd;
       const cfdPos = cfdCurtainGeometry.attributes.position.array;
       const cfdCol = cfdCurtainGeometry.attributes.color.array;
+      const visualDepthSpan = Math.min(2.4, Math.max(0.55, (solitonConfig.poolDepthM ?? 1.8) * 0.75));
       for (let iz = 0; iz < nz; iz += 1) {
         const zFrac = iz / (nz - 1);
         for (let ix = 0; ix < nx; ix += 1) {
           const idx = iz * nx + ix;
           const i1d = Math.min(state.size - 1, Math.round((ix / (nx - 1)) * (state.size - 1)));
           const topY = state.u1[i1d] * 1.25;
-          cfdPos[idx * 3 + 1] = -1.35 + zFrac * (1.35 + topY);
+          const localFloorY = -visualDepthSpan * (state.depthRatio ? state.depthRatio[i1d] : 1);
+          cfdPos[idx * 3 + 1] = localFloorY + zFrac * (topY - localFloorY);
           const speed = Math.hypot(u[idx], w[idx]);
           const vort = Math.min(1, Math.abs(vorticity[idx]) * 0.45);
           const normSpeed = Math.min(1, speed * 0.55);
@@ -1371,6 +1491,7 @@ function SolitonChamberRig({ solitonConfig, solverStateRef }) {
   const isPlasma = solitonConfig.domain === 'plasma-wave';
   const launcherColorActive = isPlasma ? '#ff8b5e' : '#4ad6e8';
   const launcherColorIdle = '#1b3140';
+  const visualDepthSpan = Math.min(2.4, Math.max(0.55, (solitonConfig.poolDepthM ?? 1.8) * 0.75));
 
   return (
     <group aria-label="Soliton wave pool and plasma chamber rig">
@@ -1382,9 +1503,31 @@ function SolitonChamberRig({ solitonConfig, solverStateRef }) {
         <boxGeometry args={[0.32, 2.2, 14.4]} />
         <meshBasicMaterial color={rightActive ? launcherColorActive : launcherColorIdle} transparent opacity={rightActive ? 0.42 : 0.18} />
       </mesh>
+      {solitonConfig.showStillWaterDepth && (
+        <group aria-label="Pool still-water depth volume">
+          <mesh position={[0, 0, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+            <planeGeometry args={[SOLITON_DOMAIN_SPAN, 14.0]} />
+            <meshBasicMaterial color="#38bdf8" transparent opacity={0.14} side={DoubleSide} depthWrite={false} />
+          </mesh>
+          <mesh position={[0, -visualDepthSpan / 2, 0]}>
+            <boxGeometry args={[SOLITON_DOMAIN_SPAN, visualDepthSpan, 14.0]} />
+            <meshBasicMaterial color="#0c4a6e" transparent opacity={0.12} side={DoubleSide} depthWrite={false} />
+          </mesh>
+        </group>
+      )}
+      {solitonConfig.showFloorBathymetry && (
+        <mesh geometry={bathymetryFloorGeometry} aria-label="Floor bathymetry mesh">
+          <meshBasicMaterial vertexColors transparent opacity={0.62} side={DoubleSide} toneMapped={false} />
+        </mesh>
+      )}
       <mesh geometry={ribbonGeometry}>
         <meshBasicMaterial vertexColors transparent opacity={0.88} side={DoubleSide} toneMapped={false} />
       </mesh>
+      {solitonConfig.tubularBreakerEnabled && (
+        <mesh geometry={tubularCurlGeometry} aria-label="Tubular wave barrel curl mesh">
+          <meshBasicMaterial vertexColors transparent opacity={0.76} side={DoubleSide} toneMapped={false} />
+        </mesh>
+      )}
       {(solitonConfig.equation === 'cfd-2d' || solitonConfig.showCfdVelocityOverlay) && (
         <mesh geometry={cfdCurtainGeometry}>
           <meshBasicMaterial vertexColors transparent opacity={0.42} side={DoubleSide} depthWrite={false} toneMapped={false} />
@@ -1472,9 +1615,14 @@ function WaveField({ waves, waveCount, interferenceModes, running, timeRef, expe
         const x = basePositions[index * 3];
         const y = basePositions[index * 3 + 1];
         const z = basePositions[index * 3 + 2];
-        const sample = sampleSolitonFieldAt(state, solitonConfig, x, z);
-        positions[index * 3] = x + sample.u1 * 0.25;
-        positions[index * 3 + 1] = y + sample.height * 1.35;
+        const lipPhase = ((index % 9) + 0.5) / 9;
+        const sample = solitonConfig.tubularBreakerEnabled
+          ? evaluateTubularCrestAt(state, solitonConfig, x, z, lipPhase)
+          : sampleSolitonFieldAt(state, solitonConfig, x, z);
+        const curlX = sample.curlOffsetX ? sample.curlOffsetX * 1.25 : 0;
+        const curlY = sample.curlOffsetY ? sample.curlOffsetY * 1.25 : 0;
+        positions[index * 3] = x + sample.u1 * 0.25 + curlX;
+        positions[index * 3 + 1] = y + sample.height * 1.35 + curlY;
         positions[index * 3 + 2] = z + sample.u2 * 0.45;
         occlusions[index] = 1;
         vectorAngles[index] = solitonConfig.equation === 'vector-coupled'
@@ -1792,17 +1940,22 @@ const SOLITON_SCENARIO_PRESETS = [
   {
     id: 'pool-kdv',
     label: 'Wave Pool KdV',
-    patch: { enabled: true, domain: 'wave-pool', equation: 'kdv', fluidId: 'water', emissionSide: 'left', solitonCount: 2 }
+    patch: { enabled: true, domain: 'wave-pool', equation: 'kdv', fluidId: 'water', emissionSide: 'left', solitonCount: 2, bathymetryProfile: 'flat', tubularBreakerEnabled: false }
   },
   {
     id: 'pool-bilateral',
     label: 'Bilateral Pool Collision',
-    patch: { enabled: true, domain: 'wave-pool', equation: 'boussinesq', fluidId: 'water', emissionSide: 'both', solitonCount: 2 }
+    patch: { enabled: true, domain: 'wave-pool', equation: 'boussinesq', fluidId: 'water', emissionSide: 'both', solitonCount: 2, bathymetryProfile: 'flat', tubularBreakerEnabled: false }
+  },
+  {
+    id: 'tubular-surfing-reef',
+    label: 'Tubular Surfing Reef',
+    patch: { enabled: true, domain: 'wave-pool', equation: 'boussinesq', fluidId: 'water', emissionSide: 'left', solitonCount: 1, bathymetryProfile: 'surf-reef', bathymetryRelief: 0.62, bathymetryCenterX: 1.0, tubularBreakerEnabled: true, tubularCurlStrength: 0.95, showStillWaterDepth: true, showFloorBathymetry: true }
   },
   {
     id: 'vector-pair',
     label: 'Vector Soliton Pair',
-    patch: { enabled: true, domain: 'wave-pool', equation: 'vector-coupled', fluidId: 'water', emissionSide: 'left', solitonCount: 2, vectorCoupling: 0.75 }
+    patch: { enabled: true, domain: 'wave-pool', equation: 'vector-coupled', fluidId: 'water', emissionSide: 'left', solitonCount: 2, vectorCoupling: 0.75, tubularBreakerEnabled: false }
   },
   {
     id: 'water-hdl-ldl-3-saddle',
@@ -1812,12 +1965,12 @@ const SOLITON_SCENARIO_PRESETS = [
   {
     id: 'argon-plasma',
     label: 'Argon Ion-Acoustic Plasma',
-    patch: { enabled: true, domain: 'plasma-wave', equation: 'kdv', fluidId: 'argon', emissionSide: 'left', solitonCount: 2, electronTempEv: 2.8 }
+    patch: { enabled: true, domain: 'plasma-wave', equation: 'kdv', fluidId: 'argon', emissionSide: 'left', solitonCount: 2, electronTempEv: 2.8, tubularBreakerEnabled: false }
   },
   {
     id: 'hydrogen-plasma',
     label: 'Hydrogen Magnetized Plasma',
-    patch: { enabled: true, domain: 'plasma-wave', equation: 'boussinesq', fluidId: 'hydrogen', emissionSide: 'both', solitonCount: 2, magneticFieldT: 1.2, electronTempEv: 4.5 }
+    patch: { enabled: true, domain: 'plasma-wave', equation: 'boussinesq', fluidId: 'hydrogen', emissionSide: 'both', solitonCount: 2, magneticFieldT: 1.2, electronTempEv: 4.5, tubularBreakerEnabled: false }
   },
   {
     id: 'pool-cfd-2d',
@@ -1843,6 +1996,13 @@ function SolitonWaveControlsSection({ solitonConfig, solitonTelemetry, onSoliton
     hdlLdlLoopTopology: physics.pathway.loopTopology,
     cfdGridLabel: '64x16',
     cfdMaxDivergence: 0,
+    poolDepthM: config.poolDepthM,
+    minLocalDepthM: config.poolDepthM * (1 - (config.bathymetryProfile === 'flat' ? 0 : config.bathymetryRelief)),
+    maxBathymetryElevationM: config.poolDepthM * (config.bathymetryProfile === 'flat' ? 0 : config.bathymetryRelief),
+    bathymetryProfile: config.bathymetryProfile,
+    breakerIndexGamma: 0.42,
+    iribarrenNumber: 0.85,
+    breakerRegime: config.tubularBreakerEnabled ? 'Plunging / Tubular barrel' : 'Non-breaking solitary',
     stateSummary: config.domain === 'plasma-wave' ? physics.fluid.plasmaSummary : physics.fluid.stateSummary,
     caveat: physics.fluid.caveat
   };
@@ -1857,7 +2017,19 @@ function SolitonWaveControlsSection({ solitonConfig, solitonTelemetry, onSoliton
   };
 
   return (
-    <section className="wave-control-section wave-state-section wave-soliton-section" aria-label="Soliton and plasma wave controls" data-soliton-enabled={String(config.enabled)} data-soliton-domain={config.domain} data-soliton-equation={config.equation} data-soliton-fluid={config.fluidId} data-soliton-side={config.emissionSide}>
+    <section
+      className="wave-control-section wave-state-section wave-soliton-section"
+      aria-label="Soliton and plasma wave controls"
+      data-soliton-enabled={String(config.enabled)}
+      data-soliton-domain={config.domain}
+      data-soliton-equation={config.equation}
+      data-soliton-fluid={config.fluidId}
+      data-soliton-side={config.emissionSide}
+      data-show-still-water-depth={String(config.showStillWaterDepth)}
+      data-show-floor-bathymetry={String(config.showFloorBathymetry)}
+      data-bathymetry-profile={config.bathymetryProfile}
+      data-tubular-breaker={String(config.tubularBreakerEnabled)}
+    >
       <span className="wave-section-label">SOLITON &amp; PLASMA WAVE LAB</span>
       <label className="wave-toggle wave-visualization-toggle">
         <input type="checkbox" checked={config.enabled} onChange={(event) => updateConfig({ enabled: event.target.checked })} />
@@ -1917,7 +2089,34 @@ function SolitonWaveControlsSection({ solitonConfig, solitonTelemetry, onSoliton
         <RangeControl label="Dispersion scale" value={config.dispersionScale} min={0.1} max={3} step={0.05} suffix="x" editing={editing} onChange={(dispersionScale) => updateConfig({ dispersionScale })} />
         {config.domain === 'wave-pool' ? <>
           <RangeControl label="Pool still-water depth" value={config.poolDepthM} min={0.4} max={5} step={0.1} suffix=" m" editing={editing} onChange={(poolDepthM) => updateConfig({ poolDepthM })} />
+          <label className="wave-toggle wave-visualization-toggle">
+            <input type="checkbox" checked={config.showStillWaterDepth} onChange={(event) => updateConfig({ showStillWaterDepth: event.target.checked })} />
+            <span>Show pool still-water depth</span>
+          </label>
           <RangeControl label="Pneumatic chamber pressure" value={config.pneumaticPressureKPa} min={5} max={120} step={1} suffix=" kPa" editing={editing} onChange={(pneumaticPressureKPa) => updateConfig({ pneumaticPressureKPa })} />
+          <ParamSelect className="wave-select" label="Floor bathymetry profile" value={config.bathymetryProfile} options={SOLITON_BATHYMETRY_OPTIONS.map(({ value, label }) => ({ value, label }))} onChange={(bathymetryProfile) => updateConfig({ bathymetryProfile })} />
+          <p className="wave-description">{getBathymetryProfileDetails(config.bathymetryProfile).description}</p>
+          {config.bathymetryProfile !== 'flat' && <>
+            <RangeControl label="Bathymetry reef / slope relief" value={config.bathymetryRelief} min={0} max={0.78} step={0.02} editing={editing} onChange={(bathymetryRelief) => updateConfig({ bathymetryRelief })} />
+            <RangeControl label="Bathymetry reef center X" value={config.bathymetryCenterX} min={-6} max={6} step={0.2} suffix=" u" editing={editing} onChange={(bathymetryCenterX) => updateConfig({ bathymetryCenterX })} />
+          </>}
+          <label className="wave-toggle wave-visualization-toggle">
+            <input type="checkbox" checked={config.showFloorBathymetry} onChange={(event) => updateConfig({ showFloorBathymetry: event.target.checked })} />
+            <span>Show floor bathymetry mesh</span>
+          </label>
+          <label className="wave-toggle wave-visualization-toggle">
+            <input type="checkbox" checked={config.tubularBreakerEnabled} onChange={(event) => updateConfig({ tubularBreakerEnabled: event.target.checked })} />
+            <span>Enable tubular plunging wave curl</span>
+          </label>
+          {config.tubularBreakerEnabled && (
+            <RangeControl label="Tubular barrel curl strength" value={config.tubularCurlStrength} min={0} max={1.5} step={0.05} suffix="x" editing={editing} onChange={(tubularCurlStrength) => updateConfig({ tubularCurlStrength })} />
+          )}
+          <details className="wave-detector-notes wave-tubular-surfing-guide">
+            <summary>How to make tubular surfing waves</summary>
+            <p><strong>1. Variable-depth shoaling bathymetry:</strong> Select <em>Submerged surfing reef</em> or <em>Sloping beach ramp</em>. As local depth h(x) decreases over the reef, linear phase speed c(x) = √(g h(x)) slows the wave base while Green’s law (η ∝ h⁻¹/⁴ to h⁻¹) amplifies crest height.</p>
+            <p><strong>2. Nonlinear steepening vs. dispersion:</strong> Shallow water boosts quadratic steepening α(x) ∝ h(x)⁻³/² while reducing dispersive spreading β(x) ∝ h(x)⁵/², pitching the forward wave face vertical when the breaker index γ = H / h(x) approaches the McCowan limit (~0.78).</p>
+            <p><strong>3. Plunging Iribarren regime &amp; multi-valued lip curl:</strong> Ocean barrels form when the Iribarren number ξ₀ = tan(β_reef) / √(H / L₀) lies in the plunging window (0.5 &lt; ξ₀ &lt; 3.3) so horizontal crest orbital velocity exceeds phase speed (u_crest &gt; c). Because 1D single-valued PDEs η(x,t) cannot overturn on their own, enabling <em>Tubular plunging wave curl</em> projects the steepened crest along a Lagrangian overturning lip arc around the hollow barrel core.</p>
+          </details>
         </> : <>
           <RangeControl label="Electron temperature Te" value={config.electronTempEv} min={0.2} max={25} step={0.1} suffix=" eV" editing={editing} onChange={(electronTempEv) => updateConfig({ electronTempEv })} />
           <RangeControl label="Ion temperature Ti" value={config.ionTempEv} min={0.02} max={10} step={0.02} suffix=" eV" editing={editing} onChange={(ionTempEv) => updateConfig({ ionTempEv })} />
@@ -1970,6 +2169,10 @@ function SolitonWaveControlsSection({ solitonConfig, solitonTelemetry, onSoliton
           </div>
           <div><span>Peak amplitude</span><strong>{telemetry.peakAmplitude.toFixed(3)} u</strong></div>
           <div><span>Viscous loss</span><strong>{(telemetry.viscousEnergyLossFraction * 100).toFixed(1)}%</strong></div>
+          {config.domain === 'wave-pool' && <>
+            <div><span>Still-water / min reef depth</span><strong>{(telemetry.poolDepthM ?? config.poolDepthM).toFixed(2)} m · {(telemetry.minLocalDepthM ?? config.poolDepthM).toFixed(2)} m</strong></div>
+            <div><span>Breaker index γ = H/h · ξ0</span><strong>{(telemetry.breakerIndexGamma ?? 0).toFixed(2)} · ξ0={(telemetry.iribarrenNumber ?? 0).toFixed(2)} ({telemetry.breakerRegime ?? 'Non-breaking solitary'})</strong></div>
+          </>}
           {config.domain === 'plasma-wave' && <>
             <div><span>Debye length λDe</span><strong>{(telemetry.debyeLengthM * 1e6).toFixed(1)} μm</strong></div>
             <div><span>Ion plasma freq fpi</span><strong>{(telemetry.ionPlasmaFrequencyHz / 1e6).toFixed(2)} MHz</strong></div>

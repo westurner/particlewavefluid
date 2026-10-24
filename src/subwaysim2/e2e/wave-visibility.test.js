@@ -801,10 +801,35 @@ test('soliton and plasma wave lab supports pool fluids, HDL+LDL water, vector so
   assert.equal(await solitonSection.getAttribute('data-soliton-domain'), 'wave-pool');
   assert.equal(await solitonSection.getAttribute('data-soliton-equation'), 'boussinesq');
   assert.equal(await solitonSection.getAttribute('data-soliton-side'), 'both');
+  assert.equal(await solitonSection.getAttribute('data-show-still-water-depth'), 'true');
+  assert.equal(await solitonSection.getAttribute('data-show-floor-bathymetry'), 'true');
+
+  const solverDescription = solitonSection.locator('.wave-soliton-solver-description');
+  await solverDescription.waitFor();
+  assert.match(await solverDescription.textContent(), /Bidirectional Boussinesq/);
+
+  const stillWaterToggle = solitonSection.getByLabel('Show pool still-water depth');
+  assert.equal(await stillWaterToggle.isChecked(), true);
+  await stillWaterToggle.uncheck();
+  assert.equal(await solitonSection.getAttribute('data-show-still-water-depth'), 'false');
+  await stillWaterToggle.check();
+  assert.equal(await solitonSection.getAttribute('data-show-still-water-depth'), 'true');
+
+  const floorBathymetryToggle = solitonSection.getByLabel('Show floor bathymetry mesh');
+  assert.equal(await floorBathymetryToggle.isChecked(), true);
+  await floorBathymetryToggle.uncheck();
+  assert.equal(await solitonSection.getAttribute('data-show-floor-bathymetry'), 'false');
+  await floorBathymetryToggle.check();
+  assert.equal(await solitonSection.getAttribute('data-show-floor-bathymetry'), 'true');
+
+  await solitonSection.getByRole('button', { name: 'Tubular Surfing Reef' }).click();
+  assert.equal(await solitonSection.getAttribute('data-bathymetry-profile'), 'surf-reef');
+  assert.equal(await solitonSection.getAttribute('data-tubular-breaker'), 'true');
 
   const telemetry = solitonSection.getByRole('region', { name: 'Soliton and plasma telemetry' });
   await telemetry.waitFor();
   assert.match(await telemetry.textContent(), /Shallow-water speed c0/);
+  assert.match(await telemetry.textContent(), /Plunging \/ Tubular barrel/);
 
   await selectParam(page, 'Soliton fluid', 'water-hdl-ldl', solitonSection);
   assert.equal(await solitonSection.getAttribute('data-soliton-fluid'), 'water-hdl-ldl');

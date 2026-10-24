@@ -4,9 +4,12 @@ import {
   createSolitonSolverState,
   DEFAULT_SOLITON_CONFIG,
   deriveSolitonPhysicsParameters,
+  evaluateBathymetryAt,
+  evaluateTubularCrestAt,
   getSolitonEquationDetails,
   normalizeSolitonConfig,
   sampleSolitonFieldAt,
+  SOLITON_BATHYMETRY_OPTIONS,
   SOLITON_DOMAIN_OPTIONS,
   SOLITON_EQUATION_DETAILS,
   SOLITON_EQUATION_OPTIONS,
@@ -228,4 +231,40 @@ test('2D CFD cross-section solver advances velocity and pressure fields with bou
   assert.ok(Number.isFinite(state.telemetry.cfdMaxDivergence));
   assert.ok(state.telemetry.cfdMaxDivergence < 5, `expected bounded CFD divergence, got ${state.telemetry.cfdMaxDivergence}`);
   assert.ok(state.actuatorPulseTimerLeft > 0 && state.actuatorPulseTimerRight > 0);
+});
+
+test('floor bathymetry shoaling and tubular wave curl tool compute reef depth, breaker index, and barrel lip offsets', () => {
+  assert.equal(SOLITON_BATHYMETRY_OPTIONS.length, 5);
+  const flatBathy = evaluateBathymetryAt(1.0, 0, { poolDepthM: 2.0, bathymetryProfile: 'flat', bathymetryRelief: 0.6 });
+  const reefBathy = evaluateBathymetryAt(1.0, 0, { poolDepthM: 2.0, bathymetryProfile: 'surf-reef', bathymetryRelief: 0.6, bathymetryCenterX: 1.0 });
+  assert.equal(flatBathy.elevationM, 0);
+  assert.equal(flatBathy.localDepthM, 2.0);
+  assert.ok(reefBathy.elevationM > 0.5, 'expected submerged surfing reef to elevate seabed');
+  assert.ok(reefBathy.localDepthM < flatBathy.localDepthM, 'expected reef to reduce local water depth');
+
+  const tubularConfig = normalizeSolitonConfig({
+    ...DEFAULT_SOLITON_CONFIG,
+    enabled: true,
+    domain: 'wave-pool',
+    equation: 'boussinesq',
+    bathymetryProfile: 'surf-reef',
+    bathymetryRelief: 0.62,
+    bathymetryCenterX: 1.0,
+    tubularBreakerEnabled: true,
+    tubularCurlStrength: 1.0,
+    showStillWaterDepth: true,
+    showFloorBathymetry: true,
+    solitonCount: 1,
+    solitons: [
+      { enabled: true, amplitude: 0.9, width: 1.2, positionOffset: 0.8, polarity: 1, vectorAngleDeg: 0, sideOverride: 'left' },
+      { enabled: false, amplitude: 0.4, width: 1.5, positionOffset: 3.5, polarity: 1, vectorAngleDeg: 0, sideOverride: 'right' }
+    ]
+  });
+  const state = createSolitonSolverState(tubularConfig);
+  stepSolitonSolver(state, tubularConfig, 1 / 60);
+  const crest = evaluateTubularCrestAt(state, tubularConfig, 0.8, 0, 0.8);
+  assert.ok(crest.plungeIntensity > 0.2, `expected active plunging intensity over surfing reef, got ${crest.plungeIntensity}`);
+  assert.ok(Math.abs(crest.curlOffsetX) > 0.01, 'expected horizontal lip curl projection');
+  assert.equal(state.telemetry.breakerRegime, 'Plunging / Tubular barrel');
+  assert.ok(state.telemetry.minLocalDepthM < state.telemetry.poolDepthM);
 });
