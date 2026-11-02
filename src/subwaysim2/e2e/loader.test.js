@@ -88,7 +88,16 @@ test('rail heat lab documents and compares its three transport models', async (t
   }
   await definitions.getByText(/heat flux follows the local temperature gradient immediately/).waitFor();
   await definitions.getByText(/relaxes toward the Fourier flux/).waitFor();
-  await definitions.getByText(/not a validated rail-steel material law/).waitFor();
+  await definitions.getByText(/Exploratory thermal adaptation of Marco Fedi’s Dilatant Dark Fluid \(SSRN 7406660\)/).waitFor();
+  await definitions.getByRole('link', { name: /Toward a Unified Quantum-Hydrodynamic Origin/ }).waitFor();
+  await definitions.getByText(/Second-Law \/ Clausius-Duhem positivity/).waitFor();
+  await definitions.getByText(/Trace- & determinant-normed 3×3 splatter deformation/).waitFor();
+
+  assert.equal(await page.getByRole('slider', { name: 'Tensor-Gaussian waist' }).count(), 1);
+  assert.equal(await page.getByRole('slider', { name: 'Splatter deformation scale' }).count(), 1);
+  assert.equal(await page.getByText('Splatter trace norm tr(T̂)').locator('..').locator('strong').textContent(), '3.000');
+  assert.equal(await page.getByText('Splatter volume norm det(C)').locator('..').locator('strong').textContent(), '1.000');
+  assert.equal(await page.getByText('Constraint status').locator('..').locator('strong').textContent(), 'All 4 satisfied');
 
   const differenceToggle = page.getByRole('checkbox', { name: 'Show temperature differences from Fourier' });
   assert.equal(await differenceToggle.isChecked(), true);

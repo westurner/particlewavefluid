@@ -3,7 +3,7 @@ import { Html } from '@react-three/drei';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DataTexture, DoubleSide, FloatType, FrontSide, Mesh, NearestFilter, NoBlending, OrthographicCamera, RGBAFormat, Scene, ShaderMaterial, UnsignedByteType, Vector3, WebGLRenderTarget } from 'three';
 import { advanceDetectorResponse, calculateOcclusionTransmission, calculateWaveDerivative, calculateWaveDisplacementAndTensorGaussian, calculateWaveFrame, calculateWaveOrbitalPhase, calculateWaveTensorGaussian, cloneWaveState, combineWaves, DEFAULT_APERTURE_SETTINGS, DEFAULT_BEAM_WAIST, DEFAULT_SIGNAL_DIRECTION, DEFAULT_SIGNAL_ORIGIN, DEFAULT_SIGNAL_ROTATION, DEFAULT_WAVE_STATES, DOUBLE_SLIT_CENTERS, DOUBLE_SLIT_DETECTOR_X, DOUBLE_SLIT_SCREEN_THICKNESS, DOUBLE_SLIT_SCREEN_X, DOUBLE_SLIT_WIDTH, APERTURE_SCREEN_DEPTH, APERTURE_SCREEN_HEIGHT, DETECTOR_TRANSVERSE_SPAN, detectorDistanceForSlitScreenPosition, filterWavesByPhase, getOrbitalAngularMomentum, getSlitGeometry, getSlitScreenPlane, GRATING_SLIT_CENTERS, GRATING_SLIT_SPACING, GRATING_SLIT_WIDTH, HELICAL_TOPOLOGICAL_CHARGE, INTERFERENCE_MODES, MAX_WAVES, normalizeApertureSettings, OCCLUSION_PRESETS, OAM_CHARGE_MAX, OAM_CHARGE_MIN, PHASE_MODES, PINHOLE_RADIUS, POLARIZATION_MODES, prepareApertureField, readSavedWaveStates, sampleApertureField, samplePilotWaveCurrent, sampleTransverseWignerFunction, sampleWignerMechanics, SIGNAL_SOURCE_PRESETS, SINGLE_SLIT_WIDTH, slitScreenPlaneDepth, TWO_SOURCE_CENTERS, WIGNER_MECHANICS_QUANTITIES, writeSavedWaveStates } from './waveModel.js';
-import { createSolitonSolverState, DEFAULT_SOLITON_CONFIG, deriveSolitonPhysicsParameters, evaluateBathymetryAt, evaluateSolitonCheckFigures, evaluateTubularCrestAt, getBathymetryProfileDetails, getSolitonEquationDetails, getWaterHdlLdlPathwayDetails, normalizeSolitonConfig, sampleSolitonFieldAt, SOLITON_BATHYMETRY_OPTIONS, SOLITON_BOUNDARY_OPTIONS, SOLITON_DOMAIN_OPTIONS, SOLITON_DOMAIN_SPAN, SOLITON_EMISSION_SIDE_OPTIONS, SOLITON_EQUATION_DETAILS, SOLITON_EQUATION_OPTIONS, SOLITON_FLUID_OPTIONS, SOLITON_FLUIDS, stepSolitonSolver, triggerSolitonLauncherImpulse, WATER_HDL_LDL_PATHWAY_OPTIONS } from './solitonWaveModel.js';
+import { createSolitonSolverState, DEFAULT_SOLITON_CONFIG, deriveSolitonPhysicsParameters, evaluateBathymetryAt, evaluateOamSolitonTransverseProfile, evaluateSolitonCheckFigures, evaluateTubularCrestAt, getBathymetryProfileDetails, getSolitonEquationDetails, getWaterHdlLdlPathwayDetails, normalizeSolitonConfig, OAM_SOLITON_CHARGE_MAX, OAM_SOLITON_CHARGE_MIN, sampleSolitonFieldAt, SOLITON_BATHYMETRY_OPTIONS, SOLITON_BOUNDARY_OPTIONS, SOLITON_DOMAIN_OPTIONS, SOLITON_DOMAIN_SPAN, SOLITON_EMISSION_SIDE_OPTIONS, SOLITON_EQUATION_DETAILS, SOLITON_EQUATION_OPTIONS, SOLITON_FLUID_OPTIONS, SOLITON_FLUIDS, stepSolitonSolver, triggerSolitonLauncherImpulse, WATER_HDL_LDL_PATHWAY_OPTIONS } from './solitonWaveModel.js';
 import { HistoryControls, NumericParamControl, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 import { CameraPerspectiveToolbar, OrbitalTrackingParameters, ParticleAppearanceSettings, PerspectiveOrbitControls, SimulatorBase, SimulatorExportModal, SimulatorIOJournal, SimulatorPresetControls, useSimulatorJournal } from './lib/SimulatorBase.jsx';
@@ -1353,6 +1353,35 @@ function SolitonChamberRig({ solitonConfig, solverStateRef }) {
     return geometry;
   }, []);
 
+  const oamVortexGeometry = useMemo(() => {
+    const nx = 64;
+    const nPhi = 16;
+    const positions = new Float32Array(nx * nPhi * 3);
+    const colors = new Float32Array(nx * nPhi * 3);
+    const indices = [];
+    for (let ip = 0; ip < nPhi; ip += 1) {
+      const phi = (ip / (nPhi - 1)) * Math.PI * 2;
+      for (let ix = 0; ix < nx; ix += 1) {
+        const idx = ip * nx + ix;
+        positions[idx * 3] = -SOLITON_DOMAIN_SPAN / 2 + (ix / (nx - 1)) * SOLITON_DOMAIN_SPAN;
+        positions[idx * 3 + 1] = 0.25 * Math.sin(phi);
+        positions[idx * 3 + 2] = 0.25 * Math.cos(phi);
+        if (ix < nx - 1 && ip < nPhi - 1) {
+          const a = idx;
+          const b = idx + 1;
+          const c = idx + nx;
+          const d = idx + nx + 1;
+          indices.push(a, c, b, b, c, d);
+        }
+      }
+    }
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new BufferAttribute(colors, 3));
+    geometry.setIndex(indices);
+    return geometry;
+  }, []);
+
   const primaryColor = useMemo(() => new Color(), []);
   const secondaryColor = useMemo(() => new Color(), []);
   const workColor = useMemo(() => new Color(), []);
@@ -1361,6 +1390,7 @@ function SolitonChamberRig({ solitonConfig, solverStateRef }) {
   useEffect(() => () => cfdCurtainGeometry.dispose(), [cfdCurtainGeometry]);
   useEffect(() => () => bathymetryFloorGeometry.dispose(), [bathymetryFloorGeometry]);
   useEffect(() => () => tubularCurlGeometry.dispose(), [tubularCurlGeometry]);
+  useEffect(() => () => oamVortexGeometry.dispose(), [oamVortexGeometry]);
 
   useEffect(() => {
     if (!solitonConfig?.enabled) return;
@@ -1458,6 +1488,39 @@ function SolitonChamberRig({ solitonConfig, solverStateRef }) {
       tubularCurlGeometry.attributes.color.needsUpdate = true;
     }
 
+    if (solitonConfig.equation === 'oam-vortex') {
+      const nx = 64;
+      const nPhi = 16;
+      const oPos = oamVortexGeometry.attributes.position.array;
+      const oCol = oamVortexGeometry.attributes.color.array;
+      for (let ip = 0; ip < nPhi; ip += 1) {
+        const phi = (ip / (nPhi - 1)) * Math.PI * 2;
+        for (let ix = 0; ix < nx; ix += 1) {
+          const idx = ip * nx + ix;
+          const baseX = -SOLITON_DOMAIN_SPAN / 2 + (ix / (nx - 1)) * SOLITON_DOMAIN_SPAN;
+          const i1d = Math.min(state.size - 1, Math.round((ix / (nx - 1)) * (state.size - 1)));
+          const localMag = Math.hypot(state.u1[i1d], state.u2[i1d]);
+          const localCharge = localMag > 0.08 && state.oamField
+            ? Math.round(state.oamField[i1d] / localMag)
+            : (solitonConfig.solitons[0]?.oamCharge ?? 1);
+          const absCharge = Math.max(1, Math.abs(localCharge));
+          const ringRadius = (0.18 + 0.55 * localMag * Math.sqrt(absCharge / 2) * (solitonConfig.oamWaist / 2.2));
+          const helicalPhase = localCharge * phi + solitonConfig.oamHelicalTwist * baseX * 0.65 - state.time * 2.2;
+          const petalMod = 1 + 0.22 * Math.cos(helicalPhase);
+          oPos[idx * 3] = baseX;
+          oPos[idx * 3 + 1] = ringRadius * petalMod * Math.sin(phi);
+          oPos[idx * 3 + 2] = ringRadius * petalMod * Math.cos(phi);
+          const hue = ((helicalPhase / (Math.PI * 2)) % 1 + 1) % 1;
+          workColor.setHSL(hue, 0.86, 0.44 + Math.min(0.26, localMag * 0.25));
+          oCol[idx * 3] = workColor.r;
+          oCol[idx * 3 + 1] = workColor.g;
+          oCol[idx * 3 + 2] = workColor.b;
+        }
+      }
+      oamVortexGeometry.attributes.position.needsUpdate = true;
+      oamVortexGeometry.attributes.color.needsUpdate = true;
+    }
+
     if (solitonConfig.equation === 'cfd-2d' || solitonConfig.showCfdVelocityOverlay) {
       const { nx, nz, u, w, vorticity } = state.cfd;
       const cfdPos = cfdCurtainGeometry.attributes.position.array;
@@ -1526,6 +1589,11 @@ function SolitonChamberRig({ solitonConfig, solverStateRef }) {
       {solitonConfig.tubularBreakerEnabled && (
         <mesh geometry={tubularCurlGeometry} aria-label="Tubular wave barrel curl mesh">
           <meshBasicMaterial vertexColors transparent opacity={0.76} side={DoubleSide} toneMapped={false} />
+        </mesh>
+      )}
+      {solitonConfig.equation === 'oam-vortex' && (
+        <mesh geometry={oamVortexGeometry} aria-label="OAM helical vortex tube mesh">
+          <meshBasicMaterial vertexColors transparent opacity={0.74} side={DoubleSide} toneMapped={false} />
         </mesh>
       )}
       {(solitonConfig.equation === 'cfd-2d' || solitonConfig.showCfdVelocityOverlay) && (
@@ -1625,14 +1693,23 @@ function WaveField({ waves, waveCount, interferenceModes, running, timeRef, expe
         positions[index * 3 + 1] = y + sample.height * 1.35 + curlY;
         positions[index * 3 + 2] = z + sample.u2 * 0.45;
         occlusions[index] = 1;
-        vectorAngles[index] = solitonConfig.equation === 'vector-coupled'
+        vectorAngles[index] = solitonConfig.equation === 'vector-coupled' || solitonConfig.equation === 'oam-vortex'
           ? sample.vectorAngle
           : Math.atan(sample.slope * 0.55);
-        tensorGaussians[index] = Math.min(1, Math.hypot(sample.u1, sample.u2));
+        tensorGaussians[index] = solitonConfig.equation === 'oam-vortex'
+          ? Math.min(1, Math.hypot(sample.u1, sample.u2) * (sample.oamRingEnvelope ?? 1))
+          : Math.min(1, Math.hypot(sample.u1, sample.u2));
         const normalized = Math.min(1, Math.abs(sample.height) / 1.1);
         if (solitonConfig.fluidId === 'water-hdl-ldl' && solitonConfig.showHdlLdlOverlay) {
           color.set('#2ee6a8').lerp(secondaryColor.set('#3b82f6'), sample.ldlFraction);
           color.offsetHSL(0, 0, normalized * 0.14);
+        } else if (solitonConfig.equation === 'oam-vortex' && solitonConfig.showOamPhaseOverlay) {
+          const phasePos = (((sample.oamPhase ?? 0) / (Math.PI * 2)) + 1) % 1;
+          if (oamSplatterPalette && oamSplatterPalette !== 'native') {
+            sampleColorPalette(oamSplatterPalette, phasePos, color);
+          } else {
+            color.setHSL(phasePos, 0.88, 0.42 + normalized * 0.24);
+          }
         } else if (solitonConfig.equation === 'vector-coupled') {
           const hue = ((sample.vectorAngle / (Math.PI * 2)) + 1) % 1;
           color.setHSL(hue, 0.85, 0.44 + normalized * 0.22);
@@ -1958,6 +2035,26 @@ const SOLITON_SCENARIO_PRESETS = [
     patch: { enabled: true, domain: 'wave-pool', equation: 'vector-coupled', fluidId: 'water', emissionSide: 'left', solitonCount: 2, vectorCoupling: 0.75, tubularBreakerEnabled: false }
   },
   {
+    id: 'oam-vortex-pair',
+    label: 'OAM Vortex Soliton Pair',
+    patch: {
+      enabled: true,
+      domain: 'wave-pool',
+      equation: 'oam-vortex',
+      fluidId: 'water',
+      emissionSide: 'both',
+      solitonCount: 2,
+      oamWaist: 2.2,
+      oamHelicalTwist: 1.15,
+      showOamPhaseOverlay: true,
+      tubularBreakerEnabled: false,
+      solitons: [
+        { enabled: true, amplitude: 0.78, width: 1.35, positionOffset: -4.2, polarity: 1, vectorAngleDeg: 22, oamCharge: 2, sideOverride: 'left' },
+        { enabled: true, amplitude: 0.56, width: 1.55, positionOffset: 4.2, polarity: 1, vectorAngleDeg: 68, oamCharge: -1, sideOverride: 'right' }
+      ]
+    }
+  },
+  {
     id: 'water-hdl-ldl-3-saddle',
     label: 'Water (HDL+LDL) 3-Saddle',
     patch: { enabled: true, domain: 'wave-pool', equation: 'boussinesq', fluidId: 'water-hdl-ldl', hdlLdlPathway: 'near-boundary-3-saddle', emissionSide: 'both', solitonCount: 2 }
@@ -2005,6 +2102,12 @@ function SolitonWaveControlsSection({ solitonConfig, solitonTelemetry, onSoliton
     breakerIndexGamma: 0.42,
     iribarrenNumber: 0.85,
     breakerRegime: config.tubularBreakerEnabled ? 'Plunging / Tubular barrel' : 'Non-breaking solitary',
+    netOamCharge: (config.solitons[0]?.oamCharge ?? 0) + (config.solitonCount > 1 ? (config.solitons[1]?.oamCharge ?? 0) : 0),
+    oamVortexRadiusU: config.oamWaist * Math.sqrt(Math.max(Math.abs(config.solitons[0]?.oamCharge ?? 0), Math.abs(config.solitons[1]?.oamCharge ?? 0)) / 2),
+    oamPetalCount: config.solitonCount > 1
+      ? Math.abs((config.solitons[0]?.oamCharge ?? 0) - (config.solitons[1]?.oamCharge ?? 0))
+      : Math.abs(config.solitons[0]?.oamCharge ?? 0),
+    oamAxialMomentum: 0,
     stateSummary: config.domain === 'plasma-wave' ? physics.fluid.plasmaSummary : physics.fluid.stateSummary,
     caveat: physics.fluid.caveat
   };
@@ -2031,6 +2134,7 @@ function SolitonWaveControlsSection({ solitonConfig, solitonTelemetry, onSoliton
       data-show-floor-bathymetry={String(config.showFloorBathymetry)}
       data-bathymetry-profile={config.bathymetryProfile}
       data-tubular-breaker={String(config.tubularBreakerEnabled)}
+      data-soliton-oam-net={String(telemetry.netOamCharge ?? 0)}
       data-check-figures-passed={`${checkFiguresReport.passedCount}/${checkFiguresReport.totalCount}`}
     >
       <span className="wave-section-label">SOLITON &amp; PLASMA WAVE LAB</span>
@@ -2125,12 +2229,21 @@ function SolitonWaveControlsSection({ solitonConfig, solitonTelemetry, onSoliton
           <RangeControl label="Ion temperature Ti" value={config.ionTempEv} min={0.02} max={10} step={0.02} suffix=" eV" editing={editing} onChange={(ionTempEv) => updateConfig({ ionTempEv })} />
           <RangeControl label="Plasma density n0" value={config.plasmaDensity1e16M3} min={0.2} max={50} step={0.2} suffix=" e16/m³" editing={editing} onChange={(plasmaDensity1e16M3) => updateConfig({ plasmaDensity1e16M3 })} />
           <RangeControl label="Magnetic field B0" value={config.magneticFieldT} min={0} max={5} step={0.05} suffix=" T" editing={editing} onChange={(magneticFieldT) => updateConfig({ magneticFieldT })} />
-          <RangeControl label="Magnetic wave angle" value={config.magneticAngleDeg} min={0} max={89} step={1} suffix=" deg" editing={editing} onChange={(magneticAngleDeg) => updateConfig({ magneticAngleDeg })} />
-          <RangeControl label="Landau / collisional damping" value={config.landauDamping} min={0} max={0.25} step={0.005} suffix=" /s" editing={editing} onChange={(landauDamping) => updateConfig({ landauDamping })} />
+          <RangeControl label="Collision damping νc" value={config.collisionDamping} min={0} max={0.5} step={0.01} editing={editing} onChange={(collisionDamping) => updateConfig({ collisionDamping })} />
         </>}
-        {config.equation === 'vector-coupled' && <>
-          <RangeControl label="Vector cross-coupling" value={config.vectorCoupling} min={-1.5} max={1.5} step={0.05} editing={editing} onChange={(vectorCoupling) => updateConfig({ vectorCoupling })} />
-          <RangeControl label="Vector group mismatch" value={config.vectorGroupMismatch} min={-0.8} max={0.8} step={0.02} editing={editing} onChange={(vectorGroupMismatch) => updateConfig({ vectorGroupMismatch })} />
+        <RangeControl label="Viscosity scale" value={config.viscosityScale} min={0} max={3} step={0.05} suffix="x" editing={editing} onChange={(viscosityScale) => updateConfig({ viscosityScale })} />
+        <RangeControl label="Nonlinearity scale" value={config.nonlinearityScale} min={0.1} max={2.5} step={0.05} suffix="x" editing={editing} onChange={(nonlinearityScale) => updateConfig({ nonlinearityScale })} />
+        <RangeControl label="Dispersion scale" value={config.dispersionScale} min={0.1} max={2.5} step={0.05} suffix="x" editing={editing} onChange={(dispersionScale) => updateConfig({ dispersionScale })} />
+        {(config.equation === 'vector-coupled' || config.equation === 'oam-vortex') && (
+          <RangeControl label="Vector cross-coupling" value={config.vectorCoupling} min={-1} max={2} step={0.05} editing={editing} onChange={(vectorCoupling) => updateConfig({ vectorCoupling })} />
+        )}
+        {config.equation === 'oam-vortex' && <>
+          <RangeControl label="OAM vortex waist w0" value={config.oamWaist} min={0.6} max={5.0} step={0.1} suffix=" u" editing={editing} onChange={(oamWaist) => updateConfig({ oamWaist })} />
+          <RangeControl label="OAM helical twist rate" value={config.oamHelicalTwist} min={0.1} max={3.0} step={0.05} suffix="x" editing={editing} onChange={(oamHelicalTwist) => updateConfig({ oamHelicalTwist })} />
+          <label className="wave-toggle wave-visualization-toggle">
+            <input type="checkbox" checked={config.showOamPhaseOverlay} onChange={(event) => updateConfig({ showOamPhaseOverlay: event.target.checked })} />
+            <span>Color field by OAM helical phase</span>
+          </label>
         </>}
         {config.equation === 'gardner-mkdv' && (
           <RangeControl label="Cubic nonlinearity" value={config.cubicNonlinearity} min={-2} max={2} step={0.05} editing={editing} onChange={(cubicNonlinearity) => updateConfig({ cubicNonlinearity })} />
@@ -2152,11 +2265,12 @@ function SolitonWaveControlsSection({ solitonConfig, solitonTelemetry, onSoliton
         </label>
         {config.solitons.slice(0, config.solitonCount).map((pulse, index) => (
           <details key={index} className="wave-detector-model-params wave-soliton-pulse-editor" open={index === 0}>
-            <summary>Soliton {index + 1} ({pulse.polarity > 0 ? 'Compressive / crest' : 'Rarefactive / trough'})</summary>
+            <summary>Soliton {index + 1} ({pulse.polarity > 0 ? 'Compressive / crest' : 'Rarefactive / trough'} · OAM ℓ={(pulse.oamCharge ?? 0) > 0 ? `+${pulse.oamCharge}` : (pulse.oamCharge ?? 0)})</summary>
             <RangeControl label={`Soliton ${index + 1} amplitude`} value={pulse.amplitude} min={0.05} max={1.5} step={0.02} suffix=" u" editing={editing} onChange={(amplitude) => updatePulse(index, { amplitude })} />
             <RangeControl label={`Soliton ${index + 1} width`} value={pulse.width} min={0.45} max={4.5} step={0.05} suffix=" u" editing={editing} onChange={(width) => updatePulse(index, { width })} />
             <RangeControl label={`Soliton ${index + 1} offset`} value={pulse.positionOffset} min={-7.5} max={7.5} step={0.1} suffix=" u" editing={editing} onChange={(positionOffset) => updatePulse(index, { positionOffset })} />
             <RangeControl label={`Soliton ${index + 1} vector angle`} value={pulse.vectorAngleDeg} min={-90} max={90} step={1} suffix=" deg" editing={editing} onChange={(vectorAngleDeg) => updatePulse(index, { vectorAngleDeg })} />
+            <RangeControl label={`Soliton ${index + 1} OAM charge (ℓ)`} value={pulse.oamCharge ?? 0} min={OAM_SOLITON_CHARGE_MIN} max={OAM_SOLITON_CHARGE_MAX} step={1} editing={editing} onChange={(oamCharge) => updatePulse(index, { oamCharge })} />
             <ParamSelect className="wave-select" label={`Soliton ${index + 1} polarity`} value={String(pulse.polarity)} options={[{ value: '1', label: 'Compressive / elevation (+1)' }, { value: '-1', label: 'Rarefactive / depression (-1)' }]} onChange={(val) => updatePulse(index, { polarity: Number(val) })} />
           </details>
         ))}
@@ -2180,6 +2294,16 @@ function SolitonWaveControlsSection({ solitonConfig, solitonTelemetry, onSoliton
             <div><span>Debye length λDe</span><strong>{(telemetry.debyeLengthM * 1e6).toFixed(1)} μm</strong></div>
             <div><span>Ion plasma freq fpi</span><strong>{(telemetry.ionPlasmaFrequencyHz / 1e6).toFixed(2)} MHz</strong></div>
             <div><span>Alfvén speed vA</span><strong>{telemetry.alfvenSpeedMS.toFixed(0)} m/s</strong></div>
+          </>}
+          {(config.equation === 'oam-vortex' || config.solitons.slice(0, config.solitonCount).some((pulse) => pulse.enabled && (pulse.oamCharge ?? 0) !== 0)) && <>
+            <div>
+              <span>OAM topological charge ℓ_net · r_peak</span>
+              <strong>ℓ_net = {(telemetry.netOamCharge ?? 0) > 0 ? `+${telemetry.netOamCharge}` : (telemetry.netOamCharge ?? 0)} · r_peak = {(telemetry.oamVortexRadiusU ?? 0).toFixed(2)} u</strong>
+            </div>
+            <div>
+              <span>OAM azimuthal petals |Δℓ| · Lx</span>
+              <strong>{telemetry.oamPetalCount ?? 0} petals · Lx = {(telemetry.oamAxialMomentum ?? 0).toFixed(2)}</strong>
+            </div>
           </>}
           {config.fluidId === 'water-hdl-ldl' && <>
             <div><span>HDL / LDL fractions</span><strong>HDL {(telemetry.meanHdlFraction * 100).toFixed(1)}% · LDL {(telemetry.meanLdlFraction * 100).toFixed(1)}%</strong></div>
@@ -2957,9 +3081,14 @@ export default function WaveInterferenceSim({ onBack }) {
       value: type === 'current' ? waveEditor.value : value
     });
   };
-  const orbitalStates = waves.slice(0, waveCount)
-    .map((wave, index) => ({ wave, index, charge: getOrbitalAngularMomentum(wave) }))
-    .filter(({ wave }) => wave.enabled !== false && (wave.phaseMode === 'Helical-Left' || wave.phaseMode === 'Helical-Right'));
+  const orbitalStates = solitonConfig?.enabled && solitonConfig.equation === 'oam-vortex'
+    ? solitonConfig.solitons
+      .slice(0, solitonConfig.solitonCount)
+      .map((pulse, index) => ({ wave: pulse, index, charge: pulse.oamCharge ?? 0, prefix: 'S' }))
+      .filter(({ wave, charge }) => wave.enabled !== false && charge !== 0)
+    : waves.slice(0, waveCount)
+      .map((wave, index) => ({ wave, index, charge: getOrbitalAngularMomentum(wave), prefix: 'W' }))
+      .filter(({ wave }) => wave.enabled !== false && (wave.phaseMode === 'Helical-Left' || wave.phaseMode === 'Helical-Right'));
 
   return (
     <SolitonSimulatorContext.Provider value={{
@@ -2986,8 +3115,8 @@ export default function WaveInterferenceSim({ onBack }) {
       <CameraPerspectiveToolbar className="simulator-perspective-toolbar" modesClassName="simulator-perspective-modes" viewMode={viewMode} orbitPlaying={orbitPlaying} onViewChange={setViewMode} onToggleOrbit={() => setOrbitPlaying((value) => !value)} />
       {orbitalStates.length > 0 && <aside className="wave-oam-readout" aria-label="Active orbital angular momentum states">
         <span className="wave-oam-kicker">ORBITAL STATES</span>
-        <div className="wave-oam-state-list">{orbitalStates.map(({ index, charge }) => <span className="wave-oam-state" key={index}>W{index + 1} ℓ={charge > 0 ? `+${charge}` : charge}</span>)}</div>
-        {orbitalStates.some(({ wave }) => wave.polarization === 'EM-Tensor-Gaussian') && !waveEditor.value.waveMechanics?.showDifference && <small>Hue: local helical phase / opacity: tensor weight</small>}
+        <div className="wave-oam-state-list">{orbitalStates.map(({ index, charge, prefix = 'W' }) => <span className="wave-oam-state" key={`${prefix}-${index}`}>{prefix}{index + 1} ℓ={charge > 0 ? `+${charge}` : charge}</span>)}</div>
+        {(orbitalStates.some(({ wave }) => wave.polarization === 'EM-Tensor-Gaussian') || (solitonConfig?.enabled && solitonConfig.equation === 'oam-vortex')) && !waveEditor.value.waveMechanics?.showDifference && <small>Hue: local helical phase / opacity: tensor weight</small>}
       </aside>}
       <section className="wave-title"><p>Animated phase experiment</p><h1>Shape the interference.</h1><span>Independent wavelength, amplitude, phase mode, and phase parameters for every active wave.</span></section>
       <WavePanel

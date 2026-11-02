@@ -68,7 +68,7 @@ $$
 
 This system supports left-traveling ($v \simeq +c_0 u$), right-traveling ($v \simeq -c_0 u$), and counter-propagating soliton launches, reflective or sponge-damped boundaries, and nonlinear head-on and overtaking collisions.
 
-### 3. Coupled Vector Soliton Mode (`vector-coupled`)
+### 3. Coupled Vector Soliton Mode (`vector-coupled`) and OAM Vortex Soliton Mode (`oam-vortex`)
 
 Evolves a genuine two-component vector field $\mathbf U = (u_1, u_2)$ representing either two coupled orthogonal/internal wave modes or coupled Manakov / Langmuir-ion-acoustic polarization components:
 
@@ -81,6 +81,16 @@ $$
 $$
 
 When $\sigma_{12} = 0$, the two components decouple into independent scalar solitons. For $\sigma_{12} \neq 0$, cross-nonlinear coupling produces vector shadow components, polarization rotation, and inelastic/phase-shifted collisions.
+
+In **OAM Vortex Soliton Mode (`oam-vortex`)**, each solitary wave carries a quantized azimuthal topological charge $\ell \in \{-3,-2,-1,0,+1,+2,+3\}$ with a Laguerre–Gaussian helical doughnut envelope:
+
+$$
+\Psi_\ell(x, r_\perp, \varphi, t) = A(x,t)\left(\frac{r_\perp}{r_{\mathrm{peak}}}\right)^{|\ell|}\exp\!\left(-\frac{r_\perp^2 - r_{\mathrm{peak}}^2}{w_0^2}\right)e^{i(\ell\varphi + k_{\mathrm{twist}}x - \omega t)},
+\qquad
+r_{\mathrm{peak}} = w_0\sqrt{\frac{|\ell|}{2}},
+$$
+
+exhibiting an on-axis phase singularity ($R_{|\ell|}(0)=0$ for $\ell \neq 0$), quantized $2\pi\ell$ azimuthal phase winding, centrifugal OAM dispersion, and $|\ell_1 - \ell_2|$-lobe azimuthal petal interference when two OAM solitons collide.
 
 ### 4. Extended Quadratic-Cubic Gardner / mKdV (`gardner-mkdv`) and Sine-Gordon (`sine-gordon`)
 
@@ -200,6 +210,7 @@ where:
 | `greens-law-mccowan-iribarren-surf` | $\eta/\eta_0 = (h_0/h)^{1/4}$, $\gamma_b \approx 0.78$, $0.5 \le \xi_0 \le 3.3$ | `surf-reef` with $h_{\min}/h_0 = 0.38$, tubular breaker active | $1.2736$ | $\pm 0.01$ | Green (1838); McCowan (1894); Battjes (1974) |
 | `water-hdl-ldl-two-state-pathway` | $x_{\mathrm{HDL}} + x_{\mathrm{LDL}} = 1$, $\Delta x_{\mathrm{LDL}} = x_{\mathrm{LDL,3\text{-}saddle}} - x_{\mathrm{LDL,1\text{-}saddle}}$ | $1800\,\mathrm{bar}, 188\,\mathrm{K}$ (3 saddles) vs. $1\,\mathrm{bar}, 260\,\mathrm{K}$ (1 saddle) | $0.3435$ | $\pm 0.01$ | Li et al., *Nature Physics* (2026); Reichert (2004) |
 | `chorin-cfd-projection-manakov-vector` | $\|u_1(\sigma_{12}=0, u_2\neq 0) - u_1(\sigma_{12}=0, u_2=0)\|_\infty = 0$ | $64\times 16$ Jacobi projection & $\sigma_{12} = 0$ decoupling test | $0.0000$ | $10^{-12}$ | Chorin (1968); Manakov (1974) |
+| `laguerre-gauss-oam-vortex-soliton` | $r_{\mathrm{peak}}/w_0 = \sqrt{|\ell|/2}$, $\frac{1}{2\pi}\oint \nabla_\varphi\Theta_\ell\,d\varphi = \ell$, $R_{|\ell|}(0)=0$ | Laguerre–Gaussian OAM vortex soliton with $\ell = +2$, $w_0 = 2.2\,\mathrm{u}$ | $2.0000$ ($r_{\mathrm{peak}}/w_0 = 1.0000$) | $10^{-9}$ | Allen et al. (1992); Swartzlander (1992); Mendonça et al. (2009) |
 
 ## Key Risks And Decisions
 

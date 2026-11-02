@@ -2,6 +2,8 @@ export const SOLITON_GRID_SIZE = 160;
 export const SOLITON_CFD_NX = 64;
 export const SOLITON_CFD_NZ = 16;
 export const SOLITON_DOMAIN_SPAN = 18;
+export const OAM_SOLITON_CHARGE_MIN = -3;
+export const OAM_SOLITON_CHARGE_MAX = 3;
 
 export const SOLITON_DOMAIN_OPTIONS = Object.freeze([
   { value: 'wave-pool', label: 'Pneumatic surfing wave pool (hydrodynamic)' },
@@ -12,6 +14,7 @@ export const SOLITON_EQUATION_OPTIONS = Object.freeze([
   { value: 'kdv', label: 'Korteweg-de Vries (KdV + viscosity)' },
   { value: 'boussinesq', label: 'Bidirectional Boussinesq (two-sided pool / plasma)' },
   { value: 'vector-coupled', label: 'Vector soliton (2-component coupled KdV / Manakov)' },
+  { value: 'oam-vortex', label: 'OAM vortex soliton (helical topological charge ℓ)' },
   { value: 'gardner-mkdv', label: 'Gardner / mKdV (quadratic + cubic nonlinearity)' },
   { value: 'sine-gordon', label: 'Sine-Gordon (topological kink / breather)' },
   { value: 'cfd-2d', label: '2D Real-time Navier-Stokes / Fluid CFD' }
@@ -41,6 +44,14 @@ export const SOLITON_EQUATION_DETAILS = Object.freeze({
     summary: 'Evolves a two-component vector wave field U = (u1, u2) with group-velocity mismatch Δc and cross-phase nonlinear coupling σ12.',
     poolUse: 'Represents coupled longitudinal/transverse channel modes that exchange energy or lock into polarized vector solitons.',
     plasmaUse: 'Models coupled two-polarization magnetosonic, Alfvén, or Langmuir/ion-acoustic envelope modes.'
+  },
+  'oam-vortex': {
+    id: 'oam-vortex',
+    label: 'OAM vortex soliton (helical topological charge ℓ)',
+    formula: 'i ∂t ψ + c0 ∂x ψ + β_ℓ ∂xx ψ - (ℓ² / 2 k0 r⊥²) ψ + α |ψ|² ψ = i νeff ∂xx ψ,  ψ ∝ (r⊥/w0)^|ℓ| e^(-r⊥²/w0²) e^(i ℓ φ)',
+    summary: 'Evolves Laguerre-Gaussian helical vortex solitary waves carrying quantized orbital angular momentum ℓ ∈ [-3, 3], an on-axis phase singularity, and a doughnut ring of radius r_peak = w0 √(|ℓ|/2).',
+    poolUse: 'Models hydrodynamic helical vortex-ring solitons and spinning barrel cores with quantized circulation Γ = 2π ℓ κ and azimuthal petal interference.',
+    plasmaUse: 'Models twisted Trivelpiece-Gould, helicon, and ion-acoustic OAM plasma vortex packets carrying axial angular momentum Lx = ℓ N.'
   },
   'gardner-mkdv': {
     id: 'gardner-mkdv',
@@ -289,6 +300,7 @@ export const DEFAULT_SOLITON_PULSES = Object.freeze([
     positionOffset: -4.2,
     polarity: 1,
     vectorAngleDeg: 22,
+    oamCharge: 1,
     sideOverride: 'auto'
   },
   {
@@ -298,6 +310,7 @@ export const DEFAULT_SOLITON_PULSES = Object.freeze([
     positionOffset: 4.2,
     polarity: 1,
     vectorAngleDeg: 68,
+    oamCharge: -1,
     sideOverride: 'auto'
   }
 ]);
@@ -318,6 +331,9 @@ export const DEFAULT_SOLITON_CONFIG = Object.freeze({
   vectorCoupling: 0.65,
   vectorGroupMismatch: 0.18,
   cubicNonlinearity: -0.35,
+  oamWaist: 2.2,
+  oamHelicalTwist: 1.0,
+  showOamPhaseOverlay: true,
   electronTempEv: 2.5,
   ionTempEv: 0.2,
   plasmaDensity1e16M3: 4.0,
@@ -372,6 +388,11 @@ export function normalizeSolitonPulse(pulse = {}, defaults = DEFAULT_SOLITON_PUL
     positionOffset: clamp(finiteOr(pulse.positionOffset, defaults.positionOffset), -7.5, 7.5),
     polarity,
     vectorAngleDeg: clamp(finiteOr(pulse.vectorAngleDeg, defaults.vectorAngleDeg), -90, 90),
+    oamCharge: clamp(
+      Math.round(finiteOr(pulse.oamCharge, defaults.oamCharge ?? 0)),
+      OAM_SOLITON_CHARGE_MIN,
+      OAM_SOLITON_CHARGE_MAX
+    ),
     sideOverride
   };
 }
@@ -417,6 +438,9 @@ export function normalizeSolitonConfig(input = {}, defaults = DEFAULT_SOLITON_CO
     vectorCoupling: clamp(finiteOr(input.vectorCoupling, defaults.vectorCoupling), -1.5, 1.5),
     vectorGroupMismatch: clamp(finiteOr(input.vectorGroupMismatch, defaults.vectorGroupMismatch), -0.8, 0.8),
     cubicNonlinearity: clamp(finiteOr(input.cubicNonlinearity, defaults.cubicNonlinearity), -2, 2),
+    oamWaist: clamp(finiteOr(input.oamWaist, defaults.oamWaist), 0.6, 5.0),
+    oamHelicalTwist: clamp(finiteOr(input.oamHelicalTwist, defaults.oamHelicalTwist), 0.1, 3.0),
+    showOamPhaseOverlay: Boolean(input.showOamPhaseOverlay ?? defaults.showOamPhaseOverlay),
     electronTempEv: clamp(finiteOr(input.electronTempEv, defaults.electronTempEv), 0.2, 25),
     ionTempEv: clamp(finiteOr(input.ionTempEv, defaults.ionTempEv), 0.02, 10),
     plasmaDensity1e16M3: clamp(finiteOr(input.plasmaDensity1e16M3, defaults.plasmaDensity1e16M3), 0.2, 50),
@@ -437,6 +461,36 @@ export function normalizeSolitonConfig(input = {}, defaults = DEFAULT_SOLITON_CO
     showCfdVelocityOverlay: Boolean(input.showCfdVelocityOverlay ?? defaults.showCfdVelocityOverlay),
     showHdlLdlOverlay: Boolean(input.showHdlLdlOverlay ?? defaults.showHdlLdlOverlay),
     solitons
+  };
+}
+
+export function evaluateOamSolitonTransverseProfile(rPerp, phi = 0, oamCharge = 1, waist = 2.2, axialPhase = 0) {
+  const charge = clamp(Math.round(finiteOr(oamCharge, 0)), OAM_SOLITON_CHARGE_MIN, OAM_SOLITON_CHARGE_MAX);
+  const absCharge = Math.abs(charge);
+  const w0 = Math.max(0.4, finiteOr(waist, 2.2));
+  const r = Math.max(0, finiteOr(rPerp, 0));
+  const peakRadius = absCharge === 0 ? 0 : w0 * Math.sqrt(absCharge / 2);
+  const radialEnvelope = absCharge === 0
+    ? Math.exp(-((r / w0) ** 2))
+    : r <= 1e-12
+      ? 0
+      : ((r / peakRadius) ** absCharge) * Math.exp(-((r * r - peakRadius * peakRadius) / (w0 * w0)));
+  const helicalPhase = charge * phi + axialPhase;
+  const wrappedPhase = Math.atan2(Math.sin(helicalPhase), Math.cos(helicalPhase));
+  const azimuthalCurrent = charge === 0
+    ? 0
+    : (charge / Math.max(0.25, r / w0)) * (radialEnvelope ** 2);
+  return {
+    oamCharge: charge,
+    absCharge,
+    waist: w0,
+    peakRadius,
+    radialEnvelope,
+    helicalPhase,
+    wrappedPhase,
+    realPart: radialEnvelope * Math.cos(helicalPhase),
+    imagPart: radialEnvelope * Math.sin(helicalPhase),
+    azimuthalCurrent
   };
 }
 
@@ -623,16 +677,26 @@ export function evaluateAnalyticSolitonProfile(x, pulse, direction, physics) {
   const sechSq = sech(xi) ** 2;
   const signedAmplitude = pulse.polarity * pulse.amplitude;
   const angleRad = (pulse.vectorAngleDeg * Math.PI) / 180;
+  const oamCharge = pulse.oamCharge ?? 0;
+  const oamTwistArg = oamCharge * 0.38 * xi * (physics.config.oamHelicalTwist ?? 1);
   const u1 = physics.config.equation === 'vector-coupled'
     ? signedAmplitude * Math.cos(angleRad) * sechSq
-    : signedAmplitude * sechSq;
+    : physics.config.equation === 'oam-vortex'
+      ? signedAmplitude * Math.cos(oamTwistArg) * sechSq
+      : signedAmplitude * sechSq;
   const u2 = physics.config.equation === 'vector-coupled'
     ? signedAmplitude * Math.sin(angleRad) * sechSq
-    : 0;
-  const speedBoost = 1 + 0.32 * Math.abs(signedAmplitude) * physics.config.nonlinearScale;
+    : physics.config.equation === 'oam-vortex'
+      ? signedAmplitude * Math.sin(oamTwistArg) * sechSq
+      : 0;
+  const oamCentrifugalBoost = physics.config.equation === 'oam-vortex'
+    ? 1 + 0.06 * (oamCharge ** 2) / Math.max(0.5, (physics.config.oamWaist ?? 2.2) ** 2)
+    : 1;
+  const speedBoost = (1 + 0.32 * Math.abs(signedAmplitude) * physics.config.nonlinearScale) * oamCentrifugalBoost;
   return {
     u1,
     u2,
+    oamCharge,
     velocity: direction * physics.normalizedWaveSpeed * speedBoost * u1
   };
 }
@@ -647,6 +711,7 @@ export function createSolitonSolverState(rawConfig = {}) {
   const u2 = new Float64Array(size);
   const v1 = new Float64Array(size);
   const v2 = new Float64Array(size);
+  const oamField = new Float64Array(size);
   const ldlFraction = new Float64Array(size);
   const baselineU1 = new Float64Array(size);
   const bathymetryM = new Float64Array(size);
@@ -676,9 +741,10 @@ export function createSolitonSolverState(rawConfig = {}) {
       const sample = evaluateAnalyticSolitonProfile(x[i], effectivePulse, effectiveDirection, physics);
       const shoalAmp = config.domain === 'wave-pool' ? Math.pow(depthRatio[i], -0.25) : 1;
       u1[i] += sample.u1 * shoalAmp;
-      u2[i] += sample.u2;
+      u2[i] += sample.u2 * shoalAmp;
       v1[i] += sample.velocity * Math.sqrt(depthRatio[i]);
       v2[i] += effectiveDirection * physics.normalizedWaveSpeed * sample.u2;
+      oamField[i] += Math.hypot(sample.u1, sample.u2) * shoalAmp * (effectivePulse.oamCharge ?? 0);
       if (physics.isHdlLdl) {
         const compressionShift = -0.18 * config.hdlLdlCoupling * sample.u1;
         ldlFraction[i] = clamp(ldlFraction[i] + compressionShift, 0.03, 0.97);
@@ -726,6 +792,7 @@ export function createSolitonSolverState(rawConfig = {}) {
     u2,
     v1,
     v2,
+    oamField,
     ldlFraction,
     baselineU1,
     bathymetryM,
@@ -762,12 +829,16 @@ export function triggerSolitonLauncherImpulse(state, rawConfig = {}, side = null
   const impulseScale = clamp(config.pneumaticPressureKPa / 45, 0.25, 2.2);
   const pulse0 = config.solitons[0] ?? DEFAULT_SOLITON_PULSES[0];
   const pulse1 = config.solitons[1] ?? DEFAULT_SOLITON_PULSES[1];
+  if (!state.oamField || state.oamField.length !== state.size) {
+    state.oamField = new Float64Array(state.size);
+  }
 
   const injectAtSide = (whichSide, pulse) => {
     const center = whichSide === 'left' ? -6.6 : 6.6;
     const direction = whichSide === 'left' ? 1 : -1;
     const width = Math.max(0.65, pulse.width);
     const angleRad = (pulse.vectorAngleDeg * Math.PI) / 180;
+    const oamCharge = pulse.oamCharge ?? 0;
     for (let i = 0; i < state.size; i += 1) {
       const xi = (state.x[i] - center) / width;
       const env = sech(xi) ** 2;
@@ -775,10 +846,15 @@ export function triggerSolitonLauncherImpulse(state, rawConfig = {}, side = null
       if (config.equation === 'vector-coupled') {
         state.u1[i] = clamp(state.u1[i] + amp * Math.cos(angleRad), -2.4, 2.4);
         state.u2[i] = clamp(state.u2[i] + amp * Math.sin(angleRad), -2.4, 2.4);
+      } else if (config.equation === 'oam-vortex') {
+        const twistArg = oamCharge * 0.38 * xi * (config.oamHelicalTwist ?? 1);
+        state.u1[i] = clamp(state.u1[i] + amp * Math.cos(twistArg), -2.4, 2.4);
+        state.u2[i] = clamp(state.u2[i] + amp * Math.sin(twistArg), -2.4, 2.4);
       } else {
         state.u1[i] = clamp(state.u1[i] + amp, -2.4, 2.4);
       }
       state.v1[i] = clamp(state.v1[i] + direction * physics.normalizedWaveSpeed * amp, -8, 8);
+      state.oamField[i] = clamp(state.oamField[i] + Math.abs(amp) * oamCharge, -8, 8);
       if (physics.isHdlLdl) {
         state.ldlFraction[i] = clamp(state.ldlFraction[i] - 0.16 * config.hdlLdlCoupling * amp, 0.03, 0.97);
       }
@@ -977,6 +1053,9 @@ export function stepSolitonSolver(state, rawConfig = {}, deltaSeconds = 1 / 60) 
     state.localDepthM = new Float64Array(size);
     state.depthRatio = new Float64Array(size);
   }
+  if (!state.oamField || state.oamField.length !== size) {
+    state.oamField = new Float64Array(size);
+  }
   for (let i = 0; i < size; i += 1) {
     const bathy = evaluateBathymetryAt(state.x[i], 0, config);
     state.bathymetryM[i] = bathy.elevationM;
@@ -996,10 +1075,11 @@ export function stepSolitonSolver(state, rawConfig = {}, deltaSeconds = 1 / 60) 
   const nextU1 = new Float64Array(size);
   const nextU2 = new Float64Array(size);
   const nextV1 = new Float64Array(size);
+  const nextOam = new Float64Array(size);
   const nextLdl = new Float64Array(size);
 
   for (let step = 0; step < substeps; step += 1) {
-    const { u1, u2, v1, ldlFraction, depthRatio } = state;
+    const { u1, u2, v1, oamField, ldlFraction, depthRatio } = state;
 
     for (let i = 0; i < size; i += 1) {
       const iM2 = indexWithBoundary(i - 2, size, boundary);
@@ -1045,6 +1125,34 @@ export function stepSolitonSolver(state, rawConfig = {}, deltaSeconds = 1 / 60) 
         nextU1[i] = u + dt * duDt - hyperFilter1;
         nextV1[i] = v1[i] + dt * dvDt;
         nextU2[i] = w * 0.98;
+      } else if (config.equation === 'oam-vortex') {
+        const dvdx = (v1[iP1] - v1[iM1]) / (2 * dx);
+        const d2vdx2 = (v1[iP1] - 2 * v1[i] + v1[iM1]) / (dx * dx);
+        const localMag = Math.max(0.15, Math.hypot(u, w));
+        const localCharge = clamp(oamField[i] / localMag, -3, 3);
+        const oamCentrifugal = 1 + 0.14 * (localCharge ** 2) / Math.max(0.5, config.oamWaist ** 2);
+        const twistFreq = 0.55 * localCharge * config.oamHelicalTwist;
+        const nonlinearFlux = 0.40 * config.nonlinearScale * localHdlFactor * (u * dvdx + v1[i] * du1dx);
+        const du1Dt = -dvdx * localCScale * oamCentrifugal
+          - nonlinearFlux
+          - twistFreq * w
+          + shoalingGrowth * u
+          + localNu * d2u1dx2
+          - damping * u;
+        const dvDt = -((baseC0 * localCScale * oamCentrifugal) ** 2) * du1dx
+          - 0.42 * baseC0 * localCScale * config.nonlinearScale * shoalingSteepScale * (u * du1dx + w * du2dx)
+          - baseC0 * localCScale * Math.abs(beta) * oamCentrifugal * rH * d3u1dx3
+          + localNu * d2vdx2
+          - damping * v1[i];
+        const du2Dt = -c0 * localCScale * du2dx
+          + twistFreq * u
+          - 0.35 * Math.abs(alpha) * localHdlFactor * (u * u + w * w) * du2dx
+          - beta * oamCentrifugal * rH * d3u2dx3
+          + localNu * d2u2dx2
+          - damping * w;
+        nextU1[i] = u + dt * du1Dt - hyperFilter1;
+        nextU2[i] = w + dt * du2Dt - hyperFilter2;
+        nextV1[i] = v1[i] + dt * dvDt;
       } else if (config.equation === 'vector-coupled') {
         const deltaC = config.vectorGroupMismatch * baseC0;
         const sigma = config.vectorCoupling;
@@ -1097,6 +1205,15 @@ export function stepSolitonSolver(state, rawConfig = {}, deltaSeconds = 1 / 60) 
       nextU2[i] = clamp(nextU2[i] * mask, -2.5, 2.5);
       nextV1[i] = clamp(nextV1[i] * mask, -8, 8);
 
+      const dOamDx = (oamField[iP1] - oamField[iM1]) / (2 * dx);
+      const d2OamDx2 = (oamField[iP1] - 2 * oamField[i] + oamField[iM1]) / (dx * dx);
+      const advectVel = Math.abs(u) > 0.05 ? clamp(v1[i] / u, -baseC0 * 1.6, baseC0 * 1.6) : 0;
+      nextOam[i] = clamp(
+        (oamField[i] + dt * (-advectVel * dOamDx + (localNu * 0.5 + 0.01) * d2OamDx2 - damping * oamField[i])) * mask,
+        -8,
+        8
+      );
+
       if (physics.isHdlLdl) {
         const d2LdlDx2 = (ldlFraction[iP1] - 2 * ldlFraction[i] + ldlFraction[iM1]) / (dx * dx);
         const compressionDrive = -0.22 * config.hdlLdlCoupling * nextU1[i]
@@ -1118,6 +1235,7 @@ export function stepSolitonSolver(state, rawConfig = {}, deltaSeconds = 1 / 60) 
     state.u1.set(nextU1);
     state.u2.set(nextU2);
     state.v1.set(nextV1);
+    state.oamField.set(nextOam);
     state.ldlFraction.set(nextLdl);
   }
 
@@ -1233,6 +1351,26 @@ export function computeSolitonTelemetry(state, rawConfig = {}) {
       ? 'Spilling crest'
       : 'Non-breaking solitary';
 
+  const activeOamCharges = config.solitons
+    .slice(0, config.solitonCount)
+    .map((pulse, index) => ({ index: index + 1, enabled: pulse.enabled, charge: pulse.oamCharge ?? 0 }))
+    .filter((item) => item.enabled);
+  const netOamCharge = activeOamCharges.reduce((sum, item) => sum + item.charge, 0);
+  const maxAbsOamCharge = activeOamCharges.reduce((maxVal, item) => Math.max(maxVal, Math.abs(item.charge)), 0);
+  const oamVortexRadiusU = maxAbsOamCharge > 0 ? config.oamWaist * Math.sqrt(maxAbsOamCharge / 2) : 0;
+  const oamPetalCount = activeOamCharges.length > 1
+    ? Math.abs(activeOamCharges[0].charge - activeOamCharges[1].charge)
+    : maxAbsOamCharge;
+  let oamAxialMomentum = 0;
+  if (state.oamField) {
+    for (let i = 0; i < size; i += 1) {
+      const localMag = Math.max(0.15, Math.hypot(u1[i], u2[i]));
+      const localCharge = clamp(state.oamField[i] / localMag, -3, 3);
+      oamAxialMomentum += (u1[i] * u1[i] + u2[i] * u2[i]) * localCharge * dx;
+    }
+  }
+  const weightedOamCharge = vectorNormEnergy > 1e-8 ? oamAxialMomentum / vectorNormEnergy : netOamCharge;
+
   return {
     domain: config.domain,
     equation: config.equation,
@@ -1276,7 +1414,13 @@ export function computeSolitonTelemetry(state, rawConfig = {}) {
     bathymetryProfile: config.bathymetryProfile,
     breakerIndexGamma: maxBreakerGamma,
     iribarrenNumber,
-    breakerRegime
+    breakerRegime,
+    activeOamCharges,
+    netOamCharge,
+    weightedOamCharge,
+    oamVortexRadiusU,
+    oamPetalCount,
+    oamAxialMomentum
   };
 }
 
@@ -1293,6 +1437,9 @@ export function sampleSolitonFieldAt(state, rawConfig, worldX, worldZ) {
   const u2 = state.u2[i0] * (1 - frac) + state.u2[i1] * frac;
   const v1 = state.v1[i0] * (1 - frac) + state.v1[i1] * frac;
   const ldl = state.ldlFraction[i0] * (1 - frac) + state.ldlFraction[i1] * frac;
+  const rawOam = state.oamField
+    ? state.oamField[i0] * (1 - frac) + state.oamField[i1] * frac
+    : 0;
   const depthRatio = state.depthRatio
     ? state.depthRatio[i0] * (1 - frac) + state.depthRatio[i1] * frac
     : 1;
@@ -1301,11 +1448,28 @@ export function sampleSolitonFieldAt(state, rawConfig, worldX, worldZ) {
   const iR = Math.min(size - 1, i0 + 1);
   const slope = (state.u1[iR] - state.u1[iL]) / (2 * state.dx);
 
+  const localAmp = Math.hypot(u1, u2);
+  const localOamCharge = localAmp > 0.08
+    ? clamp(Math.round(rawOam / localAmp), OAM_SOLITON_CHARGE_MIN, OAM_SOLITON_CHARGE_MAX)
+    : (config.solitons[0]?.oamCharge ?? 0);
+
   const channelEnvelope = Math.exp(-((worldZ / 7.2) ** 4));
+  const azimuthPhi = Math.atan2(worldZ, 0.45);
+  const axialPhase = config.oamHelicalTwist * worldX * 0.65 - state.time * 2.2 + Math.atan2(u2, u1 || 1e-6);
+  const oamTransverse = evaluateOamSolitonTransverseProfile(
+    Math.abs(worldZ),
+    azimuthPhi,
+    localOamCharge,
+    config.oamWaist,
+    axialPhase
+  );
+
   const transverseMode = config.equation === 'vector-coupled'
     ? Math.sin((worldZ / SOLITON_DOMAIN_SPAN) * Math.PI * 1.5) * 0.35
     : 0;
-  const height = (u1 + u2 * transverseMode) * channelEnvelope;
+  const height = config.equation === 'oam-vortex'
+    ? localAmp * oamTransverse.radialEnvelope * Math.cos(oamTransverse.helicalPhase) * channelEnvelope
+    : (u1 + u2 * transverseMode) * channelEnvelope;
 
   return {
     height,
@@ -1316,7 +1480,13 @@ export function sampleSolitonFieldAt(state, rawConfig, worldX, worldZ) {
     depthRatio,
     ldlFraction: ldl,
     hdlFraction: 1 - ldl,
-    vectorAngle: Math.atan2(u2, u1 || 1e-6)
+    vectorAngle: config.equation === 'oam-vortex'
+      ? oamTransverse.wrappedPhase
+      : Math.atan2(u2, u1 || 1e-6),
+    localOamCharge,
+    oamPhase: oamTransverse.wrappedPhase,
+    oamRingEnvelope: oamTransverse.radialEnvelope,
+    oamAzimuthalCurrent: oamTransverse.azimuthalCurrent * localAmp * localAmp
   };
 }
 
@@ -1408,6 +1578,17 @@ export const SOLITON_VALIDATION_CHECK_FIGURES = Object.freeze([
     tolerance: 1e-12,
     citation: 'Chorin, Math. Comp. 22, 745 (1968); Manakov, Sov. Phys. JETP 38, 248 (1974).',
     description: 'Coupled vector solitons decouple identically when cross-coupling σ12 = 0, and the 64×16 Jacobi pressure-Poisson projection bounds 2D CFD velocity divergence.'
+  },
+  {
+    id: 'laguerre-gauss-oam-vortex-soliton',
+    title: 'Allen et al. (1992) / Swartzlander (1992) OAM Vortex Soliton Ring & Winding',
+    domain: 'both',
+    equation: 'r_peak / w0 = √(|ℓ| / 2),  (1 / 2π) ∮ ∇φ Θ_ℓ dφ = ℓ,  R_|ℓ|(0) = 0',
+    unit: 'ℓ_winding',
+    referenceValue: 2.0,
+    tolerance: 1e-9,
+    citation: 'Allen et al., Phys. Rev. A 45, 8185 (1992); Swartzlander & Law, PRL 69, 2503 (1992); Mendonça et al., PoP 16, 112103 (2009).',
+    description: 'For an ℓ = +2 Laguerre-Gaussian OAM vortex soliton, the on-axis core amplitude vanishes (R_2(0) = 0), the ring peaks at r_peak / w0 = √(2/2) = 1.0000, and the azimuthal phase winding is exactly 2π ℓ (ℓ = +2).'
   }
 ]);
 
@@ -1554,6 +1735,26 @@ export function evaluateSolitonCheckFigures(rawConfig = {}, liveState = null) {
   }
   const err8 = maxDecoupleDiff;
 
+  // 9. Allen et al. (1992) / Swartzlander (1992) Laguerre-Gaussian OAM vortex soliton check
+  const oamTestCharge = 2;
+  const oamTestWaist = 2.2;
+  const oamCoreSample = evaluateOamSolitonTransverseProfile(0, 0, oamTestCharge, oamTestWaist, 0);
+  const oamPeakRadiusExpected = oamTestWaist * Math.sqrt(Math.abs(oamTestCharge) / 2);
+  const oamPeakSample = evaluateOamSolitonTransverseProfile(oamPeakRadiusExpected, 0, oamTestCharge, oamTestWaist, 0);
+  const oamSteps = 64;
+  let totalWindingRad = 0;
+  for (let s = 0; s < oamSteps; s += 1) {
+    const phi0 = -Math.PI + (s / oamSteps) * (2 * Math.PI);
+    const phi1 = -Math.PI + ((s + 1) / oamSteps) * (2 * Math.PI);
+    const p0 = evaluateOamSolitonTransverseProfile(oamPeakRadiusExpected, phi0, oamTestCharge, oamTestWaist, 0);
+    const p1 = evaluateOamSolitonTransverseProfile(oamPeakRadiusExpected, phi1, oamTestCharge, oamTestWaist, 0);
+    totalWindingRad += Math.atan2(Math.sin(p1.wrappedPhase - p0.wrappedPhase), Math.cos(p1.wrappedPhase - p0.wrappedPhase));
+  }
+  const oamWindingNumberModel = totalWindingRad / (2 * Math.PI);
+  const err9 = Math.abs(oamWindingNumberModel - oamTestCharge)
+    + Math.abs(oamCoreSample.radialEnvelope)
+    + Math.abs(oamPeakSample.radialEnvelope - 1);
+
   const modelValuesById = {
     'russell-kdv-celerity': {
       modelValue: cKdVModel,
@@ -1594,6 +1795,11 @@ export function evaluateSolitonCheckFigures(rawConfig = {}, liveState = null) {
       modelValue: maxDecoupleDiff,
       error: err8,
       liveNote: `Active 2D CFD (${activeTelemetry.cfdGridLabel}) max |∇·u| = ${activeTelemetry.cfdMaxDivergence.toFixed(3)}`
+    },
+    'laguerre-gauss-oam-vortex-soliton': {
+      modelValue: oamWindingNumberModel,
+      error: err9,
+      liveNote: `Active OAM ℓ_net = ${activeTelemetry.netOamCharge ?? 0}, r_peak = ${(activeTelemetry.oamVortexRadiusU ?? 0).toFixed(2)} u, R(0) = ${oamCoreSample.radialEnvelope.toFixed(4)}`
     }
   };
 

@@ -5,6 +5,7 @@ import {
   DEFAULT_SOLITON_CONFIG,
   deriveSolitonPhysicsParameters,
   evaluateBathymetryAt,
+  evaluateOamSolitonTransverseProfile,
   evaluateSolitonCheckFigures,
   evaluateTubularCrestAt,
   getSolitonEquationDetails,
@@ -271,11 +272,46 @@ test('floor bathymetry shoaling and tubular wave curl tool compute reef depth, b
   assert.ok(state.telemetry.minLocalDepthM < state.telemetry.poolDepthM);
 });
 
-test('researched validation check figures pass across Russell/KdV, Su-Mirie, Keulegan, Washimi-Taniuti, Green/McCowan, HDL+LDL, and Chorin/Manakov benchmarks', () => {
-  assert.equal(SOLITON_VALIDATION_CHECK_FIGURES.length, 8);
+test('OAM vortex soliton mode evolves helical topological charges, doughnut ring radius, and azimuthal petal count', () => {
+  const coreSample = evaluateOamSolitonTransverseProfile(0, 0, 2, 2.2, 0);
+  const peakRadius = 2.2 * Math.sqrt(2 / 2);
+  const peakSample = evaluateOamSolitonTransverseProfile(peakRadius, Math.PI / 4, 2, 2.2, 0);
+  assert.equal(coreSample.radialEnvelope, 0);
+  assert.ok(Math.abs(peakSample.radialEnvelope - 1) < 1e-12);
+  assert.ok(Math.abs(peakSample.peakRadius - 2.2) < 1e-12);
+
+  const oamConfig = normalizeSolitonConfig({
+    ...DEFAULT_SOLITON_CONFIG,
+    enabled: true,
+    domain: 'wave-pool',
+    equation: 'oam-vortex',
+    emissionSide: 'both',
+    solitonCount: 2,
+    oamWaist: 2.2,
+    oamHelicalTwist: 1.15,
+    solitons: [
+      { enabled: true, amplitude: 0.78, width: 1.35, positionOffset: -4.2, polarity: 1, vectorAngleDeg: 22, oamCharge: 2, sideOverride: 'left' },
+      { enabled: true, amplitude: 0.56, width: 1.55, positionOffset: 4.2, polarity: 1, vectorAngleDeg: 68, oamCharge: -1, sideOverride: 'right' }
+    ]
+  });
+  const state = createSolitonSolverState(oamConfig);
+  assert.equal(state.telemetry.netOamCharge, 1);
+  assert.equal(state.telemetry.oamPetalCount, 3);
+  assert.ok(Math.abs(state.telemetry.oamVortexRadiusU - 2.2) < 1e-9);
+
+  for (let step = 0; step < 20; step += 1) {
+    stepSolitonSolver(state, oamConfig, 1 / 60);
+  }
+  const offAxisSample = sampleSolitonFieldAt(state, oamConfig, -2.5, 2.2);
+  assert.ok(offAxisSample.oamRingEnvelope > 0.5);
+  assert.ok(Number.isFinite(offAxisSample.oamPhase));
+});
+
+test('researched validation check figures pass across Russell/KdV, Su-Mirie, Keulegan, Washimi-Taniuti, Green/McCowan, HDL+LDL, Chorin/Manakov, and OAM vortex benchmarks', () => {
+  assert.equal(SOLITON_VALIDATION_CHECK_FIGURES.length, 9);
   const report = evaluateSolitonCheckFigures(DEFAULT_SOLITON_CONFIG);
-  assert.equal(report.totalCount, 8);
-  assert.equal(report.passedCount, 8);
+  assert.equal(report.totalCount, 9);
+  assert.equal(report.passedCount, 9);
   assert.equal(report.allPassed, true);
   report.results.forEach((result) => {
     assert.equal(result.passed, true, `check figure ${result.id} failed: model=${result.modelValue}, ref=${result.referenceValue}, err=${result.error}, tol=${result.tolerance}`);
