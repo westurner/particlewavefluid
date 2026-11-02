@@ -1659,7 +1659,7 @@ function AttractorWorld({ configuration, onAttractorChange, onGpuError, playing,
 }
 
 function RangeControl({ label, value, min, max, step, onChange, disabled = false, editing = false, isDefault = true, onReset, description }) {
-  return <NumericParamControl className="attractor-control" label={label} value={value} min={min} max={max} step={step} editing={editing} isDefault={isDefault} onReset={onReset} onChange={onChange} description={description} showDescription={Boolean(description)} />;
+  return <NumericParamControl className="attractor-control" label={label} value={value} min={min} max={max} step={step} editing={editing} isDefault={isDefault} onReset={onReset} onChange={onChange} description={description} />;
 }
 
 function ColorControl({ label, value, onChange }) {

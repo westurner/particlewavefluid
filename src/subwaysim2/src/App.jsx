@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { getHomeUrl, getSimulationRoute, getSimulationUrl } from './lib/app-routing.js';
+import { ParameterDescriptionsProvider } from './lib/parameterDescriptions.jsx';
 
 const WaveInterferenceSim = lazy(() => import('./WaveInterferenceSim.jsx'));
 const LongitudinalLaserArraySim = lazy(() => import('./LongitudinalLaserArraySim.jsx'));
@@ -234,7 +235,7 @@ function SimulationLoader() {
   if (selectedSimulation === 'halbachlinearmotor') simulation = <HalbachLinearMotorSim onBack={onBack} />;
   if (selectedSimulation === 'quantumcircuitsim') simulation = <QuantumCircuitSim onBack={onBack} />;
   if (selectedSimulation === 'twistorspinortrainer') simulation = <TwistorSpinorTrainer onBack={onBack} />;
-  if (simulation) return <Suspense fallback={<LoadingScreen />}>{simulation}</Suspense>;
+  if (simulation) return <ParameterDescriptionsProvider simulationId={selectedSimulation}><Suspense fallback={<LoadingScreen />}>{simulation}</Suspense></ParameterDescriptionsProvider>;
 
   return (
     <main className="sqg-loader">

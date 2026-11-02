@@ -42,7 +42,7 @@ const GRID_SHAPE_OPTIONS = [
 const TORUS_MAJOR_RADIUS = 1.55;
 const TORUS_TUBE_RADIUS = 0.6;
 const PARTICLE_SHAPE_IDS = { native: 0, circle: 1, square: 2, sphere: 3, vector: 4 };
-const VECTOR_DERIVATIVE_DESCRIPTION = 'For Vector shape, order 0 shows local current where available; orders 1-4 use periodic derivatives of the active scalar field to set arrow direction.';
+const VECTOR_DERIVATIVE_DESCRIPTION = 'Order used to estimate vector direction: 0 uses local current when available; 1-4 use periodic derivatives of the active scalar field.';
 
 const PARTICLE_VERTEX_SHADER = `
   uniform float uParticleSize;
@@ -561,7 +561,7 @@ function QuantumScene({ viewMode, orbitPlaying, orbitSettings, particleAppearanc
 }
 
 function Slider({ label, value, min, max, step, onChange, path, description }) {
-  return <NumericParamControl className="quantum-range" label={label} value={value} min={min} max={max} step={step} onChange={onChange} path={path} description={description} showDescription={Boolean(description)} />;
+  return <NumericParamControl className="quantum-range" label={label} value={value} min={min} max={max} step={step} onChange={onChange} path={path} description={description} />;
 }
 
 export default function QuantumFluidSim({ onBack }) {
@@ -635,12 +635,12 @@ export default function QuantumFluidSim({ onBack }) {
           {settings.preset === 'vortex' && <>
             <ParamSelect className="quantum-select" label="Vortex charge" path="vortexCharge" value={settings.vortexCharge} options={VORTEX_CHARGE_OPTIONS} onChange={(vortexCharge) => update({ vortexCharge })} />
             <small className="parameter-description">Integer phase winding around the core; sign sets circulation direction and magnitude sets winding order.</small>
-            <Slider label="Vortex core radius" value={settings.vortexCoreRadius} min={0.1} max={3} step={0.05} path="vortexCoreRadius" onChange={(vortexCoreRadius) => update({ vortexCoreRadius })} description="Sets the radial scale over which density recovers from zero at the vortex core." />
-            <Slider label="Vortex center X" value={settings.vortexCenterX} min={-3} max={3} step={0.1} path="vortexCenterX" onChange={(vortexCenterX) => update({ vortexCenterX })} description="Offsets the vortex center horizontally from the grid center, in domain units." />
-            <Slider label="Vortex center Y" value={settings.vortexCenterY} min={-3} max={3} step={0.1} path="vortexCenterY" onChange={(vortexCenterY) => update({ vortexCenterY })} description="Offsets the vortex center vertically from the grid center, in domain units." />
+            <Slider label="Vortex core radius" value={settings.vortexCoreRadius} min={0.1} max={3} step={0.05} path="vortexCoreRadius" onChange={(vortexCoreRadius) => update({ vortexCoreRadius })} description="Radial distance over which density rises from zero at the vortex core." />
+            <Slider label="Vortex center X" value={settings.vortexCenterX} min={-3} max={3} step={0.1} path="vortexCenterX" onChange={(vortexCenterX) => update({ vortexCenterX })} description="Horizontal displacement of the vortex center from the grid center, in domain units." />
+            <Slider label="Vortex center Y" value={settings.vortexCenterY} min={-3} max={3} step={0.1} path="vortexCenterY" onChange={(vortexCenterY) => update({ vortexCenterY })} description="Vertical displacement of the vortex center from the grid center, in domain units." />
           </>}
-          <Slider label="Interaction g" value={settings.interaction} min={0} max={3} step={0.05} onChange={(interaction) => update({ interaction })} description="Nonlinear self-interaction strength; higher values make dense regions accumulate phase faster." />
-          <Slider label="Harmonic potential" value={settings.potentialStrength} min={0} max={0.2} step={0.005} onChange={(potentialStrength) => update({ potentialStrength })} description="Trap strength for the potential V(r) = 1/2 k r², centered on the grid origin." />
+          <Slider label="Interaction g" value={settings.interaction} min={0} max={3} step={0.05} onChange={(interaction) => update({ interaction })} description="Nonlinear self-interaction coefficient; larger values increase phase accumulation in dense regions." />
+          <Slider label="Harmonic potential" value={settings.potentialStrength} min={0} max={0.2} step={0.005} onChange={(potentialStrength) => update({ potentialStrength })} description="Harmonic trap coefficient k in V(r) = 1/2 k r², centered on the grid origin." />
         </details>
         <ParamSelect className="quantum-select" label="View" value={settings.view} options={VIEW_OPTIONS} onChange={(view) => update({ view })} />
         <ParamSelect className="quantum-select" label="GPE field" value={settings.field} options={FIELD_OPTIONS} onChange={(field) => update({ field })} />

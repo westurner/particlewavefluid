@@ -1,6 +1,8 @@
 import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { changedPathsBetween, getAtPath, parseNumericValue, resetStatePaths, setAtPath } from "./simulation-state.js";
+import { resolveParameterDescription } from "./parameter-schema-description.js";
+import { useParameterSchema } from "./parameterDescriptions.jsx";
 import ConfirmButton from "./ConfirmButton.jsx";
 
 function formatNumber(value, step) {
@@ -42,17 +44,28 @@ export function ParameterGroup({ title, paths = [], children, className = 'param
 }
 
 export function SimulatorParameterControls({ title, configuration, fields, onChange, className = 'parameter-group', open, defaultOpen }) {
+  const schema = useParameterSchema();
   const paths = fields.map(({ path }) => path);
   const update = (path, nextValue) => onChange(setAtPath(configuration, path, nextValue), path);
   return <ParameterGroup title={title} paths={paths} className={className} open={open} defaultOpen={defaultOpen}>
     {fields.map((descriptor) => {
       const { key: descriptorKey, ...field } = descriptor;
       const componentKey = field.path ?? descriptorKey;
+      const description = field.description ?? resolveParameterDescription(schema, {
+        path: field.path,
+        label: field.label,
+        type: field.type === 'toggle' ? 'boolean' : undefined,
+        options: field.options,
+        min: field.min,
+        max: field.max,
+        step: field.step
+      });
+      const describedField = { ...field, description, showDescription: field.showDescription ?? Boolean(description) };
       const value = getAtPath(configuration, field.path) ?? field.defaultValue ?? (field.type === 'toggle' ? field.checked : field.value);
-      if (field.type === 'select') return <ParamSelect key={componentKey} {...field} value={value} disabled={field.disabled} onChange={(nextValue) => update(field.path, nextValue)} />;
-      if (field.type === 'color') return <ColorParamControl key={componentKey} {...field} value={value} onChange={(nextValue) => update(field.path, nextValue)} />;
-      if (field.type === 'toggle') return <BooleanParamControl key={componentKey} {...field} checked={Boolean(value)} onChange={(nextValue) => update(field.path, nextValue)} />;
-      return <NumericParamControl key={componentKey} {...field} value={value} disabled={field.disabled} onChange={(nextValue) => update(field.path, nextValue)} />;
+      if (field.type === 'select') return <ParamSelect key={componentKey} {...describedField} value={value} disabled={field.disabled} onChange={(nextValue) => update(field.path, nextValue)} />;
+      if (field.type === 'color') return <ColorParamControl key={componentKey} {...describedField} value={value} onChange={(nextValue) => update(field.path, nextValue)} />;
+      if (field.type === 'toggle') return <BooleanParamControl key={componentKey} {...describedField} checked={Boolean(value)} onChange={(nextValue) => update(field.path, nextValue)} />;
+      return <NumericParamControl key={componentKey} {...describedField} value={value} disabled={field.disabled} onChange={(nextValue) => update(field.path, nextValue)} />;
     })}
   </ParameterGroup>;
 }
@@ -85,7 +98,7 @@ export function YamlTextArea({ label, value }) {
   return <label className="param-yaml-textarea"><span>{label}</span><textarea readOnly value={value} aria-label={label} /></label>;
 }
 
-export function ParamSelect({ label, value, options, onChange, className = "", ariaLabel = label, path, isDefault: suppliedIsDefault = true, onReset, disabled = false }) {
+export function ParamSelect({ label, value, options, onChange, className = "", ariaLabel = label, path, isDefault: suppliedIsDefault = true, onReset, disabled = false, description, showDescription }) {
   const [open, setOpen] = useState(false);
   const [menuStyle, setMenuStyle] = useState({});
   const rootRef = useRef(null);
@@ -97,6 +110,9 @@ export function ParamSelect({ label, value, options, onChange, className = "", a
   const selectedIndex = Math.max(0, normalizedOptions.findIndex((option) => option.value === value));
   const [activeIndex, setActiveIndex] = useState(selectedIndex);
   const preset = useContext(PresetParametersContext);
+  const schema = useParameterSchema();
+  const resolvedDescription = description ?? resolveParameterDescription(schema, { path, label, options });
+  const resolvedShowDescription = showDescription ?? Boolean(resolvedDescription);
   const { isDefault, reset: resetField } = usePresetParameter(path, suppliedIsDefault, onReset);
 
   useLayoutEffect(() => {
@@ -181,6 +197,7 @@ export function ParamSelect({ label, value, options, onChange, className = "", a
     {open && createPortal(<div ref={menuRef} id={listboxId} className="param-select-menu" role="listbox" style={menuStyle} aria-label={ariaLabel}>
       {normalizedOptions.map((option, index) => <button key={option.value} id={`${listboxId}-option-${index}`} type="button" role="option" aria-selected={index === selectedIndex} aria-posinset={index + 1} aria-setsize={normalizedOptions.length} data-active={index === activeIndex} data-value={option.value} className="param-select-option" onPointerMove={() => setActiveIndex(index)} onClick={() => selectOption(index)}>{option.label}</button>)}
     </div>, document.body)}
+    {resolvedShowDescription && resolvedDescription && <small className="parameter-description">{resolvedDescription}</small>}
   </div>;
 }
 
@@ -189,6 +206,9 @@ export function NumericParamControl({ label, value, min, max, step, onChange, su
   const rangeId = useId();
   const scopedEditing = useContext(ParamEditingContext);
   const preset = useContext(PresetParametersContext);
+  const schema = useParameterSchema();
+  const resolvedDescription = description ?? resolveParameterDescription(schema, { path, label, type: 'number', min, max, step });
+  const resolvedShowDescription = showDescription ?? Boolean(resolvedDescription);
   const { isDefault, reset: resetField } = usePresetParameter(path, suppliedIsDefault, onReset);
   const editingEnabled = editing || scopedEditing;
   const focusValueRef = useRef(value);
@@ -212,13 +232,16 @@ export function NumericParamControl({ label, value, min, max, step, onChange, su
       event.currentTarget.blur();
     }
   };
-  return <div className={`param-control${path && !isDefault ? ' has-preset-change' : ''} ${className}`}><span className="param-control-label"><span><label htmlFor={rangeId}>{label}</label></span><strong>{formatNumber(value, step)}{suffix}</strong><PresetFieldStatus path={path} label={label} isDefault={isDefault} onReset={resetField} /></span><input id={rangeId} aria-label={label} type="range" min={min} max={max} step={step} value={value} disabled={disabled} onChange={(event) => { if (path && preset?.setValue) preset.setValue(path, Number(event.target.value)); else onChange(Number(event.target.value)); }} />{editingEnabled && <input className="param-text-input" type="text" inputMode="decimal" value={draft} disabled={disabled} onFocus={() => { focusValueRef.current = value; }} onChange={(event) => setDraft(event.target.value)} onBlur={commitDraft} onKeyDown={handleKeyDown} aria-label={label + " value"} />}{showDescription && description && <small className="parameter-description">{description}</small>}</div>;
+  return <div className={`param-control${path && !isDefault ? ' has-preset-change' : ''} ${className}`}><span className="param-control-label"><span><label htmlFor={rangeId}>{label}</label></span><strong>{formatNumber(value, step)}{suffix}</strong><PresetFieldStatus path={path} label={label} isDefault={isDefault} onReset={resetField} /></span><input id={rangeId} aria-label={label} type="range" min={min} max={max} step={step} value={value} disabled={disabled} onChange={(event) => { if (path && preset?.setValue) preset.setValue(path, Number(event.target.value)); else onChange(Number(event.target.value)); }} />{editingEnabled && <input className="param-text-input" type="text" inputMode="decimal" value={draft} disabled={disabled} onFocus={() => { focusValueRef.current = value; }} onChange={(event) => setDraft(event.target.value)} onBlur={commitDraft} onKeyDown={handleKeyDown} aria-label={label + " value"} />}{resolvedShowDescription && resolvedDescription && <small className="parameter-description">{resolvedDescription}</small>}</div>;
 }
 
-export function ColorParamControl({ label, value, onChange, editing = false, isDefault: suppliedIsDefault = true, onReset, path }) {
+export function ColorParamControl({ label, value, onChange, editing = false, isDefault: suppliedIsDefault = true, onReset, path, description, showDescription }) {
   const [draft, setDraft] = useState(value);
   const colorId = useId();
   const preset = useContext(PresetParametersContext);
+  const schema = useParameterSchema();
+  const resolvedDescription = description ?? resolveParameterDescription(schema, { path, label, type: 'string' });
+  const resolvedShowDescription = showDescription ?? Boolean(resolvedDescription);
   const { isDefault, reset: resetField } = usePresetParameter(path, suppliedIsDefault, onReset);
   const focusValueRef = useRef(value);
   useEffect(() => setDraft(value), [value]);
@@ -229,11 +252,14 @@ export function ColorParamControl({ label, value, onChange, editing = false, isD
     }
     else setDraft(value);
   };
-  return <div className={`param-color-control${path && !isDefault ? ' has-preset-change' : ''}`}><span><label htmlFor={colorId}>{label}</label><PresetFieldStatus path={path} label={label} isDefault={isDefault} onReset={resetField} /></span><div><input id={colorId} type="color" aria-label={label} value={value} onChange={(event) => { if (path && preset?.setValue) preset.setValue(path, event.target.value); else onChange(event.target.value); }} /><input className="param-text-input" type={editing ? "text" : "hidden"} value={draft} onFocus={() => { focusValueRef.current = value; }} onChange={(event) => setDraft(event.target.value)} onBlur={commit} onKeyDown={(event) => { if (event.key === "Escape") { setDraft(focusValueRef.current); event.currentTarget.blur(); } if (event.key === "Enter") { commit(); event.currentTarget.blur(); } }} aria-label={label + " hex"} maxLength={7} spellCheck="false" /></div></div>;
+  return <div className={`param-color-control${path && !isDefault ? ' has-preset-change' : ''}`}><span><label htmlFor={colorId}>{label}</label><PresetFieldStatus path={path} label={label} isDefault={isDefault} onReset={resetField} /></span><div><input id={colorId} type="color" aria-label={label} value={value} onChange={(event) => { if (path && preset?.setValue) preset.setValue(path, event.target.value); else onChange(event.target.value); }} /><input className="param-text-input" type={editing ? "text" : "hidden"} value={draft} onFocus={() => { focusValueRef.current = value; }} onChange={(event) => setDraft(event.target.value)} onBlur={commit} onKeyDown={(event) => { if (event.key === "Escape") { setDraft(focusValueRef.current); event.currentTarget.blur(); } if (event.key === "Enter") { commit(); event.currentTarget.blur(); } }} aria-label={label + " hex"} maxLength={7} spellCheck="false" /></div>{resolvedShowDescription && resolvedDescription && <small className="parameter-description">{resolvedDescription}</small>}</div>;
 }
 
-export function BooleanParamControl({ label, checked, onChange, path, className = 'parameter-toggle', onReset }) {
+export function BooleanParamControl({ label, checked, onChange, path, className = 'parameter-toggle', onReset, description, showDescription }) {
   const preset = useContext(PresetParametersContext);
+  const schema = useParameterSchema();
+  const resolvedDescription = description ?? resolveParameterDescription(schema, { path, label, type: 'boolean' });
+  const resolvedShowDescription = showDescription ?? Boolean(resolvedDescription);
   const { isDefault, reset: resetField } = usePresetParameter(path, true, onReset);
-  return <div className={`parameter-toggle-control${path && !isDefault ? ' has-preset-change' : ''}`}><label className={className}><input type="checkbox" aria-label={label} checked={checked} onChange={(event) => { if (path && preset?.setValue) preset.setValue(path, event.target.checked); else onChange(event.target.checked); }} /><span>{label}</span></label><PresetFieldStatus path={path} label={label} isDefault={isDefault} onReset={resetField} /></div>;
+  return <div className={`parameter-toggle-control${path && !isDefault ? ' has-preset-change' : ''}`}><label className={className}><input type="checkbox" aria-label={label} checked={checked} onChange={(event) => { if (path && preset?.setValue) preset.setValue(path, event.target.checked); else onChange(event.target.checked); }} /><span>{label}</span></label><PresetFieldStatus path={path} label={label} isDefault={isDefault} onReset={resetField} />{resolvedShowDescription && resolvedDescription && <small className="parameter-description">{resolvedDescription}</small>}</div>;
 }

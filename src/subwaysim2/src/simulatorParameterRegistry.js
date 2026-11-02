@@ -5,7 +5,7 @@ import {
   generateJsonSchema,
   SUBWAY_SIMULATOR_PARAMETER_META
 } from './simulatorParameterSchema.js';
-import { DEFAULT_FIELD_MECHANICS, FIELD_MODEL_OPTIONS } from './mechanicsModels.js';
+import { DEFAULT_FIELD_MECHANICS, FIELD_MECHANICS_PARAMETER_FIELDS, FIELD_MODEL_OPTIONS } from './mechanicsModels.js';
 import { FTLE_FLOW_PRESETS } from './ftleModel.js';
 import { QUANTUM_FLUID_PRESETS } from './quantumFluidModel.js';
 import { THERMAL_FLUID_OPTIONS } from './thermalLoopModel.js';
@@ -50,6 +50,9 @@ import { COLOR_PALETTES } from './lib/color-palettes.js';
 import { HISTORIC_MISSIONS, PLANET_DIAMETER_MODES, SOLAR_SYSTEM_ATTRACTOR_MODELS } from './solarSystemModel.js';
 
 const COMMON_3D_DEFAULTS = createParameterDefaults(COMMON_SIMULATOR_PARAMETER_META);
+const FIELD_MECHANICS_DESCRIPTIONS = Object.fromEntries(Object.entries(FIELD_MECHANICS_PARAMETER_FIELDS)
+  .filter(([, field]) => field.description)
+  .map(([key, field]) => [`fieldMechanics.${key}`, field.description]));
 const SPACE_TIE_RANGES = {};
 const SPACE_TIE_ENUMS = {};
 for (const widget of SPACE_TIE_WIDGETS) {
@@ -146,6 +149,7 @@ function createAttractorProfile(variant) {
   };
   return profile(defaults, {
     common3d: true,
+    descriptions: FIELD_MECHANICS_DESCRIPTIONS,
     ranges: {
       attractorMassExponent: [1, 10, 1],
       particleGlobalMassExponent: [1, 10, 1],
@@ -565,7 +569,7 @@ function createAmplitudeGravityProfile() {
   });
 }
 
-function profile(defaults, { ranges = {}, enums = {}, integers = [], arrayBounds = {}, arrayItems = {}, nullable = [], common3d = false } = {}) {
+function profile(defaults, { ranges = {}, enums = {}, integers = [], arrayBounds = {}, arrayItems = {}, nullable = [], descriptions = {}, common3d = false } = {}) {
   const resolvedDefaults = common3d
     ? {
       ...COMMON_3D_DEFAULTS,
@@ -576,16 +580,17 @@ function profile(defaults, { ranges = {}, enums = {}, integers = [], arrayBounds
       }
     }
     : defaults;
-  const meta = createParameterMetaFromDefaults(resolvedDefaults, { ranges, enums, integers, arrayBounds, arrayItems, nullable });
+  const meta = createParameterMetaFromDefaults(resolvedDefaults, { ranges, enums, integers, arrayBounds, arrayItems, nullable, descriptions });
   if (common3d) {
     for (const [key, definition] of Object.entries(COMMON_SIMULATOR_PARAMETER_META)) {
       if (definition.type !== 'object') {
-        meta[key] = { ...definition, default: resolvedDefaults[key] };
+        meta[key] = { ...definition, default: resolvedDefaults[key], ...(descriptions[key] ? { description: descriptions[key] } : {}) };
         continue;
       }
       const properties = { ...meta[key].properties };
       for (const [propertyKey, propertyDefinition] of Object.entries(definition.properties)) {
-        properties[propertyKey] = { ...propertyDefinition, default: resolvedDefaults[key][propertyKey] };
+        const path = `${key}.${propertyKey}`;
+        properties[propertyKey] = { ...propertyDefinition, default: resolvedDefaults[key][propertyKey], ...(descriptions[path] ? { description: descriptions[path] } : {}) };
       }
       meta[key] = { ...meta[key], properties };
     }
@@ -698,6 +703,15 @@ export const SIMULATOR_PARAMETER_PROFILES = Object.freeze({
     fieldMechanics: { ...DEFAULT_FIELD_MECHANICS, enabled: true, model: 'sqg', comparisonModel: 'ddf' }
   }, {
     common3d: true,
+    descriptions: {
+      ...FIELD_MECHANICS_DESCRIPTIONS,
+      vortexCoreRadius: 'Radial distance over which density rises from zero at the vortex core.',
+      vortexCenterX: 'Horizontal displacement of the vortex center from the grid center, in domain units.',
+      vortexCenterY: 'Vertical displacement of the vortex center from the grid center, in domain units.',
+      interaction: 'Nonlinear self-interaction coefficient; larger values increase phase accumulation in dense regions.',
+      potentialStrength: 'Harmonic trap coefficient k in V(r) = 1/2 k r², centered on the grid origin.',
+      'particleAppearance.derivativeOrder': 'Order used to estimate vector direction: 0 uses local current when available; 1-4 use periodic derivatives of the active scalar field.'
+    },
     ranges: {
       torusMajorRadius: [0.75, 4, 0.05],
       torusTubeRadius: [0.1, 1.5, 0.05],

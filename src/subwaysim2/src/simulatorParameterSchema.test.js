@@ -112,6 +112,35 @@ test('parameter registry covers every simulator route and preserves special sche
   assert.equal(SIMULATOR_PARAMETER_PROFILES.quantumfluidsim.meta.stepSize.minimum, undefined);
 });
 
+test('every simulator schema property has a title and description', () => {
+  const assertDescribed = (definition, path) => {
+    assert.ok(typeof definition.title === 'string' && definition.title.length > 0, `${path} needs a title`);
+    assert.ok(typeof definition.description === 'string' && definition.description.length > 0, `${path} needs a description`);
+    assert.doesNotMatch(definition.description, /^(Sets|Enables or disables|Selects|Groups|Lists)\b/, `${path} should describe the parameter, not issue an instruction`);
+    if (definition.type === 'object') {
+      for (const [key, nested] of Object.entries(definition.properties)) assertDescribed(nested, `${path}.${key}`);
+    } else if (definition.type === 'array') {
+      assertDescribed(definition.items, `${path}[]`);
+    }
+  };
+
+  for (const [id, { meta }] of Object.entries(SIMULATOR_PARAMETER_PROFILES)) {
+    const schema = generateJsonSchema(meta);
+    for (const [key, definition] of Object.entries(schema.properties)) assertDescribed(definition, `${id}.${key}`);
+  }
+});
+
+test('generated descriptions define parameter values in plain language', () => {
+  const properties = SUBWAY_SIMULATOR_JSON_SCHEMA.properties;
+  assert.equal(properties.cameraControlsEnabled.description, 'Availability of camera controls.');
+  assert.equal(properties.cameraOrbitOn.description, 'Whether camera orbit is on.');
+  assert.equal(properties.replayCameraOrbitSpeed.description, 'Numeric value for replay camera orbit speed.');
+  assert.equal(properties.shaftControls.items.description, 'Signed ventilation speed for one shaft; negative values reverse vertical flow.');
+  assert.equal(SIMULATOR_PARAMETER_PROFILES.quantumfluidsim.meta.vortexCoreRadius.description, 'Radial distance over which density rises from zero at the vortex core.');
+  assert.equal(SIMULATOR_PARAMETER_PROFILES.quantumfluidsim.meta.particleAppearance.properties.derivativeOrder.description, 'Order used to estimate vector direction: 0 uses local current when available; 1-4 use periodic derivatives of the active scalar field.');
+  assert.equal(SIMULATOR_PARAMETER_PROFILES.simpleattractorsim.meta.fieldMechanics.properties.dilatancy.description, 'Coefficient of the speed- and strain-dependent viscosity increase in the DDF mobility model.');
+});
+
 test('checked-in JSON Schema matches the metadata generator', async () => {
   const schemaUrl = new URL('../docs/schemas/subwaysim2.parameters.schema.json', import.meta.url);
   const checkedInSchema = JSON.parse(await readFile(schemaUrl, 'utf8'));

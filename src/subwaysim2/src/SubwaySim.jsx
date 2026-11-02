@@ -1576,6 +1576,7 @@ function Sparkline({ values }) {
 }
 
 function Toggle({ parameter, label, checked, onChange, description, showDescription }) {
+  const parameterDescription = parameter ? SUBWAY_SIMULATION_PARAMETER_META[parameter]?.description : undefined;
   if (parameter && SUBWAY_SIMULATION_PARAMETER_META[parameter]?.type !== 'boolean') {
     throw new TypeError(`SubwaySim toggle is missing boolean parameter metadata: ${parameter}`);
   }
@@ -1583,7 +1584,7 @@ function Toggle({ parameter, label, checked, onChange, description, showDescript
     <label className="toggle-row">
       <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
       <span className="toggle-track"><span /></span>
-      <span className="toggle-copy"><span>{label}</span>{showDescription && <small className="parameter-description">{description}</small>}</span>
+      <span className="toggle-copy"><span>{label}</span>{showDescription && <small className="parameter-description">{parameterDescription ?? description}</small>}</span>
     </label>
   );
 }
@@ -1594,8 +1595,9 @@ function ControlSlider({ parameter, label, value, suffix, description, showDescr
     throw new TypeError(`SubwaySim slider is missing numeric parameter metadata: ${parameter}`);
   }
   const range = definition.type === 'array' ? definition.items : definition;
+  const parameterDescription = range.description ?? definition.description;
   const { minimum: min, maximum: max, step } = range;
-  return <NumericParamControl className="slider-control" label={label} value={Number.isFinite(value) ? value : min} min={min} max={max} step={step} suffix={suffix} editing={editing} isDefault={isDefault} onReset={onReset} description={description} showDescription={showDescription} onChange={onChange} />;
+  return <NumericParamControl className="slider-control" label={label} value={Number.isFinite(value) ? value : min} min={min} max={max} step={step} suffix={suffix} editing={editing} isDefault={isDefault} onReset={onReset} description={parameterDescription ?? description} showDescription={showDescription} onChange={onChange} />;
 }
 
 function VentEndpointChart({ history, metric, label, unit }) {

@@ -12,7 +12,61 @@ const object = (properties, { required = Object.keys(properties), additionalProp
   additionalProperties
 });
 
-export const COMMON_SIMULATOR_PARAMETER_META = Object.freeze({
+function parameterTitle(path) {
+  return path.replace(/\[\]/g, '').split('.').filter(Boolean).map((part) => part
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .map((word) => word.length <= 2 ? word.toUpperCase() : word[0].toUpperCase() + word.slice(1))
+    .join(' ')).join(' ');
+}
+
+function generatedDescription(definition, title) {
+  const name = title.toLowerCase();
+  if (definition.type === 'object') return `A group of related ${name} settings.`;
+  if (definition.type === 'array') return `An ordered collection of ${name} values.`;
+  if (definition.type === 'boolean') {
+    if (name.endsWith(' enabled')) return `Availability of ${name.slice(0, -8)}.`;
+    if (name.endsWith(' on')) return `Whether ${name.slice(0, -3)} is on.`;
+    if (name.endsWith(' visible')) return `Visibility of ${name.slice(0, -8)}.`;
+    if (name === 'running') return 'Whether the simulation is running.';
+    return `Whether ${name} is active.`;
+  }
+  if (definition.type === 'enum') return `The selected ${name} option.`;
+  if (definition.type === 'string') return `The text value associated with ${name}.`;
+  return `Numeric value for ${name}.`;
+}
+
+function describeParameter(definition, path, descriptions) {
+  const title = parameterTitle(path);
+  const description = descriptions[path] ?? definition.description ?? generatedDescription(definition, title);
+  if (definition.type === 'object') {
+    return {
+      ...definition,
+      title,
+      description,
+      properties: Object.fromEntries(Object.entries(definition.properties).map(([key, nested]) => [
+        key,
+        describeParameter(nested, `${path}.${key}`, descriptions)
+      ]))
+    };
+  }
+  if (definition.type === 'array') {
+    return { ...definition, title, description, items: describeParameter(definition.items, `${path}[]`, descriptions) };
+  }
+  return { ...definition, title, description };
+}
+
+function addParameterDescriptions(meta, descriptions = {}, prefix = '') {
+  return Object.fromEntries(Object.entries(meta).map(([key, definition]) => {
+    const path = prefix ? `${prefix}.${key}` : key;
+    return [key, describeParameter(definition, path, descriptions)];
+  }));
+}
+
+export const COMMON_SIMULATOR_PARAMETER_META = Object.freeze(addParameterDescriptions({
   cameraControlsEnabled: boolean(true),
   cameraOrbitOn: boolean(true),
   cameraZoomEnabled: boolean(true),
@@ -31,9 +85,52 @@ export const COMMON_SIMULATOR_PARAMETER_META = Object.freeze({
     color: { type: 'string', default: '#ffffff', pattern: '^#[0-9a-fA-F]{6}$' },
     opacity: number(1, 0, 1, 0.01)
   })
+}));
+
+const SUBWAY_PARAMETER_DESCRIPTIONS = Object.freeze({
+  'shaftControls[]': 'Signed ventilation speed for one shaft; negative values reverse vertical flow.',
+  surfaceTemperature: "Station-floor temperature in °F, which determines heat transfer to nearby air.",
+  passengerHeat: 'Heat released around the visible passengers.',
+  roadSurfaceTemperature: 'Outdoor road temperature that drives convection above the street.',
+  ambientAirTemperature: 'Outdoor air temperature approached by the upper part of the simulated field.',
+  surfaceCrosswind: 'Outdoor wind speed across the station along the Z axis; negative values reverse its direction.',
+  stairUndergroundOpeningHeight: 'Clear height of the underground tunnel and doorway, independent of stair and turnstile height.',
+  stairLandingHeight: 'Elevation of the level landing between the lower and upper stair flights.',
+  stairSurfaceOpeningHeight: 'Elevation of the stair opening at street level, which also determines the street and shaft outlet heights.',
+  train: 'Whether trains pass through the station at the configured interval.',
+  shaftFans: 'Whether powered upward flow is applied in the three ventilation shafts.',
+  clerestoryWindows: 'Whether the roof-bridging clerestory panes and their airflow exchange are enabled.',
+  windOcclusion: 'Whether airflow is deflected by station columns, platforms, and the train.',
+  ac: 'Whether the active train produces air-conditioning heat and lift.',
+  brakes: 'Whether braking produces localized heat and turbulence.',
+  floodTunnels: 'Whether the below-station cold-sink gallery is enabled.',
+  shaftExchange: 'Strength of air capture toward the three passive vertical shafts.',
+  shaftFanVelocity: 'Upward air speed produced by the powered ventilation shafts.',
+  downFans: 'Downward airflow strength from the station ceiling fan banks.',
+  floorAirMovers: 'Airflow strength across the platform floor toward the stair route.',
+  ceilingFans: 'Airflow strength carrying the warm ceiling band toward the egress.',
+  grooves: 'Strength of passive airflow guidance along the roof grooves.',
+  roofPitch: 'Roof angle, which determines the envelope slope and buoyant headroom.',
+  roofOffset: 'Lateral position of the roof ridge across the station width.',
+  roofGapHorizontal: 'Horizontal distance between the two roof panels.',
+  roofGapVertical: 'Vertical span bridged by each clerestory pane.',
+  clerestoryOpen: 'Fraction of passive airflow exchange through the clerestory span.',
+  stackEffect: 'Strength of passive warm-air lift through the shafts, separate from powered fans and crosswind.',
+  floodFlow: 'Strength of warm lower-air flow into the gallery cold sink.',
+  floodPumpDirection: 'Direction of flood-gallery air pumping along the X axis.',
+  trainInterval: 'Elapsed time between the starts of consecutive train passes.',
+  trainStopFrequency: 'Fraction of train passes that stop at the platform.',
+  trainStopDuration: 'Dwell time at the platform for a stopping train.',
+  particleCount: 'Number of particles rendered in the GPU simulation field.',
+  particleMagnitudeScale: 'Change in particle diameter associated with velocity magnitude.',
+  constitutiveStrength: 'Strength of the selected experimental shear response.',
+  constitutiveSpeedLimit: 'Dimensionless speed threshold for the onset of the DDF viscosity increase.',
+  density: 'Mass per simulated air volume.',
+  stiffness: 'Resistance of neighboring particles to compression.',
+  viscosity: 'Rate at which neighboring air velocities blend.'
 });
 
-export const SUBWAY_SIMULATION_PARAMETER_META = Object.freeze({
+export const SUBWAY_SIMULATION_PARAMETER_META = Object.freeze(addParameterDescriptions({
   surfaceTemperature: number(81.5, 60, 110, 0.5),
   roadSurfaceTemperature: number(92, 45, 130, 0.5),
   ambientAirTemperature: number(72, 40, 110, 0.5),
@@ -82,12 +179,12 @@ export const SUBWAY_SIMULATION_PARAMETER_META = Object.freeze({
   particleDiameter: number(0.7, 0.2, 1.4, 0.05),
   particleMagnitudeScale: number(0.6, 0, 2, 0.05),
   windOcclusion: boolean(true)
-});
+}, SUBWAY_PARAMETER_DESCRIPTIONS));
 
-export const SUBWAY_SIMULATOR_PARAMETER_META = Object.freeze({
+export const SUBWAY_SIMULATOR_PARAMETER_META = Object.freeze(addParameterDescriptions({
   ...COMMON_SIMULATOR_PARAMETER_META,
   ...SUBWAY_SIMULATION_PARAMETER_META
-});
+}));
 
 export function createParameterDefaults(meta) {
   return Object.fromEntries(Object.entries(meta).map(([key, definition]) => {
@@ -101,7 +198,7 @@ export function createParameterDefaults(meta) {
   }));
 }
 
-export function createParameterMetaFromDefaults(defaults, { ranges = {}, enums = {}, integers = [], arrayBounds = {}, arrayItems = {}, nullable = [] } = {}) {
+export function createParameterMetaFromDefaults(defaults, { ranges = {}, enums = {}, integers = [], arrayBounds = {}, arrayItems = {}, nullable = [], descriptions = {} } = {}) {
   const integerPaths = new Set(integers);
   const nullablePaths = new Set(nullable);
   const build = (value, path = '') => {
@@ -144,7 +241,7 @@ export function createParameterMetaFromDefaults(defaults, { ranges = {}, enums =
     return { type: 'string', default: value };
   };
 
-  return build(defaults).properties;
+  return addParameterDescriptions(build(defaults).properties, descriptions);
 }
 
 export function toJsonSchemaDefinition(definition) {
@@ -152,12 +249,15 @@ export function toJsonSchemaDefinition(definition) {
     const properties = Object.fromEntries(Object.entries(definition.properties).map(([key, property]) => (
       [key, toJsonSchemaDefinition(property)]
     )));
-    return {
+    const schema = {
       type: 'object',
       properties,
       required: definition.required ?? Object.keys(properties),
       additionalProperties: definition.additionalProperties ?? false
     };
+    if (definition.title !== undefined) schema.title = definition.title;
+    if (definition.description !== undefined) schema.description = definition.description;
+    return schema;
   }
 
   if (definition.type === 'array') {
@@ -168,6 +268,8 @@ export function toJsonSchemaDefinition(definition) {
       maxItems: definition.maxItems,
       items: toJsonSchemaDefinition(definition.items)
     };
+    if (definition.title !== undefined) schema.title = definition.title;
+    if (definition.description !== undefined) schema.description = definition.description;
     if (definition.nullable) schema.type = ['array', 'null'];
     return schema;
   }
@@ -186,6 +288,8 @@ export function toJsonSchemaDefinition(definition) {
   if (definition.step !== undefined) schema['x-step'] = definition.step;
   if (definition.pattern !== undefined) schema.pattern = definition.pattern;
   if (definition.nullable) schema.type = [schema.type, 'null'];
+  if (definition.title !== undefined) schema.title = definition.title;
+  if (definition.description !== undefined) schema.description = definition.description;
   return schema;
 }
 
