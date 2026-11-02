@@ -5,7 +5,7 @@ import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DynamicDrawUs
 import { NumericParamControl, ParamSelect, SimulatorParameterControls } from './lib/ParamControls.jsx';
 import { CameraPerspectiveToolbar, PerspectiveOrbitControls, SimulatorBase, SimulatorPresetControls, SimulatorViewParameters } from './lib/SimulatorBase.jsx';
 import { createCameraViews, DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, DEFAULT_SIMULATOR_3D_PARAMETERS, readPresetLibrary, writePresetLibrary } from './lib/simulator-base.js';
-import { compareRailHeatStates, createRailHeatState, normalizedTensorGaussian, RAIL_HEAT_MODELS, stepRailHeatComparison, summarizeRailHeatState } from './railHeatModel.js';
+import { compareRailHeatStates, createRailHeatState, DDF_PAPER_REFERENCE, evaluateRailSplatterDeformation, normalizedTensorGaussian, RAIL_HEAT_CONSTRAINTS, RAIL_HEAT_MODELS, stepRailHeatComparison, summarizeRailHeatState } from './railHeatModel.js';
 
 const PRESET_KEY = 'sqgsim-rail-heat-snapshots';
 const RAIL_LENGTH = 6;
@@ -26,7 +26,9 @@ const INITIAL_CONFIGURATION = {
   particleCount: 1536,
   displayModel: 'comparison',
   showModelDifferences: true,
-  gaussianSplatters: true
+  gaussianSplatters: true,
+  tensorGaussianWaist: 0.36,
+  splatterDeformationScale: 1
 };
 
 const MODEL_COLORS = { fourier: '#e5a653', cattaneo: '#67cad1', ddf: '#93cf8b' };
@@ -42,7 +44,7 @@ function setTemperatureColor(color, temperature, ambientTemperature) {
   return color.setHSL(0.54 - normalized * 0.49, 0.82, 0.31 + normalized * 0.2);
 }
 
-function HeatRail({ model, statesRef, ambientTemperature, visible }) {
+function HeatRail({ model, statesRef, settings, visible }) {
   const meshRef = useRef(null);
   const segmentGeometry = useMemo(() => new Object3D(), []);
   const color = useMemo(() => new Color(), []);
@@ -54,18 +56,33 @@ function HeatRail({ model, statesRef, ambientTemperature, visible }) {
     if (!mesh) return;
     for (let index = 0; index < nodeCount; index += 1) {
       segmentGeometry.position.set(LANE_X[model], 0.26, (index / (nodeCount - 1) - 0.5) * RAIL_LENGTH);
-      segmentGeometry.scale.set(1, 1, segmentLength / (RAIL_LENGTH / (nodeCount - 1) * 1.04));
+      segmentGeometry.rotation.set(0, 0, 0);
+      segmentGeometry.scale.set(1, 1, 1);
       segmentGeometry.updateMatrix();
       mesh.setMatrixAt(index, segmentGeometry.matrix);
     }
     mesh.instanceMatrix.needsUpdate = true;
-  }, [model, segmentGeometry, segmentLength]);
+  }, [model, nodeCount, segmentGeometry]);
 
   useFrame(() => {
     const mesh = meshRef.current;
     const state = statesRef.current?.[model];
     if (!mesh || !state) return;
-    for (let index = 0; index < nodeCount; index += 1) mesh.setColorAt(index, setTemperatureColor(color, state.temperatures[index], ambientTemperature));
+    const deformation = state.deformation ?? evaluateRailSplatterDeformation(state, { ...settings, model });
+    for (let index = 0; index < nodeCount; index += 1) {
+      const node = deformation.nodes[index];
+      segmentGeometry.position.set(
+        LANE_X[model] + node.deformedPosition[0],
+        node.deformedPosition[1],
+        node.deformedPosition[2]
+      );
+      segmentGeometry.rotation.set(node.rotation[0], node.rotation[1], node.rotation[2]);
+      segmentGeometry.scale.set(node.scale[0], node.scale[1], node.scale[2]);
+      segmentGeometry.updateMatrix();
+      mesh.setMatrixAt(index, segmentGeometry.matrix);
+      mesh.setColorAt(index, setTemperatureColor(color, state.temperatures[index], settings.ambientTemperature));
+    }
+    mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   });
 
@@ -75,7 +92,7 @@ function HeatRail({ model, statesRef, ambientTemperature, visible }) {
   </instancedMesh>;
 }
 
-function HeatDifference({ model, statesRef, visible }) {
+function HeatDifference({ model, statesRef, settings, visible }) {
   const meshRef = useRef(null);
   const marker = useMemo(() => new Object3D(), []);
   const nodeCount = RAIL_NODES;
@@ -86,6 +103,7 @@ function HeatDifference({ model, statesRef, visible }) {
     if (!mesh || !states) return;
     const reference = states.fourier.temperatures;
     const candidate = states[model].temperatures;
+    const deformation = states[model].deformation ?? evaluateRailSplatterDeformation(states[model], { ...settings, model });
     let maximumDifference = 0;
     for (const candidateModel of ['cattaneo', 'ddf']) {
       const temperatures = states[candidateModel].temperatures;
@@ -96,10 +114,15 @@ function HeatDifference({ model, statesRef, visible }) {
     const scale = Math.max(maximumDifference, 1e-9);
     const color = new Color();
     for (let index = 0; index < nodeCount; index += 1) {
+      const node = deformation.nodes[index];
       const difference = candidate[index] - reference[index];
       const magnitude = Math.abs(difference);
       const height = magnitude < 1e-8 ? 0.001 : 0.025 + (magnitude / scale) * 0.4;
-      marker.position.set(LANE_X[model], 0.42 + height / 2, (index / (nodeCount - 1) - 0.5) * RAIL_LENGTH);
+      marker.position.set(
+        LANE_X[model] + node.deformedPosition[0],
+        node.deformedPosition[1] + 0.16 + height / 2,
+        node.deformedPosition[2]
+      );
       marker.scale.set(0.2, height, 0.055);
       marker.updateMatrix();
       mesh.setMatrixAt(index, marker.matrix);
@@ -122,6 +145,8 @@ function ThermalSplatters({ model, statesRef, settings, visible }) {
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
     const tensorValues = new Float32Array(count);
+    const anisotropies = new Float32Array(count);
+    const majorAxisAngles = new Float32Array(count);
     const phases = new Float32Array(count);
     const color = new Color();
     for (let index = 0; index < count; index += 1) {
@@ -130,11 +155,15 @@ function ThermalSplatters({ model, statesRef, settings, visible }) {
       color.set('#ffffff');
       colors.set([color.r, color.g, color.b], index * 3);
       tensorValues[index] = 0;
+      anisotropies[index] = 1;
+      majorAxisAngles[index] = 0;
     }
     const result = new BufferGeometry();
     result.setAttribute('position', new BufferAttribute(positions, 3).setUsage(DynamicDrawUsage));
     result.setAttribute('color', new BufferAttribute(colors, 3).setUsage(DynamicDrawUsage));
     result.setAttribute('aTensorHeat', new BufferAttribute(tensorValues, 1).setUsage(DynamicDrawUsage));
+    result.setAttribute('aAnisotropy', new BufferAttribute(anisotropies, 1).setUsage(DynamicDrawUsage));
+    result.setAttribute('aMajorAxisAngle', new BufferAttribute(majorAxisAngles, 1).setUsage(DynamicDrawUsage));
     result.userData.phases = phases;
     return result;
   }, [count]);
@@ -146,25 +175,42 @@ function ThermalSplatters({ model, statesRef, settings, visible }) {
     vertexShader: `
       attribute vec3 color;
       attribute float aTensorHeat;
+      attribute float aAnisotropy;
+      attribute float aMajorAxisAngle;
       varying vec3 vColor;
       varying float vTensorHeat;
+      varying float vAnisotropy;
+      varying float vMajorAxisAngle;
       uniform float uPointSize;
       uniform float uSizeScale;
       void main() {
         vColor = color;
         vTensorHeat = aTensorHeat;
+        vAnisotropy = aAnisotropy;
+        vMajorAxisAngle = aMajorAxisAngle;
         vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
         gl_Position = projectionMatrix * viewPosition;
-        gl_PointSize = uPointSize * uSizeScale * (0.45 + 1.55 * aTensorHeat) * 280.0 / max(1.0, -viewPosition.z);
+        float stretchScale = clamp(sqrt(max(1.0, aAnisotropy)), 1.0, 1.65);
+        gl_PointSize = uPointSize * uSizeScale * stretchScale * (0.45 + 1.55 * aTensorHeat) * 280.0 / max(1.0, -viewPosition.z);
       }
     `,
     fragmentShader: `
       varying vec3 vColor;
       varying float vTensorHeat;
+      varying float vAnisotropy;
+      varying float vMajorAxisAngle;
       uniform float uOpacity;
       void main() {
-        float radius = length(gl_PointCoord - vec2(0.5));
-        float gaussian = exp(-radius * radius * 24.0);
+        vec2 centered = gl_PointCoord - vec2(0.5);
+        float cosine = cos(vMajorAxisAngle);
+        float sine = sin(vMajorAxisAngle);
+        vec2 rotated = vec2(
+          cosine * centered.x - sine * centered.y,
+          sine * centered.x + cosine * centered.y
+        );
+        float stretch = clamp(sqrt(max(1.0, vAnisotropy)), 1.0, 2.2);
+        vec2 metricCoord = vec2(rotated.x * stretch, rotated.y / stretch);
+        float gaussian = exp(-dot(metricCoord, metricCoord) * 24.0);
         float alpha = uOpacity * gaussian * smoothstep(0.02, 0.2, vTensorHeat);
         gl_FragColor = vec4(vColor, alpha);
       }
@@ -178,33 +224,46 @@ function ThermalSplatters({ model, statesRef, settings, visible }) {
     const positions = geometry.attributes.position.array;
     const colors = geometry.attributes.color.array;
     const tensor = geometry.attributes.aTensorHeat.array;
+    const anisotropies = geometry.attributes.aAnisotropy.array;
+    const majorAxisAngles = geometry.attributes.aMajorAxisAngle.array;
     const phases = geometry.userData.phases;
     const color = new Color();
     const time = clock.elapsedTime;
-    const maximum = Math.max(settings.ambientTemperature + 0.2, summarizeRailHeatState(state, settings.ambientTemperature).maximumTemperature);
+    const deformation = state.deformation ?? evaluateRailSplatterDeformation(state, { ...settings, model });
+    let maximumTemperature = settings.ambientTemperature + 0.2;
+    for (let index = 0; index < state.nodes; index += 1) {
+      maximumTemperature = Math.max(maximumTemperature, state.temperatures[index]);
+    }
     const customColor = settings.particleAppearance.colorMode === 'custom' ? new Color(settings.particleAppearance.color) : null;
+    const waist = Math.max(0.08, settings.tensorGaussianWaist ?? settings.sourceWidth * 2.2);
 
     for (let index = 0; index < count; index += 1) {
       const phase = phases[index];
       const z = ((index / count * RAIL_LENGTH + time * 0.18) % RAIL_LENGTH) - RAIL_LENGTH / 2;
-      const lateral = Math.sin(phase + time * 0.9) * 0.09;
       const node = Math.max(0, Math.min(RAIL_NODES - 1, Math.round((z / RAIL_LENGTH + 0.5) * (RAIL_NODES - 1))));
-      const normalizedTemperature = Math.max(0, Math.min(1, (state.temperatures[node] - settings.ambientTemperature) / Math.max(1, maximum - settings.ambientTemperature)));
-      const tensorWeight = normalizedTensorGaussian({ x: z, y: lateral, centerX: settings.sourcePosition, sigmaX: Math.max(0.08, settings.sourceWidth * 2.2), sigmaY: 0.12, correlation: 0.12 });
-      const heatWeight = normalizedTemperature * (0.35 + tensorWeight * 0.65);
-      positions[index * 3] = LANE_X[model] + lateral;
-      positions[index * 3 + 1] = 0.39 + Math.cos(phase + time * 1.4) * 0.035;
-      positions[index * 3 + 2] = z;
+      const nodeDeformation = deformation.nodes[node];
+      const lateral = Math.sin(phase + time * 0.9) * 0.09 * nodeDeformation.scale[0];
+      const normalizedTemperature = Math.max(0, Math.min(1, (state.temperatures[node] - settings.ambientTemperature) / Math.max(1, maximumTemperature - settings.ambientTemperature)));
+      const tensorWeight = normalizedTensorGaussian({ x: z, y: lateral, centerX: settings.sourcePosition, sigmaX: waist, sigmaY: 0.12 * nodeDeformation.scale[0], correlation: 0.12 });
+      const anisotropyBoost = Math.min(1.4, 0.75 + 0.25 * nodeDeformation.anisotropy);
+      const heatWeight = Math.min(1, normalizedTemperature * (0.35 + tensorWeight * 0.65) * anisotropyBoost);
+      positions[index * 3] = LANE_X[model] + nodeDeformation.deformedPosition[0] + lateral;
+      positions[index * 3 + 1] = nodeDeformation.deformedPosition[1] + 0.13 + Math.cos(phase + time * 1.4) * 0.035 * nodeDeformation.scale[1];
+      positions[index * 3 + 2] = z + nodeDeformation.displacement[2];
       if (customColor) color.copy(customColor);
-      else setTemperatureColor(color, settings.ambientTemperature + normalizedTemperature * (maximum - settings.ambientTemperature), settings.ambientTemperature);
+      else setTemperatureColor(color, settings.ambientTemperature + normalizedTemperature * (maximumTemperature - settings.ambientTemperature), settings.ambientTemperature);
       colors[index * 3] = color.r;
       colors[index * 3 + 1] = color.g;
       colors[index * 3 + 2] = color.b;
       tensor[index] = settings.gaussianSplatters ? heatWeight : normalizedTemperature;
+      anisotropies[index] = settings.gaussianSplatters ? nodeDeformation.anisotropy : 1;
+      majorAxisAngles[index] = settings.gaussianSplatters ? nodeDeformation.majorAxisAngle : 0;
     }
     geometry.attributes.position.needsUpdate = true;
     geometry.attributes.color.needsUpdate = true;
     geometry.attributes.aTensorHeat.needsUpdate = true;
+    geometry.attributes.aAnisotropy.needsUpdate = true;
+    geometry.attributes.aMajorAxisAngle.needsUpdate = true;
     material.uniforms.uSizeScale.value = settings.particleAppearance.sizeScale;
     material.uniforms.uOpacity.value = settings.particleAppearance.opacity;
   });
@@ -235,12 +294,16 @@ function HeatScene({ settings, statesRef, running, resetToken, viewMode, orbitPl
     const delta = Math.min(0.05, frameDelta);
     if (running) {
       stepRailHeatComparison(statesRef.current, delta * settings.timeScale, settings);
+    } else {
+      for (const model of ['fourier', 'cattaneo', 'ddf']) {
+        statesRef.current[model].deformation = evaluateRailSplatterDeformation(statesRef.current[model], { ...settings, model });
+      }
     }
     telemetryTime.current += delta;
     if (telemetryTime.current >= 0.2) {
       telemetryTime.current = 0;
       onTelemetry({
-        models: Object.fromEntries(['fourier', 'cattaneo', 'ddf'].map((model) => [model, summarizeRailHeatState(statesRef.current[model], settings.ambientTemperature)])),
+        models: Object.fromEntries(['fourier', 'cattaneo', 'ddf'].map((model) => [model, summarizeRailHeatState(statesRef.current[model], settings.ambientTemperature, { ...settings, model })])),
         differences: Object.fromEntries(['cattaneo', 'ddf'].map((model) => [model, compareRailHeatStates(statesRef.current.fourier, statesRef.current[model])]))
       });
     }
@@ -257,9 +320,9 @@ function HeatScene({ settings, statesRef, running, resetToken, viewMode, orbitPl
     {['fourier', 'cattaneo', 'ddf'].map((model) => <group key={model} visible={isVisible(model)}>
       <mesh position={[LANE_X[model], 0.04, 0]}><boxGeometry args={[0.82, 0.11, RAIL_LENGTH + 0.25]} /><meshStandardMaterial color="#394346" roughness={0.78} /></mesh>
       {Array.from({ length: 13 }, (_, index) => <mesh key={index} position={[LANE_X[model], -0.035, (index / 12 - 0.5) * (RAIL_LENGTH + 0.25)]}><boxGeometry args={[1, 0.08, 0.16]} /><meshStandardMaterial color="#485047" roughness={0.92} /></mesh>)}
-      <HeatRail model={model} statesRef={statesRef} ambientTemperature={settings.ambientTemperature} visible={isVisible(model)} />
+      <HeatRail model={model} statesRef={statesRef} settings={settings} visible={isVisible(model)} />
       <ThermalSplatters model={model} statesRef={statesRef} settings={settings} visible={isVisible(model)} />
-      {comparisonEnabled && model !== 'fourier' && <HeatDifference model={model} statesRef={statesRef} visible={isVisible(model)} />}
+      {comparisonEnabled && model !== 'fourier' && <HeatDifference model={model} statesRef={statesRef} settings={settings} visible={isVisible(model)} />}
     </group>)}
     <ContactShadows position={[0, -0.15, 0]} opacity={0.33} scale={13} blur={2.4} far={4} />
     <PerspectiveOrbitControls viewMode={viewMode} orbitPlaying={orbitPlaying} orbitSettings={settings} views={cameraViews} cameraParams={{ minDistance: 7, maxDistance: 26, target: [0, -0.42, 0] }} onUserInteraction={onUserInteraction} />
@@ -312,6 +375,7 @@ export default function RailHeatSim({ onBack }) {
   const currentPresetValue = presetLibrary[currentPreset] ?? INITIAL_CONFIGURATION;
   const parameterValue = configuration;
   const maxTemperature = Math.max(...['fourier', 'cattaneo', 'ddf'].map((model) => telemetry.models?.[model]?.maximumTemperature ?? configuration.ambientTemperature));
+  const ddfSummary = telemetry.models?.ddf;
 
   useEffect(() => {
     if (cameraView !== configuration.cameraViewMode) update({ cameraViewMode: cameraView });
@@ -320,7 +384,7 @@ export default function RailHeatSim({ onBack }) {
   return <SimulatorBase className="thermal-app rail-heat-app" headerClassName="thermal-topbar rail-heat-topbar" mark="R / T" markClassName="thermal-mark" title="RAIL HEAT TRANSFER LAB" subtitle="Fourier / finite-speed transport / tensor-Gaussian fields" parameterValue={parameterValue} presetValue={currentPresetValue} onParameterChange={updateAll} actions={<div className="rail-heat-actions"><button type="button" onClick={() => setRunning((value) => !value)} aria-pressed={running}>{running ? 'Pause' : 'Run'}</button><button type="button" onClick={() => setPanelVisible((value) => !value)}>{panelVisible ? 'Hide params' : 'Show params'}</button></div>} onHome={onBack}>
     <div className="thermal-scene rail-heat-scene"><Canvas camera={{ position: [10, 9, 13], fov: 43, near: 0.1, far: 70 }} dpr={[1, 2]} gl={{ antialias: true, powerPreference: 'high-performance' }}><HeatScene settings={configuration} statesRef={statesRef} running={running} resetToken={resetToken} viewMode={cameraView} orbitPlaying={orbitPlaying} cameraViews={cameraViews} onTelemetry={setTelemetry} onUserInteraction={() => setCameraView(null)} /></Canvas></div>
     <CameraPerspectiveToolbar className="simulator-perspective-toolbar rail-heat-perspectives" modesClassName="simulator-perspective-modes" views={cameraViews} viewMode={cameraView} orbitPlaying={orbitPlaying} onViewChange={onCameraChange} onToggleOrbit={() => setOrbitPlaying((value) => !value)} />
-    <div className="rail-heat-legend" aria-label="Model comparison key">{['fourier', 'cattaneo', 'ddf'].map((model, index) => <span key={model}><i style={{ background: MODEL_COLORS[model] }}>{String(index + 1).padStart(2, '0')}</i>{MODEL_NAMES[model]}</span>)}</div>
+    <div className="rail-heat-legend" aria-label="Model comparison key">{['fourier', 'cattaneo', 'ddf'].map((model, index) => <span key={model}><i style={{ background: MODEL_COLORS[model] }}>{String(index + 1).padStart(2, '0')}</i>{MODEL_NAMES[model]}</span>)}{configuration.showModelDifferences !== false && <><span><i style={{ background: '#e5a653' }}>+</i>Warmer than Fourier</span><span><i style={{ background: '#67cad1' }}>−</i>Cooler than Fourier</span></>}</div>
     <section className="thermal-title rail-heat-title"><span>TRANSIENT CONDUCTION / THREE CONSTITUTIVE MODELS</span><h1>Follow heat along the rail.</h1><p>Compare a classical diffusion baseline, finite-speed heat flux, and a clearly separated exploratory DDF response.</p></section>
     <aside className={`thermal-panel rail-heat-panel${panelVisible ? '' : ' is-hidden'}`}>
       <div className="thermal-panel-heading"><div><span>STEEL RAIL / IDENTICAL INITIAL CONDITIONS</span><h2>Heat transport</h2></div></div>
@@ -328,6 +392,11 @@ export default function RailHeatSim({ onBack }) {
       <ParamSelect className="thermal-select" label="Field display" value={configuration.displayModel} options={[{ value: 'comparison', label: 'Compare all three' }, ...RAIL_HEAT_MODELS]} onChange={(displayModel) => update({ displayModel })} />
       <details className="rail-heat-model-details"><summary>Heat model definitions</summary>
         {RAIL_HEAT_MODELS.map(({ value, label, description }) => <div className="rail-heat-model-description" key={value}><strong>{label}</strong><p>{description}</p></div>)}
+        <div className="rail-heat-model-description">
+          <strong>DDF &amp; splatter-space constraints</strong>
+          <p>Source: <a className="amplitude-source-link" href={DDF_PAPER_REFERENCE.url} target="_blank" rel="noreferrer">{DDF_PAPER_REFERENCE.author} — {DDF_PAPER_REFERENCE.title}</a></p>
+          {RAIL_HEAT_CONSTRAINTS.map(({ id, label, equation, description }) => <p key={id}><strong>{label}:</strong> <code>{equation}</code> — {description}</p>)}
+        </div>
       </details>
       <details open><summary>Heat source and transport</summary>
         <NumericParamControl className="thermal-range" label="Ambient temperature" value={configuration.ambientTemperature} min={-20} max={45} step={1} suffix="°C" onChange={(ambientTemperature) => update({ ambientTemperature })} />
@@ -354,15 +423,22 @@ export default function RailHeatSim({ onBack }) {
           <p className="thermal-citation">Bars show signed temperature offsets on a shared visual scale: orange is warmer and teal is cooler than Fourier.</p>
         </>}
       </details>
-        <div className="rail-heat-legend" aria-label="Model comparison key">{['fourier', 'cattaneo', 'ddf'].map((model, index) => <span key={model}><i style={{ background: MODEL_COLORS[model] }}>{String(index + 1).padStart(2, '0')}</i>{MODEL_NAMES[model]}</span>)}{configuration.showModelDifferences && <><span><i style={{ background: '#e5a653' }}>+</i>Warmer than Fourier</span><span><i style={{ background: '#67cad1' }}>−</i>Cooler than Fourier</span></>}</div>
       <details open><summary>Particles and field rendering</summary>
         <NumericParamControl className="thermal-range" label="Particle count" value={configuration.particleCount} min={384} max={6144} step={384} onChange={(particleCount) => update({ particleCount })} />
         <label className="amplitude-toggle"><input type="checkbox" checked={configuration.gaussianSplatters} onChange={(event) => update({ gaussianSplatters: event.target.checked })} /><span>Normalize tensor-Gaussian splatters</span></label>
+        <NumericParamControl className="thermal-range" label="Tensor-Gaussian waist" value={configuration.tensorGaussianWaist ?? 0.36} min={0.1} max={1.5} step={0.02} suffix="m" onChange={(tensorGaussianWaist) => update({ tensorGaussianWaist })} />
+        <NumericParamControl className="thermal-range" label="Splatter deformation scale" value={configuration.splatterDeformationScale ?? 1} min={0} max={2.5} step={0.05} suffix="x" onChange={(splatterDeformationScale) => update({ splatterDeformationScale })} />
+        <div className="thermal-readout"><span>Splatter trace norm tr(T̂)</span><strong>{(ddfSummary?.meanTrace ?? 3).toFixed(3)}</strong></div>
+        <div className="thermal-readout"><span>Splatter volume norm det(C)</span><strong>{(ddfSummary?.meanDeterminant ?? 1).toFixed(3)}</strong></div>
+        <div className="thermal-readout"><span>DDF peak anisotropy</span><strong>{(ddfSummary?.maxAnisotropy ?? 1).toFixed(2)}×</strong></div>
+        <div className="thermal-readout"><span>DDF peak rail deformation</span><strong>{(ddfSummary?.maxDisplacementMm ?? 0).toFixed(1)} mm</strong></div>
+        <div className="thermal-readout"><span>DDF min thermal mobility</span><strong>{(ddfSummary?.minDdfMobility ?? 1).toFixed(3)}</strong></div>
+        <div className="thermal-readout"><span>Constraint status</span><strong>{ddfSummary?.constraintsSatisfied === false ? 'Check constraints' : 'All 4 satisfied'}</strong></div>
         <SimulatorParameterControls configuration={configuration} onChange={updateAll} title="Field appearance" fields={[{ type: 'toggle', label: 'Show heat particles', path: 'particleAppearance.splatterEnabled', checked: configuration.particleAppearance.splatterEnabled }]} />
         <SimulatorViewParameters configuration={configuration} onChange={updateAll} cameraClassName="rail-heat-camera-settings" particleClassName="rail-heat-particle-settings" appearanceCapabilities={{ shape: false, derivativeOrder: false }} />
         <div className="quantum-actions"><button type="button" onClick={resetSimulation}>Reset all fields</button></div>
       </details>
-      <p className="thermal-citation">Steel properties are representative inputs. The DDF/Fedi term is a bounded phenomenological flux-limiting hypothesis, not a validated rail material law. The tensor-Gaussian splatters are a normalized visualization layer, not a heat-transfer equation.</p>
+      <p className="thermal-citation">Steel properties are representative inputs. The DDF/Fedi term (<a className="amplitude-source-link" href={DDF_PAPER_REFERENCE.url} target="_blank" rel="noreferrer">SSRN 7406660</a>) is a bounded dilatant flux-limiting hypothesis coupled to a trace- and determinant-normed tensor-Gaussian splatter deformation of the rail.</p>
     </aside>
   </SimulatorBase>;
 }

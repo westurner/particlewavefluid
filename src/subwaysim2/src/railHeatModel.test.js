@@ -1,6 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { compareRailHeatStates, createRailHeatState, normalizedTensorGaussian, stepRailHeatComparison, stepRailHeatState, summarizeRailHeatState } from './railHeatModel.js';
+import {
+  calculateRailDdfMobility,
+  compareRailHeatStates,
+  createRailHeatState,
+  DDF_PAPER_REFERENCE,
+  eigenDecomposeSymmetric3x3,
+  evaluateRailSplatterDeformation,
+  normalizedTensorGaussian,
+  RAIL_HEAT_CONSTRAINTS,
+  stepRailHeatComparison,
+  stepRailHeatState,
+  summarizeRailHeatState
+} from './railHeatModel.js';
 
 test('Fourier conduction spreads a hot spot and remains finite', () => {
   const state = createRailHeatState({ nodes: 41, length: 2, ambientTemperature: 0, initialTemperature: 0 });
@@ -69,4 +81,86 @@ test('rail heat comparison reports signed, peak, mean, and RMS temperature delta
   assert.equal(comparison.maximumAbsoluteDifference, 2);
   assert.ok(Math.abs(comparison.meanAbsoluteDifference - 4 / 3) < 1e-12);
   assert.ok(Math.abs(comparison.rootMeanSquareDifference - Math.sqrt(8 / 3)) < 1e-12);
+});
+
+test('rail deformation in normed tensor-Gaussian splatter space preserves trace and determinant constraints', () => {
+  assert.match(DDF_PAPER_REFERENCE.url, /7406660/);
+  assert.equal(RAIL_HEAT_CONSTRAINTS.length, 4);
+
+  const state = createRailHeatState({ nodes: 73, length: 6, ambientTemperature: 20 });
+  stepRailHeatState(state, 35, {
+    model: 'ddf',
+    ambientTemperature: 20,
+    heatPower: 5200,
+    sourcePosition: 0,
+    sourceWidth: 0.16,
+    ddfStrength: 1.1,
+    tensorGaussianWaist: 0.36,
+    splatterDeformationScale: 1.2
+  });
+
+  const deformation = evaluateRailSplatterDeformation(state, {
+    ambientTemperature: 20,
+    sourcePosition: 0,
+    sourceWidth: 0.16,
+    ddfStrength: 1.1,
+    tensorGaussianWaist: 0.36,
+    splatterDeformationScale: 1.2
+  });
+
+  assert.equal(deformation.constraintsSatisfied, true);
+  assert.equal(deformation.clausiusDuhemSatisfied, true);
+  assert.ok(Math.abs(deformation.meanTrace - 3) < 1e-12);
+  assert.ok(Math.abs(deformation.meanDeterminant - 1) < 1e-12);
+  assert.ok(deformation.maxAnisotropy > 1);
+  assert.ok(deformation.maxDisplacementMm > 0);
+  assert.ok(deformation.minDdfMobility > 0 && deformation.minDdfMobility < 1);
+
+  const centerNode = deformation.nodes[Math.floor(state.nodes / 2)];
+  const edgeNode = deformation.nodes[0];
+  assert.ok(centerNode.tensorGaussianWeight > edgeNode.tensorGaussianWeight);
+  assert.ok(centerNode.anisotropy > edgeNode.anisotropy);
+  for (const node of deformation.nodes) {
+    assert.ok(Math.abs(node.trace - 3) < 1e-12);
+    assert.ok(Math.abs(node.determinant - 1) < 1e-12);
+  }
+
+  const undeformed = evaluateRailSplatterDeformation(state, {
+    ambientTemperature: 20,
+    splatterDeformationScale: 0
+  });
+  assert.equal(undeformed.maxDisplacementMm, 0);
+  assert.ok(Math.abs(undeformed.maxAnisotropy - 1) < 1e-12);
+  assert.ok(calculateRailDdfMobility({ gradient: 80, fourierFlux: 50000, ddfStrength: 1 }) < 1);
+  assert.ok(Math.abs(calculateRailDdfMobility({ gradient: 80, fourierFlux: 50000, ddfStrength: 1, tensorGaussianWeight: 0 }) - 1) < 1e-12);
+});
+
+test('3x3 symmetric eigendecomposition extracts exact principal stretches and couples metric stretch into DDF conduction', () => {
+  const symmetric = [
+    [2.1, 0.25, -0.15],
+    [0.25, 1.3, 0.2],
+    [-0.15, 0.2, 0.7]
+  ];
+  const { eigenvalues, eigenvectors } = eigenDecomposeSymmetric3x3(symmetric);
+  assert.ok(eigenvalues[0] >= eigenvalues[1] && eigenvalues[1] >= eigenvalues[2]);
+  assert.ok(Math.abs((eigenvalues[0] + eigenvalues[1] + eigenvalues[2]) - (2.1 + 1.3 + 0.7)) < 1e-12);
+  for (let index = 0; index < 3; index += 1) {
+    const vector = eigenvectors[index];
+    const mv = [
+      symmetric[0][0] * vector[0] + symmetric[0][1] * vector[1] + symmetric[0][2] * vector[2],
+      symmetric[1][0] * vector[0] + symmetric[1][1] * vector[1] + symmetric[1][2] * vector[2],
+      symmetric[2][0] * vector[0] + symmetric[2][1] * vector[1] + symmetric[2][2] * vector[2]
+    ];
+    for (let axis = 0; axis < 3; axis += 1) {
+      assert.ok(Math.abs(mv[axis] - eigenvalues[index] * vector[axis]) < 1e-10);
+    }
+  }
+
+  const unstretched = createRailHeatState({ nodes: 41, length: 4, ambientTemperature: 20 });
+  const stretched = createRailHeatState({ nodes: 41, length: 4, ambientTemperature: 20 });
+  stepRailHeatState(unstretched, 25, { model: 'ddf', heatPower: 6000, splatterDeformationScale: 0 });
+  stepRailHeatState(stretched, 25, { model: 'ddf', heatPower: 6000, splatterDeformationScale: 2 });
+  const delta = compareRailHeatStates(unstretched, stretched);
+  assert.ok(delta.maximumAbsoluteDifference > 0);
+  assert.ok(stretched.deformation.constraintsSatisfied);
 });
