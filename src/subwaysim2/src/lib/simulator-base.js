@@ -1,6 +1,9 @@
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { Vector3 } from 'three';
 import { cloneState, setAtPath } from './simulation-state.js';
+import { COMMON_SIMULATOR_PARAMETER_META } from '../simulatorParameterSchema.js';
+
+export { DEFAULT_ORBITAL_TRACKING_CONFIGURATION, DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, DEFAULT_SIMULATOR_3D_PARAMETERS } from '../simulatorParameterSchema.js';
 
 export const DEFAULT_SIMULATOR_CAMERA_CONFIGURATION = Object.freeze({
   cameraControlsEnabled: true,
@@ -25,33 +28,6 @@ export const DEFAULT_SIMULATOR_CAMERA_CONFIGURATION = Object.freeze({
   cameraFar: 100
 });
 
-export const DEFAULT_ORBITAL_TRACKING_CONFIGURATION = Object.freeze({
-  cameraControlsEnabled: true,
-  cameraOrbitOn: true,
-  cameraZoomEnabled: true,
-  cameraWheelMode: 'zoom',
-  replayCameraOrbitSpeed: 0.55,
-  replayCameraOrbitX: 0,
-  replayCameraOrbitY: 1,
-  replayCameraOrbitZ: 0
-});
-
-export const DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION = Object.freeze({
-  sizeScale: 1,
-  zoomSizeEnabled: false,
-  zoomSizeSensitivity: 1,
-  shape: 'native',
-  derivativeOrder: 1,
-  colorMode: 'native',
-  color: '#ffffff',
-  opacity: 1
-});
-
-export const DEFAULT_SIMULATOR_3D_PARAMETERS = Object.freeze({
-  ...DEFAULT_ORBITAL_TRACKING_CONFIGURATION,
-  particleAppearance: DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION
-});
-
 export const DEFAULT_ORBIT_CAMERA_PARAMS = Object.freeze({
   dampingFactor: 0.08,
   minDistance: 7,
@@ -59,10 +35,10 @@ export const DEFAULT_ORBIT_CAMERA_PARAMS = Object.freeze({
   target: Object.freeze([0, 0, 0])
 });
 
-export const CAMERA_WHEEL_MODE_OPTIONS = Object.freeze([
-  { value: 'zoom', label: 'Zoom' },
-  { value: 'dolly', label: 'Move camera' }
-]);
+export const CAMERA_WHEEL_MODE_OPTIONS = Object.freeze(COMMON_SIMULATOR_PARAMETER_META.cameraWheelMode.values.map((value) => ({
+  value,
+  label: value === 'dolly' ? 'Move camera' : 'Zoom'
+})));
 
 export function createOrbitCameraParams(overrides = {}) {
   return {

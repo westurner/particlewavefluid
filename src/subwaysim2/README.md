@@ -6,6 +6,8 @@ A React, Three.js, React Three Fiber, and Drei particle-simulation loader. The G
 
 The first screen loads one of the available fields:
 
+Each field has a shareable path at `/sim/<simulation-id>`; the root path returns to the simulation menu. Direct paths and browser back/forward work in Vite's dev and preview servers. Static hosts should rewrite unknown paths to `index.html`.
+
 - **subwaysim2:** the subway airflow and thermal-dispersion experiment with GPU SPH-style transport, train heat, ventilation, stair, street, and flood-gallery controls.
 - **simpleattractorsim:** a React/R3F reimplementation of `three.js/examples/webgpu_tsl_compute_attractors_particles.html`. It keeps the source example's inverse-square attraction, spinning force, bounded particle loop, 20-attractor limit, transform helpers, presets, JSON IO, local snapshots, camera controls, and change playback.
 - **sqgblackholesim:** a shared black-hole particle-field experiment with Newtonian, reduced compressible NS, reduced incompressible NS, SQG, and DDF response modes. The NS modes expose divergence/volume behavior but are not shock-capturing or pressure-Poisson solvers; SQG and DDF are explicitly labeled hypotheses.
@@ -27,6 +29,10 @@ The FRC device model is CPU-side while plasma transport runs on the GPU. `src/fr
 `searchArgonMhdParameterGrid()` evaluates 5,760 points per MHD mode over four vessel shapes, eight magnetic fields, six densities, six temperatures, and five rotation rates at a fixed 12 MW auxiliary input. It rejects points outside beta $0.05$-$0.80$, stability $\geq0.55$, confinement $\geq0.45$, or thermal-gyroradius/plasma-radius $>0.05$. The selectable axial, rotating-field, and nozzle configurations are named `DT projection from Argon grid optimum`: they maximize projected DT gain within that bounded grid. The projection applies the DT reaction factor to the same modeled state for comparison; it is not an Argon reaction or a claim of experimentally achieved fusion gain.
 
 ## Simulation Architecture And Methods
+
+### Parameter metadata
+
+`src/simulatorParameterSchema.js` defines shared camera/particle settings and the metadata builder; `src/simulatorParameterRegistry.js` provides route-keyed defaults, types, ranges, enums, and slider steps for all 19 simulations. Run `npm run schema:simulators` to generate `docs/schemas/simulators.parameters.schema.json` and `docs/schemas/simulators.defaults.json`. Select a per-simulator schema from `$defs` using its route ID; the defaults file is keyed by the same ID. The registry schema also accepts `{ "simulationId": "...", "parameters": { ... } }` envelopes. JSON Schema defaults are annotations, so Rust/Tauri consumers should initialize from the matching defaults entry and validate updates with that simulator's schema. The `x-step` keyword is a UI hint, not a validation constraint. `npm run schema:subwaysim2` remains available for the original standalone SubwaySim artifacts.
 
 ### System architecture
 

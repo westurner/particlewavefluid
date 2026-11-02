@@ -5,8 +5,14 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { NumericParamControl } from './ParamControls.jsx';
 import { changedParameterPaths, cloneState, getAtPath, resetStatePaths, statesEqual } from './simulation-state.js';
 import { appendJournalEntry, CAMERA_WHEEL_MODE_OPTIONS, createCameraViews, createOrbitCameraParams, DEFAULT_CAMERA_VIEWS, DEFAULT_ORBITAL_TRACKING_CONFIGURATION, DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION, easeCameraFocus, getCameraFocusPose, rewindJournal, snapshotAtJournalTime } from './simulator-base.js';
+import { COMMON_SIMULATOR_PARAMETER_META } from '../simulatorParameterSchema.js';
 import { Euler, Vector3 } from 'three';
 import ConfirmButton from './ConfirmButton.jsx';
+
+function commonRangeField(key, label, path, value, extra = {}) {
+  const definition = COMMON_SIMULATOR_PARAMETER_META[key] ?? COMMON_SIMULATOR_PARAMETER_META.particleAppearance.properties[key];
+  return { type: 'range', label, path, value, min: definition.minimum, max: definition.maximum, step: definition.step, ...extra };
+}
 
 export const OrbitCameraControls = forwardRef(function OrbitCameraControls({ cameraParams, ...props }, ref) {
   const cameraParamsKey = JSON.stringify(cameraParams);
@@ -237,10 +243,10 @@ export function OrbitalTrackingParameters({ configuration, onChange = () => {}, 
   return <SimulatorParameterControls title="Orbital tracking" className={className} configuration={configuration} onChange={onChange} fields={[
     { type: 'toggle', label: 'Enable camera controls', path: `${pathPrefix}cameraControlsEnabled`, checked: configuration.cameraControlsEnabled ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.cameraControlsEnabled },
     { type: 'toggle', label: 'Allow orbital camera motion', path: `${pathPrefix}cameraOrbitOn`, checked: configuration.cameraOrbitOn ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.cameraOrbitOn },
-    { type: 'range', label: 'Orbit speed', path: `${pathPrefix}replayCameraOrbitSpeed`, value: configuration.replayCameraOrbitSpeed ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.replayCameraOrbitSpeed, min: 0.01, max: 2, step: 0.01 },
-    { type: 'range', label: 'Orbit X axis', path: `${pathPrefix}replayCameraOrbitX`, value: configuration.replayCameraOrbitX ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.replayCameraOrbitX, min: -1, max: 1, step: 0.01 },
-    { type: 'range', label: 'Orbit Y axis', path: `${pathPrefix}replayCameraOrbitY`, value: configuration.replayCameraOrbitY ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.replayCameraOrbitY, min: -1, max: 1, step: 0.01 },
-    { type: 'range', label: 'Orbit Z axis', path: `${pathPrefix}replayCameraOrbitZ`, value: configuration.replayCameraOrbitZ ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.replayCameraOrbitZ, min: -1, max: 1, step: 0.01 },
+    commonRangeField('replayCameraOrbitSpeed', 'Orbit speed', `${pathPrefix}replayCameraOrbitSpeed`, configuration.replayCameraOrbitSpeed ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.replayCameraOrbitSpeed),
+    commonRangeField('replayCameraOrbitX', 'Orbit X axis', `${pathPrefix}replayCameraOrbitX`, configuration.replayCameraOrbitX ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.replayCameraOrbitX),
+    commonRangeField('replayCameraOrbitY', 'Orbit Y axis', `${pathPrefix}replayCameraOrbitY`, configuration.replayCameraOrbitY ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.replayCameraOrbitY),
+    commonRangeField('replayCameraOrbitZ', 'Orbit Z axis', `${pathPrefix}replayCameraOrbitZ`, configuration.replayCameraOrbitZ ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.replayCameraOrbitZ),
     { type: 'toggle', label: 'Enable camera zoom', path: `${pathPrefix}cameraZoomEnabled`, checked: configuration.cameraZoomEnabled ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.cameraZoomEnabled },
     { type: 'select', label: 'Scroll mode', path: `${pathPrefix}cameraWheelMode`, value: configuration.cameraWheelMode ?? DEFAULT_ORBITAL_TRACKING_CONFIGURATION.cameraWheelMode, options: CAMERA_WHEEL_MODE_OPTIONS }
   ]} />;
@@ -248,17 +254,18 @@ export function OrbitalTrackingParameters({ configuration, onChange = () => {}, 
 
 export function ParticleAppearanceSettings({ configuration, onChange = () => {}, className = 'parameter-group', fields, pathPrefix = 'particleAppearance', capabilities = {}, descriptions = {} }) {
   const appearance = configuration?.[pathPrefix] ?? DEFAULT_PARTICLE_APPEARANCE_CONFIGURATION;
+  const appearanceMeta = COMMON_SIMULATOR_PARAMETER_META.particleAppearance.properties;
   const support = { sizeScale: true, zoomSizeEnabled: false, zoomSizeSensitivity: false, shape: true, derivativeOrder: true, colorMode: true, color: true, opacity: true, ...capabilities };
   const path = (field) => `${pathPrefix}.${field}`;
   const controls = (fields ?? [
-    { key: 'sizeScale', type: 'range', label: 'Particle size scale', min: 0.25, max: 8, step: 0.05, suffix: 'x' },
+    commonRangeField('sizeScale', 'Particle size scale', undefined, undefined, { key: 'sizeScale', suffix: 'x' }),
     { key: 'zoomSizeEnabled', type: 'toggle', label: 'Scale particle size with camera zoom' },
-    { key: 'zoomSizeSensitivity', type: 'range', label: 'Zoom size sensitivity', min: 0, max: 2, step: 0.05, suffix: 'x', disabled: !appearance.zoomSizeEnabled },
-    { key: 'shape', type: 'select', label: 'Particle shape', options: ['native', 'circle', 'square', 'sphere', 'vector'] },
-    { key: 'derivativeOrder', type: 'range', label: 'Particle derivative order', min: 0, max: 4, step: 1 },
-    { key: 'colorMode', type: 'select', label: 'Particle color mode', options: [{ value: 'native', label: 'Native / encoded' }, { value: 'custom', label: 'Custom color' }] },
+    commonRangeField('zoomSizeSensitivity', 'Zoom size sensitivity', undefined, undefined, { key: 'zoomSizeSensitivity', suffix: 'x', disabled: !appearance.zoomSizeEnabled }),
+    { key: 'shape', type: 'select', label: 'Particle shape', options: appearanceMeta.shape.values },
+    commonRangeField('derivativeOrder', 'Particle derivative order', undefined, undefined, { key: 'derivativeOrder' }),
+    { key: 'colorMode', type: 'select', label: 'Particle color mode', options: appearanceMeta.colorMode.values.map((value) => ({ value, label: value === 'native' ? 'Native / encoded' : 'Custom color' })) },
     { key: 'color', type: 'color', label: 'Particle color', disabled: appearance.colorMode !== 'custom' },
-    { key: 'opacity', type: 'range', label: 'Particle opacity', min: 0, max: 1, step: 0.01 }
+    commonRangeField('opacity', 'Particle opacity', undefined, undefined, { key: 'opacity' })
   ]).filter((field) => {
     const key = field.key ?? field.path?.split('.').at(-1);
     if (['zoomSizeEnabled', 'zoomSizeSensitivity'].includes(key) && support[key] === false) return false;

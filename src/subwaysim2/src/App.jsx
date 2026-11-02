@@ -1,4 +1,5 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
+import { getHomeUrl, getSimulationRoute, getSimulationUrl } from './lib/app-routing.js';
 
 const WaveInterferenceSim = lazy(() => import('./WaveInterferenceSim.jsx'));
 const LongitudinalLaserArraySim = lazy(() => import('./LongitudinalLaserArraySim.jsx'));
@@ -199,8 +200,20 @@ function LoadingScreen() {
 }
 
 function SimulationLoader() {
-  const [selectedSimulation, setSelectedSimulation] = useState(null);
-  const onBack = () => setSelectedSimulation(null);
+  const basePath = import.meta.env.BASE_URL;
+  const [pathname, setPathname] = useState(() => window.location.pathname);
+  useEffect(() => {
+    const syncPathname = () => setPathname(window.location.pathname);
+    window.addEventListener('popstate', syncPathname);
+    return () => window.removeEventListener('popstate', syncPathname);
+  }, []);
+  const route = getSimulationRoute(pathname, SIMULATION_MODES.map(({ id }) => id), basePath);
+  const selectedSimulation = route.type === 'simulation' ? route.id : null;
+  const navigate = (path) => {
+    window.history.pushState(null, '', `${path}${window.location.search}${window.location.hash}`);
+    setPathname(window.location.pathname);
+  };
+  const onBack = () => navigate(getHomeUrl(basePath));
   let simulation = null;
   if (selectedSimulation === 'waveinterferencesim') simulation = <WaveInterferenceSim onBack={onBack} />;
   if (selectedSimulation === 'longitudinallasersim') simulation = <LongitudinalLaserArraySim onBack={onBack} />;
@@ -237,7 +250,7 @@ function SimulationLoader() {
       </section>
       <section className="sqg-mode-grid" aria-label="Available simulations">
         {SIMULATION_MODES.map((mode) => (
-          <button key={mode.id} type="button" className={`sqg-mode-card ${mode.accent}`} onClick={() => setSelectedSimulation(mode.id)}>
+          <button key={mode.id} type="button" className={`sqg-mode-card ${mode.accent}`} onClick={() => navigate(getSimulationUrl(mode.id, basePath))}>
             <span className="sqg-mode-index">{mode.index} / LOAD FIELD</span>
             <span className="sqg-mode-name">{mode.name}</span>
             <span className="sqg-mode-label">{mode.label}</span>

@@ -6,8 +6,9 @@ import { createGpuParticleField, createSimulationUvs } from './simulations/gpuPa
 import { HistoryControls, NumericParamControl, ParamEditingProvider, ParamEditingToggle, ParamSelect } from './lib/ParamControls.jsx';
 import { useSimulationEditor, useUndoRedoShortcuts } from './lib/simulation-state.js';
 import { CameraPerspectiveToolbar, OrbitCameraControls, OrbitalTrackingParameters, ParticleAppearanceSettings, SimulatorBase } from './lib/SimulatorBase.jsx';
-import { createCameraViews, DEFAULT_SIMULATOR_3D_PARAMETERS } from './lib/simulator-base.js';
+import { createCameraViews } from './lib/simulator-base.js';
 import { FLUID_MODEL_OPTIONS, fluidModelIndex } from './mechanicsModels.js';
+import { COMMON_SIMULATOR_PARAMETER_META, SUBWAY_SIMULATION_PARAMETER_META, SUBWAY_SIMULATOR_DEFAULTS } from './simulatorParameterSchema.js';
 import {
   AIRFLOW_PARAMS,
   FLUID_BOUNDS,
@@ -42,51 +43,7 @@ import {
   verticalLayoutFromSurfaceY
 } from './routeModel.js';
 
-const INITIALS = {
-  ...DEFAULT_SIMULATOR_3D_PARAMETERS,
-  surfaceTemperature: 81.5,
-  roadSurfaceTemperature: 92,
-  ambientAirTemperature: 72,
-  passengerHeat: 0.75,
-  surfaceCrosswind: 3,
-  stairUndergroundOpeningHeight: STAIR_ROUTE.tunnelHeight,
-  stairLandingHeight: STAIR_ROUTE.landingY,
-  stairSurfaceOpeningHeight: STAIR_ROUTE.baseY + STAIR_ROUTE.riseY,
-  density: 1.18,
-  stiffness: 5,
-  viscosity: 0.012,
-  constitutiveModel: 'baseline',
-  constitutiveStrength: 1,
-  constitutiveSpeedLimit: 8,
-  train: true,
-  ac: true,
-  brakes: true,
-  shaftExchange: 0.65,
-  shaftControls: [1, 1, 1],
-  shaftFans: true,
-  shaftFanVelocity: 2.5,
-  downFans: 0.45,
-  floorAirMovers: 0.5,
-  ceilingFans: 0.5,
-  grooves: 0.7,
-  floodTunnels: true,
-  floodFlow: 0.55,
-  floodPumpDirection: 1,
-  roofPitch: 14,
-  roofOffset: 0,
-  roofGapHorizontal: 0,
-  roofGapVertical: 0,
-  clerestoryWindows: true,
-  clerestoryOpen: 0,
-  stackEffect: 0.65,
-  trainInterval: 20,
-  trainStopFrequency: 0.5,
-  trainStopDuration: 6,
-  particleCount: 4096,
-  particleDiameter: 0.7,
-  particleMagnitudeScale: 0.6,
-  windOcclusion: true
-};
+const INITIALS = SUBWAY_SIMULATOR_DEFAULTS;
 
 const CAMERA_TARGET = [(TRACK_ROUTE.minX + TRACK_ROUTE.maxX) / 2, 3, 0];
 const CAMERA_VIEWS = createCameraViews({ target: CAMERA_TARGET, distance: 61, frontDistance: 72, frontDirection: -1, ortho1Offset: [41, 35, 48], ortho2Offset: [-41, 35, -48] });
@@ -1618,7 +1575,10 @@ function Sparkline({ values }) {
   );
 }
 
-function Toggle({ label, checked, onChange, description, showDescription }) {
+function Toggle({ parameter, label, checked, onChange, description, showDescription }) {
+  if (parameter && SUBWAY_SIMULATION_PARAMETER_META[parameter]?.type !== 'boolean') {
+    throw new TypeError(`SubwaySim toggle is missing boolean parameter metadata: ${parameter}`);
+  }
   return (
     <label className="toggle-row">
       <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
@@ -1628,17 +1588,14 @@ function Toggle({ label, checked, onChange, description, showDescription }) {
   );
 }
 
-function ControlSlider({ label, value, min, max, step, precision, suffix, description, showDescription, onChange, editing = false, isDefault = true, onReset }) {
+function ControlSlider({ parameter, label, value, suffix, description, showDescription, onChange, editing = false, isDefault = true, onReset }) {
+  const definition = SUBWAY_SIMULATION_PARAMETER_META[parameter];
+  if (!definition || !['number', 'integer', 'array'].includes(definition.type)) {
+    throw new TypeError(`SubwaySim slider is missing numeric parameter metadata: ${parameter}`);
+  }
+  const range = definition.type === 'array' ? definition.items : definition;
+  const { minimum: min, maximum: max, step } = range;
   return <NumericParamControl className="slider-control" label={label} value={Number.isFinite(value) ? value : min} min={min} max={max} step={step} suffix={suffix} editing={editing} isDefault={isDefault} onReset={onReset} description={description} showDescription={showDescription} onChange={onChange} />;
-  const displayValue = Number.isFinite(value) ? value : min;
-  const decimals = precision ?? (step < 0.01 ? 3 : step < 1 ? 1 : 0);
-  return (
-    <label className="slider-control">
-      <span className="control-label"><span>{label}</span><strong>{displayValue.toFixed(decimals)}{suffix}</strong></span>
-      <input type="range" min={min} max={max} step={step} value={displayValue} onChange={(event) => onChange(Number(event.target.value))} />
-      {showDescription && <small className="parameter-description">{description}</small>}
-    </label>
-  );
 }
 
 function VentEndpointChart({ history, metric, label, unit }) {
@@ -1706,11 +1663,9 @@ function VentFlowCharts({ settings, telemetry, onSettingsChange, showDescription
           return (
             <section className="vent-flow-shaft" key={shaftX}>
               <ControlSlider
+                parameter="shaftControls"
                 label={`${SHAFT_LABELS[index]} shaft (${shaftX > 0 ? '+' : ''}${shaftX} m)`}
                 value={settings.shaftControls[index]}
-                min={-1}
-                max={1}
-                step={0.05}
                 suffix=""
                 description="Sets signed ventilation speed for this shaft; negative values reverse vertical flow."
                 showDescription={showDescriptions}
@@ -1805,11 +1760,11 @@ function TelemetryPanel({ settings, onSettingsChange, telemetry, gpuError, susta
       </div>
       <OrbitalTrackingParameters configuration={settings} onChange={onSettingsChange} className="parameter-group" />
       <ParticleAppearanceSettings configuration={settings} onChange={onSettingsChange} className="parameter-group" capabilities={{ shape: false, derivativeOrder: false, colorMode: false, color: false }} fields={[
-        { key: 'sizeScale', path: 'particleDiameter', type: 'range', label: 'Particle diameter', min: 0.2, max: 1.4, step: 0.05, suffix: ' m' },
+        { key: 'sizeScale', path: 'particleDiameter', type: 'range', label: 'Particle diameter', min: SUBWAY_SIMULATION_PARAMETER_META.particleDiameter.minimum, max: SUBWAY_SIMULATION_PARAMETER_META.particleDiameter.maximum, step: SUBWAY_SIMULATION_PARAMETER_META.particleDiameter.step, suffix: ' m' },
         { key: 'shape', path: 'particleAppearance.shape', type: 'select', label: 'Particle shape', options: ['native'], disabled: true },
-        { key: 'derivativeOrder', path: 'particleAppearance.derivativeOrder', type: 'range', label: 'Derivative order', min: 0, max: 4, step: 1, disabled: true },
+        { key: 'derivativeOrder', path: 'particleAppearance.derivativeOrder', type: 'range', label: 'Derivative order', min: COMMON_SIMULATOR_PARAMETER_META.particleAppearance.properties.derivativeOrder.minimum, max: COMMON_SIMULATOR_PARAMETER_META.particleAppearance.properties.derivativeOrder.maximum, step: COMMON_SIMULATOR_PARAMETER_META.particleAppearance.properties.derivativeOrder.step, disabled: true },
         { key: 'color', path: 'particleAppearance.color', type: 'color', label: 'Particle tint', disabled: true },
-        { key: 'opacity', path: 'particleAppearance.opacity', type: 'range', label: 'Particle opacity', min: 0, max: 1, step: 0.01 }
+        { key: 'opacity', path: 'particleAppearance.opacity', type: 'range', label: 'Particle opacity', min: COMMON_SIMULATOR_PARAMETER_META.particleAppearance.properties.opacity.minimum, max: COMMON_SIMULATOR_PARAMETER_META.particleAppearance.properties.opacity.maximum, step: COMMON_SIMULATOR_PARAMETER_META.particleAppearance.properties.opacity.step }
       ]} />
       <div className="telemetry-heading"><span>Ambient field</span><strong>{temperature.toFixed(1)}°F</strong></div>
       <Sparkline values={temperatureHistory} />
@@ -1826,49 +1781,49 @@ function TelemetryPanel({ settings, onSettingsChange, telemetry, gpuError, susta
         <Toggle label="Show descriptions" checked={showDescriptions} onChange={onShowDescriptionsChange} />
       </div>
       <div className="primary-parameter">
-        <ControlSlider label="Surface temperature" value={settings.surfaceTemperature} min={60} max={110} step={0.5} suffix="°F" description="Sets the station floor's thermal influence on nearby air." showDescription={showDescriptions} onChange={(surfaceTemperature) => onSettingsChange({ surfaceTemperature })} />
-        <ControlSlider label="Passenger heat" value={settings.passengerHeat} min={0} max={1.5} step={0.05} suffix="" description="Adds localized body heat around the visible passengers." showDescription={showDescriptions} onChange={(passengerHeat) => onSettingsChange({ passengerHeat })} />
-        <ControlSlider label="Road surface temperature" value={settings.roadSurfaceTemperature} min={45} max={130} step={0.5} suffix="°F" description="Sets the outdoor road temperature that drives upward convection above the street." showDescription={showDescriptions} onChange={(roadSurfaceTemperature) => onSettingsChange({ roadSurfaceTemperature })} />
-        <ControlSlider label="Ambient air above road" value={settings.ambientAirTemperature} min={40} max={110} step={0.5} suffix="°F" description="Sets the outdoor air temperature that the upper field gradually approaches." showDescription={showDescriptions} onChange={(ambientAirTemperature) => onSettingsChange({ ambientAirTemperature })} />
-        <ControlSlider label="Surface crosswind" value={settings.surfaceCrosswind} min={-8} max={8} step={0.25} suffix=" m/s" description="Sets outdoor wind across the station along the Z axis; negative values reverse direction." showDescription={showDescriptions} onChange={(surfaceCrosswind) => onSettingsChange({ surfaceCrosswind })} />
-        <ControlSlider label="Stair underground opening" value={settings.stairUndergroundOpeningHeight} min={2.2} max={5} step={0.1} precision={2} suffix=" m" description="Sets underground tunnel and doorway clear height without moving the stairs or turnstiles." showDescription={showDescriptions} onChange={(stairUndergroundOpeningHeight) => onSettingsChange({ stairUndergroundOpeningHeight })} />
-        <ControlSlider label="Stair landing height" value={settings.stairLandingHeight} min={1} max={5} step={0.1} precision={2} suffix=" m" description="Sets the level elevation between the lower and upper stair flights." showDescription={showDescriptions} onChange={(stairLandingHeight) => onSettingsChange({ stairLandingHeight })} />
-        <ControlSlider label="Stair surface opening" value={settings.stairSurfaceOpeningHeight} min={8.2} max={10} step={0.1} precision={2} suffix=" m" description="Sets the street opening elevation and moves the street and ventilation outlets with it." showDescription={showDescriptions} onChange={(stairSurfaceOpeningHeight) => onSettingsChange({ stairSurfaceOpeningHeight })} />
+        <ControlSlider parameter="surfaceTemperature" label="Surface temperature" value={settings.surfaceTemperature} suffix="°F" description="Sets the station floor's thermal influence on nearby air." showDescription={showDescriptions} onChange={(surfaceTemperature) => onSettingsChange({ surfaceTemperature })} />
+        <ControlSlider parameter="passengerHeat" label="Passenger heat" value={settings.passengerHeat} suffix="" description="Adds localized body heat around the visible passengers." showDescription={showDescriptions} onChange={(passengerHeat) => onSettingsChange({ passengerHeat })} />
+        <ControlSlider parameter="roadSurfaceTemperature" label="Road surface temperature" value={settings.roadSurfaceTemperature} suffix="°F" description="Sets the outdoor road temperature that drives upward convection above the street." showDescription={showDescriptions} onChange={(roadSurfaceTemperature) => onSettingsChange({ roadSurfaceTemperature })} />
+        <ControlSlider parameter="ambientAirTemperature" label="Ambient air above road" value={settings.ambientAirTemperature} suffix="°F" description="Sets the outdoor air temperature that the upper field gradually approaches." showDescription={showDescriptions} onChange={(ambientAirTemperature) => onSettingsChange({ ambientAirTemperature })} />
+        <ControlSlider parameter="surfaceCrosswind" label="Surface crosswind" value={settings.surfaceCrosswind} suffix=" m/s" description="Sets outdoor wind across the station along the Z axis; negative values reverse direction." showDescription={showDescriptions} onChange={(surfaceCrosswind) => onSettingsChange({ surfaceCrosswind })} />
+        <ControlSlider parameter="stairUndergroundOpeningHeight" label="Stair underground opening" value={settings.stairUndergroundOpeningHeight} suffix=" m" description="Sets underground tunnel and doorway clear height without moving the stairs or turnstiles." showDescription={showDescriptions} onChange={(stairUndergroundOpeningHeight) => onSettingsChange({ stairUndergroundOpeningHeight })} />
+        <ControlSlider parameter="stairLandingHeight" label="Stair landing height" value={settings.stairLandingHeight} suffix=" m" description="Sets the level elevation between the lower and upper stair flights." showDescription={showDescriptions} onChange={(stairLandingHeight) => onSettingsChange({ stairLandingHeight })} />
+        <ControlSlider parameter="stairSurfaceOpeningHeight" label="Stair surface opening" value={settings.stairSurfaceOpeningHeight} suffix=" m" description="Sets the street opening elevation and moves the street and ventilation outlets with it." showDescription={showDescriptions} onChange={(stairSurfaceOpeningHeight) => onSettingsChange({ stairSurfaceOpeningHeight })} />
       </div>
       <div className="toggles-group">
-        <Toggle label="Allow trains to run" checked={settings.train} description="Runs one train through the station at the configured interval." showDescription={showDescriptions} onChange={(train) => onSettingsChange({ train })} />
-        <Toggle label="Powered shaft fans" checked={settings.shaftFans} description="Adds powered upward airflow in the three ventilation shafts." showDescription={showDescriptions} onChange={(shaftFans) => onSettingsChange({ shaftFans })} />
-        <Toggle label="Clerestory windows" checked={settings.clerestoryWindows} description="Shows the bridging windows and enables clerestory exchange." showDescription={showDescriptions} onChange={(clerestoryWindows) => onSettingsChange({ clerestoryWindows })} />
-        <Toggle label="Wind resistance / occlusion" checked={settings.windOcclusion} description="Deflects airflow around station columns, platforms, and the train." showDescription={showDescriptions} onChange={(windOcclusion) => onSettingsChange({ windOcclusion })} />
-        <Toggle label="AC exhaust heat" checked={settings.ac} description="Adds heat and lift near the active train." showDescription={showDescriptions} onChange={(ac) => onSettingsChange({ ac })} />
-        <Toggle label="Brake friction" checked={settings.brakes} description="Adds localized heat and turbulence during braking." showDescription={showDescriptions} onChange={(brakes) => onSettingsChange({ brakes })} />
-        <Toggle label="Flood control tunnels" checked={settings.floodTunnels} description="Enables the below-station cold-sink gallery." showDescription={showDescriptions} onChange={(floodTunnels) => onSettingsChange({ floodTunnels })} />
+        <Toggle parameter="train" label="Allow trains to run" checked={settings.train} description="Runs one train through the station at the configured interval." showDescription={showDescriptions} onChange={(train) => onSettingsChange({ train })} />
+        <Toggle parameter="shaftFans" label="Powered shaft fans" checked={settings.shaftFans} description="Adds powered upward airflow in the three ventilation shafts." showDescription={showDescriptions} onChange={(shaftFans) => onSettingsChange({ shaftFans })} />
+        <Toggle parameter="clerestoryWindows" label="Clerestory windows" checked={settings.clerestoryWindows} description="Shows the bridging windows and enables clerestory exchange." showDescription={showDescriptions} onChange={(clerestoryWindows) => onSettingsChange({ clerestoryWindows })} />
+        <Toggle parameter="windOcclusion" label="Wind resistance / occlusion" checked={settings.windOcclusion} description="Deflects airflow around station columns, platforms, and the train." showDescription={showDescriptions} onChange={(windOcclusion) => onSettingsChange({ windOcclusion })} />
+        <Toggle parameter="ac" label="AC exhaust heat" checked={settings.ac} description="Adds heat and lift near the active train." showDescription={showDescriptions} onChange={(ac) => onSettingsChange({ ac })} />
+        <Toggle parameter="brakes" label="Brake friction" checked={settings.brakes} description="Adds localized heat and turbulence during braking." showDescription={showDescriptions} onChange={(brakes) => onSettingsChange({ brakes })} />
+        <Toggle parameter="floodTunnels" label="Flood control tunnels" checked={settings.floodTunnels} description="Enables the below-station cold-sink gallery." showDescription={showDescriptions} onChange={(floodTunnels) => onSettingsChange({ floodTunnels })} />
       </div>
 
       <div className="systems-group">
         <div className="subsection-label">SUSTAINABLE AIRFLOW SYSTEMS</div>
-        <ControlSlider label="Shaft exchange" value={settings.shaftExchange} min={0} max={1} step={0.05} suffix="" description="Captures air toward the three passive vertical shafts." showDescription={showDescriptions} onChange={(shaftExchange) => onSettingsChange({ shaftExchange })} />
-        <ControlSlider label="Shaft fan velocity" value={settings.shaftFanVelocity} min={0} max={8} step={0.25} suffix=" m/s" description="Sets upward powered airflow through each ventilation shaft." showDescription={showDescriptions} onChange={(shaftFanVelocity) => onSettingsChange({ shaftFanVelocity })} />
-        <ControlSlider label="Downward fans" value={settings.downFans} min={0} max={1} step={0.05} suffix="" description="Pushes air down from the station ceiling fan banks." showDescription={showDescriptions} onChange={(downFans) => onSettingsChange({ downFans })} />
-        <ControlSlider label="Floor air movers" value={settings.floorAirMovers} min={0} max={1} step={0.05} suffix="" description="Blows air across the platform floor toward the stair route." showDescription={showDescriptions} onChange={(floorAirMovers) => onSettingsChange({ floorAirMovers })} />
-        <ControlSlider label="Ceiling flow" value={settings.ceilingFans} min={0} max={1} step={0.05} suffix="" description="Sweeps the warm ceiling band toward the egress." showDescription={showDescriptions} onChange={(ceilingFans) => onSettingsChange({ ceilingFans })} />
-        <ControlSlider label="Passive grooves" value={settings.grooves} min={0} max={1} step={0.05} suffix="" description="Adds low-energy guidance along the roof grooves." showDescription={showDescriptions} onChange={(grooves) => onSettingsChange({ grooves })} />
-        <ControlSlider label="Roof pitch" value={settings.roofPitch} min={-28} max={28} step={1} suffix="°" description="Tilts the roof envelope and changes buoyant headroom." showDescription={showDescriptions} onChange={(roofPitch) => onSettingsChange({ roofPitch })} />
-        <ControlSlider label="Ridge offset" value={settings.roofOffset} min={-2} max={2} step={0.1} suffix=" z" description="Moves the roof ridge across the station width." showDescription={showDescriptions} onChange={(roofOffset) => onSettingsChange({ roofOffset })} />
-        <ControlSlider label="Roof gap: horizontal" value={settings.roofGapHorizontal} min={0.1} max={2.4} step={0.1} suffix=" m" description="Sets the horizontal distance between the two roof panels." showDescription={showDescriptions} onChange={(roofGapHorizontal) => onSettingsChange({ roofGapHorizontal })} />
-        <ControlSlider label="Roof gap: vertical" value={settings.roofGapVertical} min={0.1} max={3} step={0.1} suffix=" m" description="Sets the height bridged by each clerestory pane." showDescription={showDescriptions} onChange={(roofGapVertical) => onSettingsChange({ roofGapVertical })} />
-        <ControlSlider label="Clerestory opening" value={settings.clerestoryOpen} min={0} max={1} step={0.05} suffix="" description="Controls passive exchange through the clerestory span." showDescription={showDescriptions} onChange={(clerestoryOpen) => onSettingsChange({ clerestoryOpen })} />
-        <ControlSlider label="Shaft stack effect" value={settings.stackEffect} min={0} max={1} step={0.05} suffix="" description="Applies passive localized shaft lift to warm air; powered fans and crosswind draw remain separate." showDescription={showDescriptions} onChange={(stackEffect) => onSettingsChange({ stackEffect })} />
-        <ControlSlider label="Flood gallery flow" value={settings.floodFlow} min={0} max={1} step={0.05} suffix="" description="Pulls warm lower air into the gallery as a cold sink." showDescription={showDescriptions} onChange={(floodFlow) => onSettingsChange({ floodFlow })} />
-        <ControlSlider label="Flood pump direction" value={settings.floodPumpDirection} min={-1} max={1} step={0.1} suffix="" description="Sets the flood-gallery air-pump direction along X." showDescription={showDescriptions} onChange={(floodPumpDirection) => onSettingsChange({ floodPumpDirection })} />
+        <ControlSlider parameter="shaftExchange" label="Shaft exchange" value={settings.shaftExchange} suffix="" description="Captures air toward the three passive vertical shafts." showDescription={showDescriptions} onChange={(shaftExchange) => onSettingsChange({ shaftExchange })} />
+        <ControlSlider parameter="shaftFanVelocity" label="Shaft fan velocity" value={settings.shaftFanVelocity} suffix=" m/s" description="Sets upward powered airflow through each ventilation shaft." showDescription={showDescriptions} onChange={(shaftFanVelocity) => onSettingsChange({ shaftFanVelocity })} />
+        <ControlSlider parameter="downFans" label="Downward fans" value={settings.downFans} suffix="" description="Pushes air down from the station ceiling fan banks." showDescription={showDescriptions} onChange={(downFans) => onSettingsChange({ downFans })} />
+        <ControlSlider parameter="floorAirMovers" label="Floor air movers" value={settings.floorAirMovers} suffix="" description="Blows air across the platform floor toward the stair route." showDescription={showDescriptions} onChange={(floorAirMovers) => onSettingsChange({ floorAirMovers })} />
+        <ControlSlider parameter="ceilingFans" label="Ceiling flow" value={settings.ceilingFans} suffix="" description="Sweeps the warm ceiling band toward the egress." showDescription={showDescriptions} onChange={(ceilingFans) => onSettingsChange({ ceilingFans })} />
+        <ControlSlider parameter="grooves" label="Passive grooves" value={settings.grooves} suffix="" description="Adds low-energy guidance along the roof grooves." showDescription={showDescriptions} onChange={(grooves) => onSettingsChange({ grooves })} />
+        <ControlSlider parameter="roofPitch" label="Roof pitch" value={settings.roofPitch} suffix="°" description="Tilts the roof envelope and changes buoyant headroom." showDescription={showDescriptions} onChange={(roofPitch) => onSettingsChange({ roofPitch })} />
+        <ControlSlider parameter="roofOffset" label="Ridge offset" value={settings.roofOffset} suffix=" z" description="Moves the roof ridge across the station width." showDescription={showDescriptions} onChange={(roofOffset) => onSettingsChange({ roofOffset })} />
+        <ControlSlider parameter="roofGapHorizontal" label="Roof gap: horizontal" value={settings.roofGapHorizontal} suffix=" m" description="Sets the horizontal distance between the two roof panels." showDescription={showDescriptions} onChange={(roofGapHorizontal) => onSettingsChange({ roofGapHorizontal })} />
+        <ControlSlider parameter="roofGapVertical" label="Roof gap: vertical" value={settings.roofGapVertical} suffix=" m" description="Sets the height bridged by each clerestory pane." showDescription={showDescriptions} onChange={(roofGapVertical) => onSettingsChange({ roofGapVertical })} />
+        <ControlSlider parameter="clerestoryOpen" label="Clerestory opening" value={settings.clerestoryOpen} suffix="" description="Controls passive exchange through the clerestory span." showDescription={showDescriptions} onChange={(clerestoryOpen) => onSettingsChange({ clerestoryOpen })} />
+        <ControlSlider parameter="stackEffect" label="Shaft stack effect" value={settings.stackEffect} suffix="" description="Applies passive localized shaft lift to warm air; powered fans and crosswind draw remain separate." showDescription={showDescriptions} onChange={(stackEffect) => onSettingsChange({ stackEffect })} />
+        <ControlSlider parameter="floodFlow" label="Flood gallery flow" value={settings.floodFlow} suffix="" description="Pulls warm lower air into the gallery as a cold sink." showDescription={showDescriptions} onChange={(floodFlow) => onSettingsChange({ floodFlow })} />
+        <ControlSlider parameter="floodPumpDirection" label="Flood pump direction" value={settings.floodPumpDirection} suffix="" description="Sets the flood-gallery air-pump direction along X." showDescription={showDescriptions} onChange={(floodPumpDirection) => onSettingsChange({ floodPumpDirection })} />
       </div>
       <div className="controls-group">
         <div className="subsection-label">SIMULATION</div>
-        <ControlSlider label="Train interval" value={settings.trainInterval} min={8} max={60} step={1} suffix=" s" description="Time from the start of one train pass to the next." showDescription={showDescriptions} onChange={(trainInterval) => onSettingsChange({ trainInterval })} />
-        <ControlSlider label="Train stop frequency" value={settings.trainStopFrequency} min={0} max={1} step={0.05} suffix="" description="Sets the fraction of train passes that stop at the platform." showDescription={showDescriptions} onChange={(trainStopFrequency) => onSettingsChange({ trainStopFrequency })} />
-        <ControlSlider label="Train stop duration" value={settings.trainStopDuration} min={0} max={30} step={1} suffix=" s" description="Sets how long a stopping train dwells at the platform." showDescription={showDescriptions} onChange={(trainStopDuration) => onSettingsChange({ trainStopDuration })} />
-        <ControlSlider label="Particle count" value={settings.particleCount} min={1024} max={9216} step={512} suffix="" description="Rebuilds the GPU field with the selected number of rendered particles." showDescription={showDescriptions} onChange={(particleCount) => onSettingsChange({ particleCount })} />
-        <ControlSlider label="Velocity diameter response" value={settings.particleMagnitudeScale} min={0} max={2} step={0.05} suffix="" description="Scales individual particle diameter according to velocity magnitude." showDescription={showDescriptions} onChange={(particleMagnitudeScale) => onSettingsChange({ particleMagnitudeScale })} />
+        <ControlSlider parameter="trainInterval" label="Train interval" value={settings.trainInterval} suffix=" s" description="Time from the start of one train pass to the next." showDescription={showDescriptions} onChange={(trainInterval) => onSettingsChange({ trainInterval })} />
+        <ControlSlider parameter="trainStopFrequency" label="Train stop frequency" value={settings.trainStopFrequency} suffix="" description="Sets the fraction of train passes that stop at the platform." showDescription={showDescriptions} onChange={(trainStopFrequency) => onSettingsChange({ trainStopFrequency })} />
+        <ControlSlider parameter="trainStopDuration" label="Train stop duration" value={settings.trainStopDuration} suffix=" s" description="Sets how long a stopping train dwells at the platform." showDescription={showDescriptions} onChange={(trainStopDuration) => onSettingsChange({ trainStopDuration })} />
+        <ControlSlider parameter="particleCount" label="Particle count" value={settings.particleCount} suffix="" description="Rebuilds the GPU field with the selected number of rendered particles." showDescription={showDescriptions} onChange={(particleCount) => onSettingsChange({ particleCount })} />
+        <ControlSlider parameter="particleMagnitudeScale" label="Velocity diameter response" value={settings.particleMagnitudeScale} suffix="" description="Scales individual particle diameter according to velocity magnitude." showDescription={showDescriptions} onChange={(particleMagnitudeScale) => onSettingsChange({ particleMagnitudeScale })} />
       </div>
       <VentFlowCharts settings={settings} telemetry={telemetry} onSettingsChange={onSettingsChange} showDescriptions={showDescriptions} />
       <details className="parameter-group">
@@ -1876,11 +1831,11 @@ function TelemetryPanel({ settings, onSettingsChange, telemetry, gpuError, susta
 
         <div className="controls-group">
           <ParamSelect label="Constitutive model" value={settings.constitutiveModel} options={FLUID_MODEL_OPTIONS} onChange={(constitutiveModel) => onSettingsChange({ constitutiveModel })} />
-          <ControlSlider label="Constitutive strength" value={settings.constitutiveStrength} min={0} max={10} step={0.05} suffix="" description="Scales the selected experimental shear response." showDescription={showDescriptions} onChange={(constitutiveStrength) => onSettingsChange({ constitutiveStrength })} />
-          {settings.constitutiveModel === 'ddf' && <ControlSlider label="DDF speed limit" value={settings.constitutiveSpeedLimit} min={0.1} max={20} step={0.1} suffix=" m/s" description="Sets the dimensionless onset scale for the DDF viscosity increase." showDescription={showDescriptions} onChange={(constitutiveSpeedLimit) => onSettingsChange({ constitutiveSpeedLimit })} />}
-          <ControlSlider label="Air density" value={settings.density} min={0.5} max={3} step={0.05} suffix=" kg/m³" description="Mass packed into each simulated air volume." showDescription={showDescriptions} onChange={(density) => onSettingsChange({ density })} />
-          <ControlSlider label="Fluid stiffness" value={settings.stiffness} min={1} max={20} step={0.5} suffix="" description="How strongly nearby particles resist compression." showDescription={showDescriptions} onChange={(stiffness) => onSettingsChange({ stiffness })} />
-          <ControlSlider label="Viscosity" value={settings.viscosity} min={0.001} max={0.05} step={0.001} suffix=" Pa·s" description="How quickly neighboring air velocities blend." showDescription={showDescriptions} onChange={(viscosity) => onSettingsChange({ viscosity })} />
+          <ControlSlider parameter="constitutiveStrength" label="Constitutive strength" value={settings.constitutiveStrength} suffix="" description="Scales the selected experimental shear response." showDescription={showDescriptions} onChange={(constitutiveStrength) => onSettingsChange({ constitutiveStrength })} />
+          {settings.constitutiveModel === 'ddf' && <ControlSlider parameter="constitutiveSpeedLimit" label="DDF speed limit" value={settings.constitutiveSpeedLimit} suffix=" m/s" description="Sets the dimensionless onset scale for the DDF viscosity increase." showDescription={showDescriptions} onChange={(constitutiveSpeedLimit) => onSettingsChange({ constitutiveSpeedLimit })} />}
+          <ControlSlider parameter="density" label="Air density" value={settings.density} suffix=" kg/m³" description="Mass packed into each simulated air volume." showDescription={showDescriptions} onChange={(density) => onSettingsChange({ density })} />
+          <ControlSlider parameter="stiffness" label="Fluid stiffness" value={settings.stiffness} suffix="" description="How strongly nearby particles resist compression." showDescription={showDescriptions} onChange={(stiffness) => onSettingsChange({ stiffness })} />
+          <ControlSlider parameter="viscosity" label="Viscosity" value={settings.viscosity} suffix=" Pa·s" description="How quickly neighboring air velocities blend." showDescription={showDescriptions} onChange={(viscosity) => onSettingsChange({ viscosity })} />
         </div>
       </details>
       </ParamEditingProvider>

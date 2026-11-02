@@ -32,6 +32,58 @@ test('SIM LOADER scrolls its content inside the viewport', async (t) => {
   assert.equal(metrics.footerVisible, true);
 });
 
+test('simulator URLs load directly and follow browser history', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: 1 });
+
+  await page.goto(`${baseUrl}sim/phasesignalsim?e2e=1`, { waitUntil: 'domcontentloaded' });
+  await page.locator('.signal-panel').waitFor();
+  assert.equal(new URL(page.url()).pathname, '/sim/phasesignalsim');
+
+  await page.goto(`${baseUrl}?e2e=1`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /11 \/ LOAD FIELD/ }).click();
+  await page.locator('.signal-panel').waitFor();
+  assert.equal(new URL(page.url()).pathname, '/sim/phasesignalsim');
+  assert.equal(new URL(page.url()).search, '?e2e=1');
+
+  await page.goBack();
+  await page.locator('.sqg-mode-grid').waitFor();
+  await page.goForward();
+  await page.locator('.signal-panel').waitFor();
+});
+
+test('SubwaySim sliders expose metadata-backed defaults and ranges', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+
+  await page.goto(`${baseUrl}sim/subwaysim2?e2e=1`, { waitUntil: 'domcontentloaded' });
+  await page.locator('.telemetry-panel').waitFor();
+
+  const surfaceTemperature = page.getByRole('slider', { name: 'Surface temperature', exact: true });
+  assert.equal(await surfaceTemperature.getAttribute('min'), '60');
+  assert.equal(await surfaceTemperature.getAttribute('max'), '110');
+  assert.equal(await surfaceTemperature.inputValue(), '81.5');
+
+  const roofGap = page.getByRole('slider', { name: 'Roof gap: horizontal' });
+  assert.equal(await roofGap.getAttribute('min'), '0');
+  assert.equal(await roofGap.getAttribute('max'), '2.4');
+  assert.equal(await roofGap.inputValue(), '0');
+
+  const stairLanding = page.getByRole('slider', { name: 'Stair landing height', exact: true });
+  assert.equal(await stairLanding.getAttribute('step'), '0.05');
+  assert.equal(await stairLanding.inputValue(), '3.35');
+
+  await page.getByText('Fluid parameters', { exact: true }).click();
+  const density = page.getByRole('slider', { name: 'Air density', exact: true });
+  assert.equal(await density.getAttribute('step'), '0.01');
+  assert.equal(await density.inputValue(), '1.18');
+  assert.deepEqual(errors, []);
+});
+
 test('ParamSelect supports ArrowUp and ArrowDown option navigation and selection', async (t) => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
